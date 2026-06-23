@@ -1005,6 +1005,205 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch FitGirl page. HTTP Status: {response.status_code}"}).encode())
                         return
 
+                # online-fix.me page URL (not the hoster URL)
+                elif "online-fix.me" in url and "hosters.online-fix.me" not in url:
+                    add_log(f"Scraping online-fix.me game page: {url}")
+                    response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        
+                        # Parse title
+                        title_el = soup.find('h1', id='news-title') or soup.find('h1')
+                        raw_title = title_el.text.strip() if title_el else "Unknown Game"
+                        cleaned_title = re.sub(r'\s+по\s+сети.*$', '', raw_title, flags=re.IGNORECASE)
+                        cleaned_title = re.sub(r'\s+скачать.*$', '', cleaned_title, flags=re.IGNORECASE)
+                        title = cleaned_title.strip()
+                        
+                        # Parse cover image
+                        cover_image = ""
+                        img_el = None
+                        for img in soup.find_all('img'):
+                            src = img.get('src', '')
+                            alt = img.get('alt', '')
+                            if "uploads/posts" in src and title.lower() in alt.lower():
+                                img_el = img
+                                break
+                        if not img_el:
+                            for img in soup.find_all('img'):
+                                src = img.get('src', '')
+                                if "uploads/posts" in src and "poster" in src:
+                                    img_el = img
+                                    break
+                        if img_el:
+                            cover_image = urllib.parse.urljoin(url, img_el.get('src', ''))
+                            
+                        # Find hoster URL
+                        hoster_url = None
+                        for a in soup.find_all('a', href=True):
+                            href = a['href']
+                            if "hosters.online-fix.me" in href:
+                                hoster_url = href
+                                break
+                                
+                        if not hoster_url:
+                            self.send_response(400)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"success": False, "error": "Hoster link (hosters.online-fix.me) not found on the page."}).encode())
+                            return
+                            
+                        # Fetch hoster page to parse mirrors
+                        add_log(f"Fetching hosters page: {hoster_url}")
+                        h_headers = {
+                            "Referer": url
+                        }
+                        h_response = cf_requests.get(hoster_url, headers=h_headers, impersonate="chrome120", timeout=20, verify=False)
+                        if h_response.status_code != 200:
+                            self.send_response(500)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch hoster page. Status: {h_response.status_code}"}).encode())
+                            return
+                            
+                        h_soup = BeautifulSoup(h_response.text, 'html.parser')
+                        options_container = h_soup.find(id='optionsContainer') or h_soup.find(class_='options-container')
+                        if not options_container:
+                            self.send_response(500)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"success": False, "error": "No mirrors options container found on hosters page."}).encode())
+                            return
+                            
+                        mirrors = []
+                        options = options_container.find_all(class_='option')
+                        for opt in options:
+                            name = opt.text.strip()
+                            encoded_url = f"online-fix-hoster:{hoster_url}?mirror={urllib.parse.quote(name)}&referer={urllib.parse.quote(url)}"
+                            mirrors.append({
+                                "name": name,
+                                "url": encoded_url
+                            })
+                            
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "success": True,
+                            "type": "fitgirl_page",
+                            "title": title,
+                            "original_size": "Unknown",
+                            "repack_size": "Unknown",
+                            "cover_image": cover_image,
+                            "mirrors": mirrors
+                        }).encode())
+                        return
+                    else:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch online-fix page. Status: {response.status_code}"}).encode())
+                        return
+
+                # online-fix-hoster mirror files list resolution
+                elif url.startswith("online-fix-hoster:"):
+                    raw_path = url[len("online-fix-hoster:"):]
+                    parsed = urllib.parse.urlparse(raw_path)
+                    query = urllib.parse.parse_qs(parsed.query)
+                    mirror_name = query.get("mirror", [""])[0]
+                    referer = query.get("referer", [""])[0]
+                    actual_hoster_url = parsed._replace(query="").geturl()
+                    
+                    add_log(f"Resolving online-fix mirror files: {mirror_name} from {actual_hoster_url}")
+                    h_headers = {}
+                    if referer:
+                        h_headers["Referer"] = referer
+                    response = cf_requests.get(actual_hoster_url, headers=h_headers, impersonate="chrome120", timeout=20, verify=False)
+                    if response.status_code != 200:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch hoster page. Status: {response.status_code}"}).encode())
+                        return
+                        
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    options_container = soup.find(id='optionsContainer') or soup.find(class_='options-container')
+                    if not options_container:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "error": "No options container found on hoster page."}).encode())
+                        return
+                        
+                    matching_option = None
+                    for opt in options_container.find_all(class_='option'):
+                        if opt.text.strip().lower() == mirror_name.lower():
+                            matching_option = opt
+                            break
+                            
+                    if not matching_option:
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "error": f"Mirror '{mirror_name}' not found on hosters page."}).encode())
+                        return
+                        
+                    data_links_str = matching_option.get('data-links', '[]')
+                    try:
+                        links = json.loads(data_links_str)
+                    except Exception as json_err:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "error": f"Failed to parse links JSON: {str(json_err)}"}).encode())
+                        return
+                        
+                    files = []
+                    for item in links:
+                        filename = item.get("file_name", "")
+                        direct_link = item.get("direct_link", "")
+                        
+                        if "pixeldrain.com/u/" in direct_link:
+                            direct_link = direct_link.replace("pixeldrain.com/u/", "pixeldrain.com/api/file/")
+                            
+                        file_type = "game_part"
+                        filename_lower = filename.lower()
+                        if "setup" in filename_lower or filename_lower.endswith(".exe"):
+                            file_type = "installer"
+                        elif "optional" in filename_lower or "language" in filename_lower or "lang" in filename_lower or any(lang in filename_lower for lang in ["russian", "english", "french", "german", "spanish", "chinese", "brazilian", "japanese", "korean", "polish", "mexican", "italian"]):
+                            file_type = "lang_part"
+                            
+                        cached_size = sizes_cache.get(filename, 0)
+                        files.append({
+                            "filename": filename,
+                            "url": direct_link,
+                            "type": file_type,
+                            "status": "waiting",
+                            "progress": 0,
+                            "downloaded": 0,
+                            "size": cached_size,
+                            "speed": 0,
+                            "time_left": -1,
+                            "error": ""
+                        })
+                        
+                    prefill_part_sizes(files)
+                    
+                    title_el = soup.find(class_='game-name') or soup.find('title') or soup.find('h1')
+                    title = title_el.text.strip() if title_el else "Online-Fix Game"
+                    title = re.sub(r'^Online-Fix Hosters\s*\|\s*', '', title, flags=re.IGNORECASE)
+                    title = re.sub(r'^Online-Fix Drive\s*\|\s*', '', title, flags=re.IGNORECASE)
+                    
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "success": True,
+                        "type": "files",
+                        "title": title,
+                        "files": files
+                    }).encode())
+                    return
+
                 # PrivateBin URL directly
                 elif "paste.fitgirl-repacks.site" in url:
                     add_log(f"Loading paste: {url}")
