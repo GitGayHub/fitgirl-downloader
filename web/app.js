@@ -43,6 +43,19 @@ const elActiveMirrorBadge = document.getElementById("active-mirror-badge-contain
 const elActiveMirrorName = document.getElementById("active-mirror-name");
 const elChecklistLoadingSpinner = document.getElementById("checklist-loading-spinner");
 
+// New Setup Dashboard Elements
+const elSetupDashboard = document.getElementById("setup-dashboard");
+const elSetupCover = document.getElementById("setup-cover");
+const elSetupCoverPlaceholder = document.getElementById("setup-cover-placeholder");
+const elMetadataGameTitle = document.getElementById("metadata-game-title");
+const elMetadataOriginalSize = document.getElementById("metadata-original-size");
+const elMetadataRepackSize = document.getElementById("metadata-repack-size");
+const elMetadataTotalParts = document.getElementById("metadata-total-parts");
+const elMetadataSelectedSize = document.getElementById("metadata-selected-size");
+const elMetadataEta = document.getElementById("metadata-eta");
+const elMetadataAvgSpeed = document.getElementById("metadata-avg-speed");
+const elSortingSelect = document.getElementById("sorting-select");
+
 // Download View Elements
 const elActiveGameTitle = document.getElementById("active-game-title");
 const elActiveGameSubtitle = document.getElementById("active-game-subtitle");
@@ -69,11 +82,18 @@ let appState = {
     is_extracting: false,
     extraction_progress: 0,
     is_extracted: false,
-    max_workers: 4
+    max_workers: 4,
+    average_download_speed: 5000000.0
 };
 
 let analyzedFiles = [];
 let smoothedSpeed = 0;
+let checkedFiles = new Set();
+let scrapedMetadata = {
+    original_size: "Unknown",
+    repack_size: "Unknown",
+    cover_image: ""
+};
 
 // Utilities
 function formatBytes(bytes, decimals = 2) {
@@ -113,6 +133,78 @@ function cleanFilename(name) {
         cleaned = cleaned.replace(/\.part[0-9]+\.rar$/i, '').trim() + ` - Part ${parseInt(partMatch[1])}`;
     }
     return cleaned.trim();
+}
+
+let rawFilesList = [];
+
+function getPartNumber(filename) {
+    const match = filename.match(/part\s*(\d+)/i);
+    if (match) return parseInt(match[1], 10);
+    
+    const matchBin = filename.match(/setup[-_](\d+)\.bin/i);
+    if (matchBin) return parseInt(matchBin[1], 10);
+    
+    return null;
+}
+
+function sortFiles(files, orderType) {
+    if (orderType === "original") {
+        return [...files];
+    }
+    return [...files].sort((a, b) => {
+        if (a.type === "installer" && b.type !== "installer") return -1;
+        if (b.type === "installer" && a.type !== "installer") return 1;
+        
+        const partA = getPartNumber(a.filename);
+        const partB = getPartNumber(b.filename);
+        
+        if (partA !== null && partB !== null) {
+            return partA - partB;
+        }
+        if (partA !== null) return 1;
+        if (partB !== null) return -1;
+        
+        return a.filename.localeCompare(b.filename, undefined, {numeric: true, sensitivity: 'base'});
+    });
+}
+
+function updateMetadataETA() {
+    let totalSize = 0;
+    let selectedCount = 0;
+    
+    rawFilesList.forEach(f => {
+        if (checkedFiles.has(f.filename)) {
+            selectedCount++;
+            let sz = f.size;
+            if (sz <= 0) {
+                if (f.type === "installer") sz = 7468619;
+                else if (f.filename.includes("part")) sz = 1.5 * 1024 * 1024 * 1024;
+                else sz = 500 * 1024 * 1024;
+            }
+            totalSize += sz;
+        }
+    });
+    
+    elMetadataSelectedSize.innerText = formatBytes(totalSize);
+    
+    const gameParts = rawFilesList.filter(f => f.type === "game_part");
+    const totalParts = gameParts.length > 0 ? gameParts.length : rawFilesList.length;
+    const selectedParts = gameParts.length > 0 
+        ? gameParts.filter(f => checkedFiles.has(f.filename)).length 
+        : selectedCount;
+    elMetadataTotalParts.innerText = `${selectedParts} / ${totalParts}`;
+    
+    const avgSpeed = appState.average_download_speed || 5000000.0;
+    const seconds = totalSize / avgSpeed;
+    elMetadataEta.innerText = formatTime(seconds);
+    elMetadataAvgSpeed.innerText = formatSpeed(avgSpeed);
+}
+
+function updateChecklistSorted() {
+    const sortVal = elSortingSelect.value;
+    analyzedFiles = sortFiles(rawFilesList, sortVal);
+    renderChecklist(analyzedFiles);
+    updateMetadataETA();
 }
 
 // Fetch state from Python backend
@@ -323,8 +415,36 @@ function updateUI(newState) {
         });
         elConsoleBox.scrollTop = elConsoleBox.scrollHeight;
     }
-    
     appState = newState;
+}
+
+function resetSetupDashboard() {
+    elSetupDashboard.style.display = "none";
+    elConfigCard.style.display = "none";
+    elMirrorSelectSection.style.display = "none";
+    analyzedFiles = [];
+    rawFilesList = [];
+    checkedFiles.clear();
+    
+    // Clear sidebar metadata
+    elMetadataGameTitle.innerText = "Game Title";
+    elMetadataOriginalSize.innerText = "--";
+    elMetadataRepackSize.innerText = "--";
+    elMetadataTotalParts.innerText = "--";
+    elMetadataSelectedSize.innerText = "--";
+    elMetadataEta.innerText = "--";
+    elSetupCover.src = "";
+    elSetupCover.style.display = "none";
+    elSetupCoverPlaceholder.style.display = "flex";
+}
+
+function initCheckedFiles(files) {
+    checkedFiles.clear();
+    files.forEach(f => {
+        if (f.type === "game_part" || f.type === "installer") {
+            checkedFiles.add(f.filename);
+        }
+    });
 }
 
 // URL Analysis trigger
@@ -337,8 +457,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
     elAnalyzeBtnText.innerText = "Analyzing Link...";
     elAnalyzeBtn.setAttribute("disabled", "true");
     elAnalyzeError.style.display = "none";
-    elConfigCard.style.display = "none";
-    elMirrorSelectSection.style.display = "none";
+    resetSetupDashboard();
     
     try {
         const response = await fetch("/api/analyze", {
@@ -350,6 +469,25 @@ elAnalyzeBtn.addEventListener("click", async () => {
         const data = await response.json();
         if (response.ok && data.success) {
             if (data.type === "fitgirl_page") {
+                // Populate metadata sidebar
+                scrapedMetadata.original_size = data.original_size || "Unknown";
+                scrapedMetadata.repack_size = data.repack_size || "Unknown";
+                scrapedMetadata.cover_image = data.cover_image || "";
+                
+                elMetadataGameTitle.innerText = data.title || "Custom Repack";
+                elMetadataOriginalSize.innerText = scrapedMetadata.original_size;
+                elMetadataRepackSize.innerText = scrapedMetadata.repack_size;
+                
+                if (scrapedMetadata.cover_image) {
+                    elSetupCover.src = scrapedMetadata.cover_image;
+                    elSetupCover.style.display = "block";
+                    elSetupCoverPlaceholder.style.display = "none";
+                } else {
+                    elSetupCover.src = "";
+                    elSetupCover.style.display = "none";
+                    elSetupCoverPlaceholder.style.display = "flex";
+                }
+
                 // Show game title
                 elGameNameInput.value = data.title;
                 
@@ -384,6 +522,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     elAnalyzeError.innerText = "No download mirror links found on this page. Try copying direct links instead.";
                 }
                 
+                elSetupDashboard.style.display = "grid";
                 elConfigCard.style.display = "block";
             } else if (data.type === "files") {
                 displayConfigCard(data.title, data.files);
@@ -421,8 +560,8 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
         
         const data = await response.json();
         if (response.ok && data.success) {
-            analyzedFiles = data.files;
-            renderChecklist(data.files);
+            rawFilesList = data.files;
+            initCheckedFiles(data.files);
             
             // Show mirror badge and update label
             elActiveMirrorName.innerText = mirrorName;
@@ -430,6 +569,8 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
             
             elConfirmQueueBtn.removeAttribute("disabled");
             elConfirmQueueBtn.innerText = "Confirm and Start Download";
+            
+            updateChecklistSorted();
         } else {
             alert("Error loading mirror links: " + (data.error || "Unknown error"));
         }
@@ -452,9 +593,25 @@ function displayConfigCard(title, files) {
     elMirrorSelectSection.style.display = "none";
     elActiveMirrorBadge.style.display = "none";
     
-    analyzedFiles = files;
-    renderChecklist(files);
+    // Set placeholder metadata
+    scrapedMetadata.original_size = "N/A";
+    scrapedMetadata.repack_size = "N/A";
+    scrapedMetadata.cover_image = "";
+    
+    elMetadataGameTitle.innerText = title;
+    elMetadataOriginalSize.innerText = "N/A";
+    elMetadataRepackSize.innerText = "N/A";
+    elSetupCover.src = "";
+    elSetupCover.style.display = "none";
+    elSetupCoverPlaceholder.style.display = "flex";
+    
+    rawFilesList = files;
+    initCheckedFiles(files);
+    
+    elSetupDashboard.style.display = "grid";
     elConfigCard.style.display = "block";
+    
+    updateChecklistSorted();
 }
 
 // Render Checklists
@@ -466,18 +623,28 @@ function renderChecklist(files) {
     let langCount = 0;
     let otherCount = 0;
     
-    files.forEach((f, idx) => {
+    files.forEach((f) => {
         const item = document.createElement("label");
         item.className = "checkbox-item";
         
         const sizeText = f.size > 0 ? formatBytes(f.size) : "Pending...";
-        const checkedStr = (f.type === "game_part" || f.type === "installer") ? "checked" : "";
+        const checkedStr = checkedFiles.has(f.filename) ? "checked" : "";
         
         item.innerHTML = `
-            <input type="checkbox" data-index="${idx}" ${checkedStr}>
+            <input type="checkbox" data-filename="${f.filename}" ${checkedStr}>
             <span class="checkbox-label" title="${f.filename}">${cleanFilename(f.filename)}</span>
             <span class="checkbox-badge">${sizeText}</span>
         `;
+        
+        const cb = item.querySelector("input");
+        cb.addEventListener("change", () => {
+            if (cb.checked) {
+                checkedFiles.add(f.filename);
+            } else {
+                checkedFiles.delete(f.filename);
+            }
+            updateMetadataETA();
+        });
         
         if (f.type === "game_part" || f.type === "installer") {
             elFilesListMain.appendChild(item);
@@ -498,26 +665,35 @@ function renderChecklist(files) {
 // Checkbox selection controls
 elSelMainBtn.addEventListener("click", () => {
     document.querySelectorAll(".checkbox-item input").forEach(cb => {
-        const idx = cb.getAttribute("data-index");
-        const file = analyzedFiles[idx];
-        if (file.type === "game_part" || file.type === "installer") {
+        const filename = cb.getAttribute("data-filename");
+        const file = rawFilesList.find(f => f.filename === filename);
+        if (file && (file.type === "game_part" || file.type === "installer")) {
             cb.checked = true;
+            checkedFiles.add(filename);
         } else {
             cb.checked = false;
+            checkedFiles.delete(filename);
         }
     });
+    updateMetadataETA();
 });
 
 elSelAllBtn.addEventListener("click", () => {
     document.querySelectorAll(".checkbox-item input").forEach(cb => {
+        const filename = cb.getAttribute("data-filename");
         cb.checked = true;
+        checkedFiles.add(filename);
     });
+    updateMetadataETA();
 });
 
 elSelNoneBtn.addEventListener("click", () => {
     document.querySelectorAll(".checkbox-item input").forEach(cb => {
+        const filename = cb.getAttribute("data-filename");
         cb.checked = false;
+        checkedFiles.delete(filename);
     });
+    updateMetadataETA();
 });
 
 elFillDefaultDirBtn.addEventListener("click", () => {
@@ -537,13 +713,7 @@ elConfirmQueueBtn.addEventListener("click", async () => {
     }
     
     // Gather checked files
-    const selectedFiles = [];
-    document.querySelectorAll(".checkbox-item input").forEach(cb => {
-        if (cb.checked) {
-            const idx = parseInt(cb.getAttribute("data-index"));
-            selectedFiles.push(analyzedFiles[idx]);
-        }
-    });
+    const selectedFiles = rawFilesList.filter(f => checkedFiles.has(f.filename));
     
     if (selectedFiles.length === 0) {
         alert("Please select at least one file to download.");
@@ -581,6 +751,11 @@ elConfirmQueueBtn.addEventListener("click", async () => {
         elConfirmQueueBtn.removeAttribute("disabled");
         elConfirmQueueBtn.innerText = "Confirm and Start Download";
     }
+});
+
+// Sorting select listener
+elSortingSelect.addEventListener("change", () => {
+    updateChecklistSorted();
 });
 
 // Sidebar Controls (Pause/Start)
@@ -660,9 +835,7 @@ elResetSessionBtn.addEventListener("click", async () => {
             if (response.ok) {
                 // Clear inputs
                 elUrlTextarea.value = "";
-                elConfigCard.style.display = "none";
-                elMirrorSelectSection.style.display = "none";
-                analyzedFiles = [];
+                resetSetupDashboard();
                 // Poll status to trigger Setup view
                 fetchState();
             } else {

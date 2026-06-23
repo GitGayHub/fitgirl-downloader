@@ -65,7 +65,8 @@ state = {
     "active_workers_count": 0,
     "is_extracted": False,
     "is_extracting": False,
-    "extraction_progress": 0
+    "extraction_progress": 0,
+    "average_download_speed": 5000000.0
 }
 
 state_lock = threading.RLock()
@@ -79,6 +80,8 @@ if os.path.exists(cache_path):
             sizes_cache = json.load(f)
     except Exception:
         pass
+
+state["average_download_speed"] = float(sizes_cache.get("__average_download_speed__", 5000000.0))
 
 def save_size_to_cache(filename, size):
     sizes_cache[filename] = size
@@ -417,6 +420,9 @@ def download_file(index, file_info):
                             state["files"][index]["speed"] = speed
                             state["files"][index]["time_left"] = time_left
                             state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
+                            if speed > 100000:
+                                state["average_download_speed"] = state["average_download_speed"] * 0.95 + speed * 0.05
+                                save_size_to_cache("__average_download_speed__", state["average_download_speed"])
                             
                         recalculate_total_progress()
                         bytes_in_sec = 0
@@ -741,8 +747,29 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         title = re.sub(r'\s+Repack\s*$', '', title, flags=re.IGNORECASE)
                         title = re.sub(r'\s+Updated\s*$', '', title, flags=re.IGNORECASE)
                         
-                        mirrors = []
+                        # Scrape sizes
+                        text_all = soup.get_text()
+                        orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+                        repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+                        original_size = orig_match.group(1).strip() if orig_match else "Unknown"
+                        repack_size = repack_match.group(1).strip() if repack_match else "Unknown"
+                        
+                        # Scrape cover image
+                        cover_image = ""
                         content_el = soup.find('div', class_='entry-content')
+                        if content_el:
+                            img_el = content_el.find('img', class_='alignleft')
+                            if img_el:
+                                cover_image = img_el.get('src', '')
+                            else:
+                                img_el = content_el.find('img')
+                                if img_el:
+                                    cover_image = img_el.get('src', '')
+                                    
+                        if cover_image:
+                            cover_image = urllib.parse.urljoin(url, cover_image)
+                        
+                        mirrors = []
                         if content_el:
                             links = content_el.find_all('a')
                             for a in links:
@@ -776,6 +803,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "success": True,
                             "type": "fitgirl_page",
                             "title": title,
+                            "original_size": original_size,
+                            "repack_size": repack_size,
+                            "cover_image": cover_image,
                             "mirrors": mirrors
                         }).encode())
                         return

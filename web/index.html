@@ -105,78 +105,129 @@
                         <div id="analyze-error" class="error-text" style="display: none;"></div>
                     </div>
 
-                    <!-- Step 2: Configure Mirror & Files (Visible after successful analysis) -->
-                    <div class="wizard-card" id="config-card" style="display: none; margin-top: 20px;">
-                        <div class="card-glass-shine"></div>
-                        <h3>2. Configure Download Queue</h3>
-                        
-                        <!-- Mirror Selector (Visible if mirrors found) -->
-                        <div class="config-section" id="mirror-select-section" style="display: none;">
-                            <label>Select Mirror Hoster</label>
-                            <div class="mirrors-grid" id="mirrors-container"></div>
-                        </div>
-
-                        <!-- Game Name & Dir -->
-                        <div class="config-form-grid">
-                            <div class="form-group">
-                                <label for="game-name-input">Game Folder Name</label>
-                                <input type="text" id="game-name-input" placeholder="e.g., Arma Reforger">
-                            </div>
-                            <div class="form-group">
-                                <label for="save-dir-input">Save Directory</label>
-                                <div class="save-dir-input-wrapper">
-                                    <input type="text" id="save-dir-input" placeholder="e.g., C:\Users\User\Downloads">
-                                    <button class="btn btn-accent" id="btn-fill-default-dir" style="padding: 8px 12px; font-size: 0.75rem;">Default Path</button>
+                    <!-- Step 2: Split Dashboard (Visible after successful analysis) -->
+                    <div class="setup-dashboard" id="setup-dashboard" style="display: none; margin-top: 20px;">
+                        <!-- Left: Metadata Panel -->
+                        <aside class="metadata-sidebar">
+                            <div class="cover-image-container">
+                                <img id="setup-cover" src="" alt="Game Cover" style="display: none;">
+                                <div id="setup-cover-placeholder" class="cover-placeholder">
+                                    <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+                                        <path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm8.5 2.1c-.6 0-1.1-.5-1.1-1.1s.5-1.1 1.1-1.1 1.1.5 1.1 1.1-.5 1.1-1.1 1.1zm0-3c-.6 0-1.1-.5-1.1-1.1s.5-1.1 1.1-1.1 1.1.5 1.1 1.1-.5 1.1-1.1 1.1zm1.5-1.5c-.6 0-1.1-.5-1.1-1.1s.5-1.1 1.1-1.1 1.1.5 1.1 1.1-.5 1.1-1.1 1.1zm-3 0c-.6 0-1.1-.5-1.1-1.1s.5-1.1 1.1-1.1 1.1.5 1.1 1.1-.5 1.1-1.1 1.1z"/>
+                                    </svg>
                                 </div>
                             </div>
-                        </div>
-
-                        <!-- Component Checklist -->
-                        <div class="config-section" style="margin-top: 20px; position: relative;">
-                            <div class="checklist-header">
-                                <label>
-                                    Select Files to Download 
-                                    <span class="active-mirror-badge" id="active-mirror-badge-container" style="display:none;">
-                                        (Mirror: <span id="active-mirror-name">Loading...</span>)
-                                    </span>
-                                </label>
-                                <div class="checklist-actions">
-                                    <button id="btn-sel-main" class="btn btn-accent btn-sm">Main Game Only</button>
-                                    <button id="btn-sel-all" class="btn btn-accent btn-sm">Select All</button>
-                                    <button id="btn-sel-none" class="btn btn-accent btn-sm">Deselect All</button>
+                            <div class="metadata-info-box">
+                                <h3 id="metadata-game-title">Game Title</h3>
+                                <div class="metadata-row">
+                                    <span class="meta-label">Original Size:</span>
+                                    <span class="meta-val" id="metadata-original-size">--</span>
+                                </div>
+                                <div class="metadata-row">
+                                    <span class="meta-label">Repack Size:</span>
+                                    <span class="meta-val" id="metadata-repack-size">--</span>
+                                </div>
+                                <div class="metadata-row">
+                                    <span class="meta-label">Total Parts:</span>
+                                    <span class="meta-val" id="metadata-total-parts">--</span>
+                                </div>
+                                <div class="metadata-row">
+                                    <span class="meta-label">Selected Size:</span>
+                                    <span class="meta-val highlight-green" id="metadata-selected-size">--</span>
+                                </div>
+                                <div class="metadata-row">
+                                    <span class="meta-label">Est. Download Time:</span>
+                                    <span class="meta-val highlight-purple" id="metadata-eta">--</span>
+                                </div>
+                                <div class="metadata-row speed-row">
+                                    <span class="meta-label">Avg. Speed (recent):</span>
+                                    <span class="meta-val" id="metadata-avg-speed">--</span>
                                 </div>
                             </div>
+                        </aside>
 
-                            <div class="files-checklist-wrapper" style="position: relative;">
-                                <!-- Spinner overlay while mirror links fetch -->
-                                <div class="checklist-loading-overlay" id="checklist-loading-spinner" style="display: none;">
-                                    <div class="spinner" style="width: 40px; height: 40px; border-width: 3px;"></div>
-                                    <p>Decrypting mirror paste...</p>
+                        <!-- Right: Config Panel -->
+                        <div class="wizard-card" id="config-card">
+                            <div class="card-glass-shine"></div>
+                            <h3>2. Configure Download Queue</h3>
+                            
+                            <!-- Mirror Selector (Visible if mirrors found) -->
+                            <div class="config-section" id="mirror-select-section" style="display: none;">
+                                <label>Select Mirror Hoster</label>
+                                <div class="mirrors-grid" id="mirrors-container"></div>
+                            </div>
+
+                            <!-- Game Name & Dir -->
+                            <div class="config-form-grid">
+                                <div class="form-group">
+                                    <label for="game-name-input">Game Folder Name</label>
+                                    <input type="text" id="game-name-input" placeholder="e.g., Arma Reforger">
                                 </div>
-
-                                <div class="files-checklist-container">
-                                    <!-- Groups -->
-                                    <div class="file-group-box">
-                                        <div class="file-group-title">Main Game Parts & Setup</div>
-                                        <div class="file-checkbox-list" id="files-list-main"></div>
+                                <div class="form-group">
+                                    <label for="save-dir-input">Save Directory</label>
+                                    <div class="save-dir-input-wrapper">
+                                        <input type="text" id="save-dir-input" placeholder="e.g., C:\Users\User\Downloads">
+                                        <button class="btn btn-accent" id="btn-fill-default-dir" style="padding: 8px 12px; font-size: 0.75rem;">Default Path</button>
                                     </div>
-                                    <div class="file-group-box" id="file-group-lang-box" style="margin-top: 12px;">
-                                        <div class="file-group-title">Optional Language Packs (Unchecked by default)</div>
-                                        <div class="file-checkbox-list" id="files-list-lang"></div>
+                                </div>
+                            </div>
+
+                            <!-- Component Checklist -->
+                            <div class="config-section" style="margin-top: 20px; position: relative;">
+                                <div class="checklist-header">
+                                    <label>
+                                        Select Files to Download 
+                                        <span class="active-mirror-badge" id="active-mirror-badge-container" style="display:none;">
+                                            (Mirror: <span id="active-mirror-name">Loading...</span>)
+                                        </span>
+                                    </label>
+                                    <div class="checklist-controls">
+                                        <div class="sorting-selector">
+                                            <span class="sorting-label">Сортировка:</span>
+                                            <select id="sorting-select">
+                                                <option value="sequential" selected>По порядку (1-N)</option>
+                                                <option value="original">Как на сайте</option>
+                                            </select>
+                                        </div>
+                                        <div class="checklist-actions">
+                                            <button id="btn-sel-main" class="btn btn-accent btn-sm">Main Game Only</button>
+                                            <button id="btn-sel-all" class="btn btn-accent btn-sm">Select All</button>
+                                            <button id="btn-sel-none" class="btn btn-accent btn-sm">Deselect All</button>
+                                        </div>
                                     </div>
-                                    <div class="file-group-box" id="file-group-other-box" style="margin-top: 12px;">
-                                        <div class="file-group-title">Optional Bonus Files / Extras</div>
-                                        <div class="file-checkbox-list" id="files-list-other"></div>
+                                </div>
+
+                                <div class="files-checklist-wrapper" style="position: relative;">
+                                    <!-- Spinner overlay while mirror links fetch -->
+                                    <div class="checklist-loading-overlay" id="checklist-loading-spinner" style="display: none;">
+                                        <div class="spinner" style="width: 40px; height: 40px; border-width: 3px;"></div>
+                                        <p>Decrypting mirror paste...</p>
+                                    </div>
+
+                                    <div class="files-checklist-container">
+                                        <!-- Groups -->
+                                        <div class="file-group-box">
+                                            <div class="file-group-title">Main Game Parts & Setup</div>
+                                            <div class="file-checkbox-list" id="files-list-main"></div>
+                                        </div>
+                                        <div class="file-group-box" id="file-group-lang-box" style="margin-top: 12px;">
+                                            <div class="file-group-title">Optional Language Packs (Unchecked by default)</div>
+                                            <div class="file-checkbox-list" id="files-list-lang"></div>
+                                        </div>
+                                        <div class="file-group-box" id="file-group-other-box" style="margin-top: 12px;">
+                                            <div class="file-group-title">Optional Bonus Files / Extras</div>
+                                            <div class="file-checkbox-list" id="files-list-other"></div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                        </div>
 
-                        <!-- Start Trigger -->
-                        <div class="confirm-actions-bar" style="margin-top: 25px; display: flex; justify-content: flex-end;">
-                            <button id="btn-confirm-queue" class="btn btn-primary btn-pulse-green" style="background-color: var(--color-accent); box-shadow: 0 4px 15px var(--color-accent-glow);">
-                                Confirm and Start Download
-                            </button>
+                            <!-- Start Trigger -->
+                            <div class="confirm-actions-bar" style="margin-top: 25px; display: flex; justify-content: flex-end;">
+                                <button id="btn-confirm-queue" class="btn btn-primary btn-pulse-green" style="background-color: var(--color-accent); box-shadow: 0 4px 15px var(--color-accent-glow);">
+                                    Confirm and Start Download
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
