@@ -70,7 +70,13 @@
                     </svg>
                     <span>Launch Installer</span>
                 </button>
-                <button id="btn-reset-session" class="btn btn-accent" style="margin-top: 15px; background-color: rgba(231, 76, 60, 0.15); border-color: rgba(231, 76, 60, 0.3); color: #e74c3c;">
+                <button id="btn-change-provider" class="btn btn-secondary" style="margin-top: 5px; background-color: rgba(52, 152, 219, 0.15); border-color: rgba(52, 152, 219, 0.3); color: #3498db; gap: 8px;">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                        <path d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/>
+                    </svg>
+                    <span>Change Provider</span>
+                </button>
+                <button id="btn-reset-session" class="btn btn-accent" style="margin-top: 10px; background-color: rgba(231, 76, 60, 0.15); border-color: rgba(231, 76, 60, 0.3); color: #e74c3c;">
                     Reset Session
                 </button>
             </div>
@@ -167,7 +173,7 @@
                                     <label for="save-dir-input">Save Directory</label>
                                     <div class="save-dir-input-wrapper">
                                         <input type="text" id="save-dir-input" placeholder="e.g., C:\Users\User\Downloads">
-                                        <button class="btn btn-accent" id="btn-fill-default-dir" style="padding: 8px 12px; font-size: 0.75rem;">Default Path</button>
+                                        <button class="btn btn-accent" id="btn-browse-dir" style="padding: 8px 12px; font-size: 0.75rem;">Browse...</button>
                                     </div>
                                 </div>
                             </div>
@@ -297,6 +303,32 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Change Provider Modal -->
+    <div id="provider-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Смена провайдера скачки</h3>
+                <button class="btn-close" id="btn-close-provider-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 12px; color: var(--text-muted);">Выберите нового провайдера из доступных зеркал:</p>
+                <div class="mirrors-grid" id="modal-mirrors-container" style="margin-top: 10px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 8px;">
+                    <!-- Mirror options here -->
+                </div>
+                <div class="form-checkbox" style="margin-top: 15px; margin-bottom: 10px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-white); font-size: 0.85rem;">
+                        <input type="checkbox" id="chk-delete-old-files" style="width: auto; height: auto; margin: 0; cursor: pointer;">
+                        <span>Удалить скачанное/недокачанное в прошлом провайдере</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btn-cancel-provider-switch" style="padding: 8px 16px; font-size: 0.85rem;">Отмена</button>
+                <button class="btn btn-primary" id="btn-confirm-provider-switch" disabled style="padding: 8px 16px; font-size: 0.85rem;">Сменить провайдера</button>
+            </div>
+        </div>
     </div>
 </body>
 </html>

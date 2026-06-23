@@ -7,7 +7,7 @@ import time
 import urllib.parse
 import webbrowser
 import subprocess
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Monkey patch requests to globally disable SSL verification (bypasses VPN/proxy SSL conflicts)
 import requests
@@ -53,6 +53,7 @@ state = {
     "game_title": "",
     "files": [],
     "download_dir": "",
+    "base_download_dir": "",
     "default_download_dir": "D:\\Downloads",
     "is_configured": False,
     "is_running": False,
@@ -349,6 +350,11 @@ def guess_game_title(files):
     cleaned = cleaned.replace('_', ' ').replace('.', ' ')
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned if cleaned else "Custom Game"
+
+def safe_folder_name(name):
+    if not name:
+        return ""
+    return re.sub(r'[:\/\\\*\?"<>\|]', '', name).strip()
 
 def initialize_queue_on_disk():
     with state_lock:
@@ -710,7 +716,45 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         url_parsed = urllib.parse.urlparse(self.path)
         path = url_parsed.path
         
-        if path == "/api/status":
+        if path == "/api/browse_folder":
+            import subprocess
+            ps_script = (
+                "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+                "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$dialog.Description = 'Select Download Save Folder'; "
+                "$dialog.ShowNewFolderButton = $true; "
+                "$win = New-Object System.Windows.Forms.Form; "
+                "$win.TopMost = $true; "
+                "if ($dialog.ShowDialog($win) -eq 'OK') { $dialog.SelectedPath }"
+            )
+            try:
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+                    capture_output=True,
+                    text=True,
+                    timeout=180
+                )
+                selected_path = result.stdout.strip()
+                if selected_path:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True, "path": selected_path}).encode())
+                    return
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": "No folder selected."}).encode())
+                    return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+                return
+                
+        elif path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -1022,11 +1066,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(post_data)
                 game_title = data.get("game_title", "Custom Game").strip()
-                download_dir = data.get("download_dir", "").strip()
+                base_download_dir = data.get("base_download_dir", data.get("download_dir", "")).strip()
                 files = data.get("files", [])
                 active_mirror = data.get("active_mirror", "").strip()
                 
-                if not download_dir:
+                if not base_download_dir:
                     self.send_response(400)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
@@ -1040,9 +1084,16 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps({"success": False, "error": "At least one file must be selected."}).encode())
                     return
                 
+                provider_sub = safe_folder_name(active_mirror)
+                if provider_sub:
+                    computed_dir = os.path.join(base_download_dir, safe_folder_name(game_title), provider_sub)
+                else:
+                    computed_dir = os.path.join(base_download_dir, safe_folder_name(game_title))
+                
                 with state_lock:
                     state["game_title"] = game_title
-                    state["download_dir"] = os.path.abspath(download_dir)
+                    state["base_download_dir"] = os.path.abspath(base_download_dir)
+                    state["download_dir"] = os.path.abspath(computed_dir)
                     state["files"] = files
                     state["active_mirror"] = active_mirror
                     state["is_configured"] = True
@@ -1077,6 +1128,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 state["game_title"] = ""
                 state["files"] = []
                 state["download_dir"] = ""
+                state["base_download_dir"] = ""
                 state["is_configured"] = False
                 state["is_running"] = False
                 state["should_stop"] = False
@@ -1093,9 +1145,100 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"success": True}).encode())
             return
 
+        elif path == "/api/switch_provider":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                new_mirror = data.get("new_mirror", "").strip()
+                files = data.get("files", [])
+                delete_old = data.get("delete_old", False)
+                
+                if not new_mirror or not files:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": "New mirror name and files are required."}).encode())
+                    return
+                
+                was_running = False
+                with state_lock:
+                    if state["is_running"]:
+                        was_running = True
+                        state["should_stop"] = True
+                        state["is_running"] = False
+                
+                import time
+                for _ in range(50):
+                    with state_lock:
+                        if state["active_workers_count"] == 0:
+                            break
+                    time.sleep(0.1)
+                
+                with state_lock:
+                    old_download_dir = state["download_dir"]
+                    game_title = state["game_title"]
+                    base_download_dir = state.get("base_download_dir", state["default_download_dir"])
+                    if not base_download_dir:
+                        base_download_dir = state["default_download_dir"]
+                    
+                    state["active_mirror"] = new_mirror
+                    new_download_dir = os.path.abspath(os.path.join(base_download_dir, safe_folder_name(game_title), safe_folder_name(new_mirror)))
+                    state["download_dir"] = new_download_dir
+                    
+                    if delete_old and old_download_dir and os.path.exists(old_download_dir) and old_download_dir != new_download_dir:
+                        import shutil
+                        try:
+                            shutil.rmtree(old_download_dir)
+                            add_log(f"Deleted old provider directory: {old_download_dir}")
+                        except Exception as delete_err:
+                            add_log(f"Warning: Failed to delete old directory: {str(delete_err)}")
+                            
+                    new_files_map = {f["filename"]: f for f in files}
+                    updated_files = []
+                    for f in state["files"]:
+                        fn = f["filename"]
+                        if fn in new_files_map:
+                            new_info = new_files_map[fn]
+                            f["url"] = new_info["url"]
+                            f["status"] = "waiting"
+                            f["downloaded"] = 0
+                            f["progress"] = 0
+                            if new_info.get("size", 0) > 0:
+                                f["size"] = new_info["size"]
+                        updated_files.append(f)
+                    state["files"] = updated_files
+                    
+                    os.makedirs(new_download_dir, exist_ok=True)
+                    state["should_stop"] = False
+                    
+                initialize_queue_on_disk()
+                
+                if was_running:
+                    with state_lock:
+                        state["is_running"] = True
+                        workers_to_start = state["max_workers"]
+                        add_log(f"Resuming download with new provider: {new_mirror}")
+                        for _ in range(workers_to_start):
+                            threading.Thread(target=download_worker, daemon=True).start()
+                            
+                add_log(f"Successfully switched provider to: {new_mirror}")
+                
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode())
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+                return
+
 def start_server():
     server_address = ('127.0.0.1', 8000)
-    httpd = HTTPServer(server_address, APIRequestHandler)
+    httpd = ThreadingHTTPServer(server_address, APIRequestHandler)
     print("Web server running at http://localhost:8000")
     try:
         httpd.serve_forever()

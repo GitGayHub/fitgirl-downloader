@@ -27,7 +27,14 @@ const elMirrorSelectSection = document.getElementById("mirror-select-section");
 const elMirrorsContainer = document.getElementById("mirrors-container");
 const elGameNameInput = document.getElementById("game-name-input");
 const elSaveDirInput = document.getElementById("save-dir-input");
-const elFillDefaultDirBtn = document.getElementById("btn-fill-default-dir");
+const elBrowseDirBtn = document.getElementById("btn-browse-dir");
+const elChangeProviderBtn = document.getElementById("btn-change-provider");
+const elProviderModal = document.getElementById("provider-modal");
+const elCloseProviderModalBtn = document.getElementById("btn-close-provider-modal");
+const elCancelProviderSwitchBtn = document.getElementById("btn-cancel-provider-switch");
+const elConfirmProviderSwitchBtn = document.getElementById("btn-confirm-provider-switch");
+const elModalMirrorsContainer = document.getElementById("modal-mirrors-container");
+const elChkDeleteOldFiles = document.getElementById("chk-delete-old-files");
 
 const elSelMainBtn = document.getElementById("btn-sel-main");
 const elSelAllBtn = document.getElementById("btn-sel-all");
@@ -91,6 +98,7 @@ let analyzedFiles = [];
 let smoothedSpeed = 0;
 let checkedFiles = new Set();
 let activeMirrorName = "";
+let scrapedMirrors = [];
 let scrapedMetadata = {
     original_size: "Unknown",
     repack_size: "Unknown",
@@ -114,14 +122,17 @@ function formatSpeed(bytesPerSec) {
 }
 
 function formatTime(seconds) {
-    if (seconds === -1) return "--:--";
-    if (seconds < 60) return `${seconds}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins < 60) return `${mins}m ${secs}s`;
+    if (seconds <= 0 || seconds === -1 || !isFinite(seconds)) return "Ожидание загрузки";
+    const mins = Math.ceil(seconds / 60);
+    if (mins < 60) return `~${mins} мин`;
     const hrs = Math.floor(mins / 60);
     const remMins = mins % 60;
-    return `${hrs}h ${remMins}m`;
+    if (hrs < 24) {
+        return remMins > 0 ? `~${hrs} ч ${remMins} мин` : `~${hrs} ч`;
+    }
+    const days = Math.floor(hrs / 24);
+    const remHrs = hrs % 24;
+    return remHrs > 0 ? `~${days} дн ${remHrs} ч` : `~${days} дн`;
 }
 
 function cleanFilename(name) {
@@ -226,6 +237,9 @@ async function fetchState() {
 function updateUI(newState) {
     // 1. Manage setup vs download views
     if (newState.is_configured) {
+        document.querySelector(".app-container").classList.add("has-sidebar");
+        document.querySelector(".sidebar").style.display = "flex";
+        
         elSetupView.style.display = "none";
         elDownloadView.style.display = "flex";
         
@@ -308,7 +322,7 @@ function updateUI(newState) {
             const totalSecondsLeft = Math.floor(totalBytesLeft / smoothedSpeed);
             elGlobalTimeLeft.innerText = formatTime(totalSecondsLeft);
         } else {
-            elGlobalTimeLeft.innerText = "--:--";
+            elGlobalTimeLeft.innerText = "Ожидание загрузки";
         }
         
         // 3. Extract & Install Buttons Coordination
@@ -404,6 +418,9 @@ function updateUI(newState) {
         }
     } else {
         // Setup View is Active
+        document.querySelector(".app-container").classList.remove("has-sidebar");
+        document.querySelector(".sidebar").style.display = "none";
+        
         elSetupView.style.display = "flex";
         elDownloadView.style.display = "none";
         
@@ -503,8 +520,11 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 elGameNameInput.value = data.title;
                 
                 // Prefill default directory
-                const defaultDir = appState.default_download_dir || "C:\\Downloads";
-                elSaveDirInput.value = defaultDir + "\\" + data.title.replace(/[:\/\\\*\?"<>\|]/g, '');
+                const defaultDir = appState.default_download_dir || "D:\\Downloads";
+                elSaveDirInput.value = defaultDir;
+                
+                // Store mirrors list for provider switching
+                scrapedMirrors = data.mirrors || [];
                 
                 // Show mirrors selection
                 if (data.mirrors && data.mirrors.length > 0) {
@@ -599,8 +619,8 @@ function displayConfigCard(title, files) {
     activeMirrorName = "";
     elGameNameInput.value = title;
     
-    const defaultDir = appState.default_download_dir || "C:\\Downloads";
-    elSaveDirInput.value = defaultDir + "\\" + title.replace(/[:\/\\\*\?"<>\|]/g, '');
+    const defaultDir = appState.default_download_dir || "D:\\Downloads";
+    elSaveDirInput.value = defaultDir;
     
     // Hide mirror selection since it's a direct paste
     elMirrorSelectSection.style.display = "none";
@@ -709,10 +729,24 @@ elSelNoneBtn.addEventListener("click", () => {
     updateMetadataETA();
 });
 
-elFillDefaultDirBtn.addEventListener("click", () => {
-    const title = elGameNameInput.value.trim() || "Custom Repack";
-    const defaultDir = appState.default_download_dir || "C:\\Downloads";
-    elSaveDirInput.value = defaultDir + "\\" + title.replace(/[:\/\\\*\?"<>\|]/g, '');
+elBrowseDirBtn.addEventListener("click", async () => {
+    elBrowseDirBtn.setAttribute("disabled", "true");
+    elBrowseDirBtn.innerText = "Opening...";
+    try {
+        const response = await fetch("/api/browse_folder");
+        const data = await response.json();
+        if (response.ok && data.success && data.path) {
+            elSaveDirInput.value = data.path;
+        } else if (data.error) {
+            console.log("Folder browser result:", data.error);
+        }
+    } catch (e) {
+        console.error("Error browsing folder:", e);
+        alert("Failed to open folder picker.");
+    } finally {
+        elBrowseDirBtn.removeAttribute("disabled");
+        elBrowseDirBtn.innerText = "Browse...";
+    }
 });
 
 // Confirm download queue configuration
@@ -742,6 +776,7 @@ elConfirmQueueBtn.addEventListener("click", async () => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 game_title: gameTitle,
+                base_download_dir: downloadDir,
                 download_dir: downloadDir,
                 files: selectedFiles,
                 active_mirror: activeMirrorName
@@ -870,6 +905,104 @@ window.triggerRetry = async (index) => {
         console.error("Failed to retry download:", e);
     }
 };
+
+// Provider Switching Modal Listeners
+elChangeProviderBtn.addEventListener("click", () => {
+    openChangeProviderModal();
+});
+
+elCloseProviderModalBtn.addEventListener("click", () => {
+    elProviderModal.style.display = "none";
+});
+
+elCancelProviderSwitchBtn.addEventListener("click", () => {
+    elProviderModal.style.display = "none";
+});
+
+function openChangeProviderModal() {
+    elModalMirrorsContainer.innerHTML = "";
+    
+    // Filter out active mirror
+    const availableMirrors = scrapedMirrors.filter(m => m.name !== appState.active_mirror);
+    
+    if (availableMirrors.length === 0) {
+        elModalMirrorsContainer.innerHTML = "<p style='color: var(--text-muted); font-size: 0.85rem;'>Нет других доступных зеркал для этого репака.</p>";
+        elConfirmProviderSwitchBtn.setAttribute("disabled", "true");
+    } else {
+        availableMirrors.forEach(m => {
+            const pill = document.createElement("button");
+            pill.className = "mirror-pill";
+            pill.innerText = m.name;
+            pill.addEventListener("click", () => {
+                document.querySelectorAll("#modal-mirrors-container .mirror-pill").forEach(p => p.classList.remove("active"));
+                pill.classList.add("active");
+                
+                elConfirmProviderSwitchBtn.removeAttribute("disabled");
+                elConfirmProviderSwitchBtn.setAttribute("data-mirror-url", m.url);
+                elConfirmProviderSwitchBtn.setAttribute("data-mirror-name", m.name);
+            });
+            elModalMirrorsContainer.appendChild(pill);
+        });
+        elConfirmProviderSwitchBtn.setAttribute("disabled", "true");
+    }
+    
+    elChkDeleteOldFiles.checked = false;
+    elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
+    elProviderModal.style.display = "flex";
+}
+
+elConfirmProviderSwitchBtn.addEventListener("click", async () => {
+    const newMirrorUrl = elConfirmProviderSwitchBtn.getAttribute("data-mirror-url");
+    const newMirrorName = elConfirmProviderSwitchBtn.getAttribute("data-mirror-name");
+    const deleteOld = elChkDeleteOldFiles.checked;
+    
+    if (!newMirrorUrl || !newMirrorName) return;
+    
+    elConfirmProviderSwitchBtn.setAttribute("disabled", "true");
+    elConfirmProviderSwitchBtn.innerText = "Resolving New Mirror...";
+    
+    try {
+        const analyzeRes = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: newMirrorUrl })
+        });
+        
+        const analyzeData = await analyzeRes.json();
+        if (!analyzeRes.ok || !analyzeData.success) {
+            alert("Failed to resolve links from the new mirror: " + (analyzeData.error || "Unknown error"));
+            elConfirmProviderSwitchBtn.removeAttribute("disabled");
+            elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
+            return;
+        }
+        
+        elConfirmProviderSwitchBtn.innerText = "Switching Provider...";
+        const switchRes = await fetch("/api/switch_provider", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                new_mirror: newMirrorName,
+                files: analyzeData.files,
+                delete_old: deleteOld
+            })
+        });
+        
+        const switchData = await switchRes.json();
+        if (switchRes.ok && switchData.success) {
+            elProviderModal.style.display = "none";
+            fetchState();
+        } else {
+            alert("Failed to switch provider: " + (switchData.error || "Unknown error"));
+            elConfirmProviderSwitchBtn.removeAttribute("disabled");
+            elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
+        }
+    } catch (e) {
+        console.error("Error switching provider:", e);
+        alert("Connection error switching provider.");
+        elConfirmProviderSwitchBtn.removeAttribute("disabled");
+        elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
+    }
+});
 
 // Start Polling Loop
 fetchState();
