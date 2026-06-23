@@ -723,9 +723,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                 if 'paste.fitgirl-repacks.site' in href:
                                     text = a.get_text(strip=True)
                                     name = text.replace("Filehoster:", "").replace("Mirror:", "").strip()
+                                    if "torrent" in name.lower() or "torrent" in href.lower():
+                                        continue
                                     if not name:
                                         name = "PrivateBin Mirror"
-                                    if not any(m["url"] == href for m in mirrors):
+                                    if not any(m["url"] == href or m["name"] == name for m in mirrors):
                                         mirrors.append({"name": name, "url": href})
                                         
                         if not mirrors and content_el:
@@ -735,7 +737,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                 if any(host in href for host in ['fuckingfast.co', 'qiwi.gg', 'datanodes.to', 'krakenfiles.com', 'gofile.io', 'pixeldrain.com']):
                                     text = a.get_text(strip=True)
                                     name = text if text else href.split('/')[2]
-                                    if not any(m["url"] == href for m in mirrors):
+                                    if "torrent" in name.lower() or "torrent" in href.lower():
+                                        continue
+                                    if not any(m["url"] == href or m["name"] == name for m in mirrors):
                                         mirrors.append({"name": name, "url": href})
                                         
                         self.send_response(200)
