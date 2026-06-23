@@ -20,7 +20,7 @@
                 </div>
             </div>
             
-            <div class="status-summary">
+            <div class="status-summary" id="sidebar-status-summary" style="display: none;">
                 <div class="summary-label">OVERALL PROGRESS</div>
                 <div class="progress-container">
                     <svg class="progress-circle" viewBox="0 0 100 100">
@@ -42,7 +42,14 @@
                 </div>
             </div>
             
-            <div class="sidebar-actions">
+            <div class="sidebar-setup-info" id="sidebar-setup-info">
+                <div class="setup-welcome-card">
+                    <h3>Welcome</h3>
+                    <p>Enter a repack page or link to configure a download queue.</p>
+                </div>
+            </div>
+            
+            <div class="sidebar-actions" id="sidebar-actions-container" style="display: none;">
                 <button id="btn-start-pause" class="btn btn-primary btn-pulse">
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                         <path d="M8 5v14l11-7z"/>
@@ -61,69 +68,163 @@
                     </svg>
                     <span>Launch Installer</span>
                 </button>
+                <button id="btn-reset-session" class="btn btn-accent" style="margin-top: 15px; background-color: rgba(231, 76, 60, 0.15); border-color: rgba(231, 76, 60, 0.3); color: #e74c3c;">
+                    Reset Downloader
+                </button>
             </div>
         </aside>
 
         <!-- Main Workspace -->
         <main class="main-content">
-            <header class="header">
-                <div class="title-section">
-                    <span class="badge">GAME REPACK</span>
-                    <h2>Call of Duty: Modern Warfare (2019)</h2>
-                    <p class="subtitle">Campaign Mode + Special Ops | Complete Packaged Download</p>
-                </div>
-                <div class="settings-section">
-                    <div class="folder-section">
-                        <label for="download-dir-input">Save Directory</label>
-                        <div class="folder-input-wrapper">
-                            <input type="text" id="download-dir-input" placeholder="Loading folder...">
-                            <button id="btn-save-dir" class="btn btn-accent">Save</button>
+            <!-- SETUP VIEW -->
+            <div id="setup-view" class="view-container">
+                <header class="header">
+                    <div class="title-section">
+                        <span class="badge">INITIALIZE</span>
+                        <h2>Download Setup</h2>
+                        <p class="subtitle">Enter FitGirl repack links to analyze and extract files</p>
+                    </div>
+                </header>
+
+                <div class="setup-wizard">
+                    <!-- Step 1: Input URL -->
+                    <div class="wizard-card" id="url-input-card">
+                        <h3>1. Paste Repack Link</h3>
+                        <p class="wizard-desc">Paste a <strong>fitgirl-repacks.site</strong> page URL, a <strong>PrivateBin</strong> URL (paste.fitgirl...), or a <strong>raw list of direct download links</strong>.</p>
+                        
+                        <div class="url-input-wrapper">
+                            <textarea id="url-textarea" placeholder="Example:&#10;https://fitgirl-repacks.site/arma-reforger/&#10;OR&#10;http://paste.fitgirl-repacks.site/?34673303ae842272#CvxbxuAdHZnx91ARYUbJE4Q3KbzUyXTGXvu9hbg4c4RF&#10;OR&#10;https://fuckingfast.co/xxxx#part1.rar&#10;https://fuckingfast.co/yyyy#part2.rar"></textarea>
+                            <button id="btn-analyze" class="btn btn-primary">
+                                <span class="spinner" id="analyze-spinner" style="display: none; width: 16px; height: 16px; border-width: 2px;"></span>
+                                <span id="analyze-btn-text">Analyze Link</span>
+                            </button>
+                        </div>
+                        <div id="analyze-error" class="error-text" style="display: none; color: #e74c3c; margin-top: 10px; font-size: 0.85rem;"></div>
+                    </div>
+
+                    <!-- Step 2: Configure Mirror & Files (Visible after successful analysis) -->
+                    <div class="wizard-card" id="config-card" style="display: none; margin-top: 20px;">
+                        <h3>2. Configure Download Queue</h3>
+                        
+                        <!-- Mirror Selector (Visible if mirrors found) -->
+                        <div class="config-section" id="mirror-select-section" style="display: none;">
+                            <label>Select Mirror Hoster</label>
+                            <div class="mirrors-grid" id="mirrors-container"></div>
+                        </div>
+
+                        <!-- Game Name & Dir -->
+                        <div class="config-form-grid">
+                            <div class="form-group">
+                                <label for="game-name-input">Game Folder Name</label>
+                                <input type="text" id="game-name-input" placeholder="e.g., Arma Reforger">
+                            </div>
+                            <div class="form-group">
+                                <label for="save-dir-input">Save Directory</label>
+                                <div class="save-dir-input-wrapper">
+                                    <input type="text" id="save-dir-input" placeholder="e.g., C:\Users\User\Downloads">
+                                    <button class="btn btn-accent" id="btn-fill-default-dir" style="padding: 8px 12px; font-size: 0.75rem;">Default Path</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Component Checklist -->
+                        <div class="config-section" style="margin-top: 20px;">
+                            <div class="checklist-header">
+                                <label>Select Files to Download</label>
+                                <div class="checklist-actions">
+                                    <button id="btn-sel-main" class="btn btn-accent btn-sm">Main Game Only</button>
+                                    <button id="btn-sel-all" class="btn btn-accent btn-sm">Select All</button>
+                                    <button id="btn-sel-none" class="btn btn-accent btn-sm">Deselect All</button>
+                                </div>
+                            </div>
+
+                            <div class="files-checklist-container">
+                                <!-- Groups -->
+                                <div class="file-group-box">
+                                    <div class="file-group-title">Main Game Parts & Setup</div>
+                                    <div class="file-checkbox-list" id="files-list-main"></div>
+                                </div>
+                                <div class="file-group-box" id="file-group-lang-box" style="margin-top: 12px;">
+                                    <div class="file-group-title">Optional Language Packs (Unchecked by default)</div>
+                                    <div class="file-checkbox-list" id="files-list-lang"></div>
+                                </div>
+                                <div class="file-group-box" id="file-group-other-box" style="margin-top: 12px;">
+                                    <div class="file-group-title">Optional Bonus Files / Extras</div>
+                                    <div class="file-checkbox-list" id="files-list-other"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Start Trigger -->
+                        <div class="confirm-actions-bar" style="margin-top: 25px; display: flex; justify-content: flex-end;">
+                            <button id="btn-confirm-queue" class="btn btn-primary btn-pulse-green" style="background-color: #2ecc71; box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3);">
+                                Confirm and Start Download
+                            </button>
                         </div>
                     </div>
-                    <div class="threads-section">
-                        <label for="threads-select">Parallel Threads</label>
-                        <div class="threads-input-wrapper">
-                            <select id="threads-select">
-                                <option value="1">1 Thread</option>
-                                <option value="2">2 Threads</option>
-                                <option value="3">3 Threads</option>
-                                <option value="4" selected>4 Threads</option>
-                                <option value="5">5 Threads</option>
-                                <option value="6">6 Threads</option>
-                                <option value="7">7 Threads</option>
-                                <option value="8">8 Threads</option>
-                            </select>
-                            <button id="btn-save-threads" class="btn btn-accent">Apply</button>
+                </div>
+            </div>
+
+            <!-- DOWNLOAD VIEW -->
+            <div id="download-view" class="view-container" style="display: none;">
+                <header class="header">
+                    <div class="title-section">
+                        <span class="badge">DOWNLOADING</span>
+                        <h2 id="active-game-title">Game Title</h2>
+                        <p class="subtitle" id="active-game-subtitle">Save folder: ...</p>
+                    </div>
+                    <div class="settings-section">
+                        <div class="folder-section">
+                            <label for="download-dir-display">Active Directory</label>
+                            <div class="folder-input-wrapper">
+                                <input type="text" id="download-dir-display" readonly disabled style="opacity: 0.7;">
+                            </div>
+                        </div>
+                        <div class="threads-section">
+                            <label for="threads-select">Parallel Threads</label>
+                            <div class="threads-input-wrapper">
+                                <select id="threads-select">
+                                    <option value="1">1 Thread</option>
+                                    <option value="2">2 Threads</option>
+                                    <option value="3">3 Threads</option>
+                                    <option value="4" selected>4 Threads</option>
+                                    <option value="5">5 Threads</option>
+                                    <option value="6">6 Threads</option>
+                                    <option value="7">7 Threads</option>
+                                    <option value="8">8 Threads</option>
+                                </select>
+                                <button id="btn-save-threads" class="btn btn-accent">Apply</button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            </header>
+                </header>
 
-            <section class="queue-section">
-                <div class="section-header">
-                    <h3>Download Queue</h3>
-                    <div class="queue-stats">
-                        <span id="queue-completed-count">0 / 0 Completed</span>
+                <section class="queue-section">
+                    <div class="section-header">
+                        <h3>Download Queue</h3>
+                        <div class="queue-stats">
+                            <span id="queue-completed-count">0 / 0 Completed</span>
+                        </div>
                     </div>
-                </div>
 
-                <div class="queue-list" id="queue-list-container">
-                    <!-- File item rows will be injected dynamically -->
-                    <div class="loading-placeholder">
-                        <div class="spinner"></div>
-                        <p>Initializing and loading queue items...</p>
+                    <div class="queue-list" id="queue-list-container">
+                        <!-- File rows loaded dynamically -->
+                        <div class="loading-placeholder">
+                            <div class="spinner"></div>
+                            <p>Loading queue items...</p>
+                        </div>
                     </div>
-                </div>
-            </section>
+                </section>
+            </div>
 
-            <!-- Console Log Panel -->
-            <section class="console-section">
+            <!-- Console Log Panel (Shared at the bottom) -->
+            <section class="console-section" style="margin-top: 10px;">
                 <div class="section-header">
                     <h3>System Log</h3>
                     <button id="btn-clear-logs" class="btn-text">Clear logs</button>
                 </div>
                 <div class="console-box" id="console-box">
-                    <div class="console-line system">[SYSTEM] Ready. Click Start to begin downloading.</div>
+                    <div class="console-line system">[SYSTEM] Ready. Copy repack URL to configure queue.</div>
                 </div>
             </section>
         </main>
