@@ -41,6 +41,7 @@ const elConfirmQueueBtn = document.getElementById("btn-confirm-queue");
 
 const elActiveMirrorBadge = document.getElementById("active-mirror-badge-container");
 const elActiveMirrorName = document.getElementById("active-mirror-name");
+const elDownloadMirrorBadge = document.getElementById("download-mirror-badge");
 const elChecklistLoadingSpinner = document.getElementById("checklist-loading-spinner");
 
 // New Setup Dashboard Elements
@@ -89,6 +90,7 @@ let appState = {
 let analyzedFiles = [];
 let smoothedSpeed = 0;
 let checkedFiles = new Set();
+let activeMirrorName = "";
 let scrapedMetadata = {
     original_size: "Unknown",
     repack_size: "Unknown",
@@ -235,6 +237,14 @@ function updateUI(newState) {
         elActiveGameTitle.innerText = newState.game_title || "Custom Repack";
         elActiveGameSubtitle.innerText = `Save directory: ${newState.download_dir}`;
         elDownloadDirDisplay.value = newState.download_dir;
+        
+        // Sync mirror badge
+        if (newState.active_mirror) {
+            elDownloadMirrorBadge.innerText = `Mirror: ${newState.active_mirror}`;
+            elDownloadMirrorBadge.style.display = "inline-block";
+        } else {
+            elDownloadMirrorBadge.style.display = "none";
+        }
         
         // Sync worker select
         if (newState.max_workers && elThreadsSelect.value !== String(newState.max_workers) && document.activeElement !== elThreadsSelect) {
@@ -419,6 +429,7 @@ function updateUI(newState) {
 }
 
 function resetSetupDashboard() {
+    activeMirrorName = "";
     elSetupDashboard.style.display = "none";
     elConfigCard.style.display = "none";
     elMirrorSelectSection.style.display = "none";
@@ -544,6 +555,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
 
 // Load links nested when user clicks mirror
 async function loadMirrorLinks(mirrorUrl, mirrorName) {
+    activeMirrorName = mirrorName;
     elConfirmQueueBtn.setAttribute("disabled", "true");
     elConfirmQueueBtn.innerText = "Resolving Mirror Paste...";
     
@@ -584,6 +596,7 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
 
 // Display config card for direct files/PrivateBin
 function displayConfigCard(title, files) {
+    activeMirrorName = "";
     elGameNameInput.value = title;
     
     const defaultDir = appState.default_download_dir || "C:\\Downloads";
@@ -730,7 +743,8 @@ elConfirmQueueBtn.addEventListener("click", async () => {
             body: JSON.stringify({
                 game_title: gameTitle,
                 download_dir: downloadDir,
-                files: selectedFiles
+                files: selectedFiles,
+                active_mirror: activeMirrorName
             })
         });
         

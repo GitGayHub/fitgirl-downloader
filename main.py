@@ -53,7 +53,7 @@ state = {
     "game_title": "",
     "files": [],
     "download_dir": "",
-    "default_download_dir": os.path.join(os.path.expanduser("~"), "Downloads"),
+    "default_download_dir": "D:\\Downloads",
     "is_configured": False,
     "is_running": False,
     "active_index": -1,
@@ -66,10 +66,12 @@ state = {
     "is_extracted": False,
     "is_extracting": False,
     "extraction_progress": 0,
-    "average_download_speed": 5000000.0
+    "average_download_speed": 5000000.0,
+    "active_mirror": ""
 }
 
 state_lock = threading.RLock()
+extraction_lock = threading.Lock()
 
 # Cache mechanism for file sizes
 cache_path = os.path.join(os.path.dirname(__file__), "sizes_cache.json")
@@ -128,6 +130,121 @@ def extract_direct_link(page_url):
     except Exception as e:
         add_log(f"Extraction exception: {str(e)}")
         return None
+
+def extract_datanodes_link(page_url):
+    """Uses Playwright to extract the direct download link from DataNodes."""
+    with extraction_lock:
+        from playwright.sync_api import sync_playwright
+        add_log(f"Extracting DataNodes direct link for: {page_url}")
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                
+                # Bypass webdriver detection
+                page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                
+                page.goto(page_url)
+                page.wait_for_load_state("networkidle")
+                
+                # Click 1: Continue to Download
+                btn1 = page.locator("#method_free").first
+                if btn1.count() > 0:
+                    btn1.click()
+                    page.wait_for_timeout(8000)
+                    
+                    # Wait 6 seconds on Page 2 for Cloudflare silent challenge and Google reCAPTCHA
+                    page.wait_for_timeout(6000)
+                    
+                    # Click 2: Continue to Download (page 2) with retry loop
+                    btn2 = page.locator("#method_free").first
+                    page3_reached = False
+                    for attempt in range(3):
+                        add_log(f"Page 2: Clicking second button (attempt {attempt+1})...")
+                        if btn2.count() > 0:
+                            try:
+                                btn2.click()
+                            except Exception as click_err:
+                                add_log(f"Page 2 click exception: {click_err}")
+                        page.wait_for_timeout(6000)
+                        
+                        # Check if Page 3 loaded by looking for Free Download button
+                        free_btn = page.locator("button:has-text('Free Download')")
+                        if free_btn.count() == 0:
+                            free_btn = page.locator("text=Free Download")
+                        if free_btn.count() > 0:
+                            page3_reached = True
+                            break
+                            
+                    if page3_reached:
+                        
+                        # Click 3 (First): Free Download (page 3) to trigger ad popup
+                        free_btn = page.locator("button:has-text('Free Download')")
+                        if free_btn.count() == 0:
+                            free_btn = page.locator("text=Free Download")
+                            
+                        if free_btn.count() > 0:
+                            try:
+                                with context.expect_page(timeout=8000) as popup_info:
+                                    free_btn.first.click()
+                                popup = popup_info.value
+                                popup.close()
+                            except Exception:
+                                try:
+                                    free_btn.first.click()
+                                except Exception:
+                                    pass
+                                    
+                            page.wait_for_timeout(4000)
+                            
+                            # Click 3 (Second): Free Download again to start countdown if still present
+                            try:
+                                if free_btn.count() > 0 and free_btn.first.is_visible() and "Free Download" in free_btn.first.inner_text():
+                                    with context.expect_page(timeout=5000) as popup_info2:
+                                        free_btn.first.click()
+                                    popup2 = popup_info2.value
+                                    popup2.close()
+                            except Exception:
+                                pass
+                                
+                            # Monitor and wait for "Start Download" countdown (up to 24 seconds)
+                            start_btn = page.locator("text=Start Download")
+                            start_visible = False
+                            for _ in range(8):
+                                page.wait_for_timeout(3000)
+                                if start_btn.count() > 0 and start_btn.is_visible():
+                                    start_visible = True
+                                    break
+                                
+                            if start_visible:
+                                try:
+                                    # Click 4: Start Download and expect download
+                                    with page.expect_download(timeout=30000) as download_info:
+                                        start_btn.click()
+                                    download = download_info.value
+                                    dl_url = download.url
+                                    download.cancel()
+                                    
+                                    add_log(f"Successfully extracted DataNodes direct link!")
+                                    browser.close()
+                                    return dl_url
+                                except Exception as e:
+                                    add_log(f"Error clicking Start Download or starting download: {str(e)}")
+                            else:
+                                add_log("Start Download button never became visible on Page 4.")
+                        else:
+                            add_log("Free Download button not found on Page 3.")
+                    else:
+                        add_log("Second #method_free button not found on Page 2.")
+                else:
+                    add_log("First #method_free button not found on Page 1.")
+                
+                browser.close()
+                return None
+        except Exception as e:
+            add_log(f"DataNodes extraction exception: {str(e)}")
+            return None
 
 def get_expected_size(filename, file_type):
     if filename in sizes_cache:
@@ -308,7 +425,7 @@ def download_file(index, file_info):
         
     add_log(f"Starting download for {filename}...")
     
-    # Step 1: Extract direct download link if FuckingFast
+    # Step 1: Extract direct download link based on hoster
     if "fuckingfast.co" in page_url:
         direct_link = extract_direct_link(page_url)
         if not direct_link:
@@ -316,6 +433,18 @@ def download_file(index, file_info):
                 state["files"][index]["status"] = "failed"
                 state["files"][index]["error"] = "Could not bypass Cloudflare for FuckingFast."
             return False
+    elif "datanodes.to" in page_url:
+        direct_link = extract_datanodes_link(page_url)
+        if not direct_link:
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Could not extract direct link for DataNodes."
+            return False
+    elif "multiup.io" in page_url:
+        with state_lock:
+            state["files"][index]["status"] = "failed"
+            state["files"][index]["error"] = "Cloudflare Turnstile challenge blocked headless scraper. Please use DataNodes or FuckingFast mirrors."
+        return False
     else:
         direct_link = page_url
         
@@ -354,6 +483,15 @@ def download_file(index, file_info):
     try:
         response = requests.get(direct_link, headers=headers, stream=True, timeout=30)
         
+        # Check if we accidentally downloaded an HTML page instead of binary data
+        content_type = response.headers.get('content-type', '').lower()
+        if 'text/html' in content_type:
+            add_log(f"Error: Server returned HTML page instead of binary stream for {filename}.")
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Bypass failed: server returned HTML page instead of file data."
+            return False
+            
         if response.status_code == 206:
             mode = "ab"
             downloaded = resume_byte
@@ -428,6 +566,13 @@ def download_file(index, file_info):
                         bytes_in_sec = 0
                         last_time = curr_time
                         
+        if downloaded == 0:
+            add_log(f"Error: Downloaded 0 bytes for {filename}.")
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Downloaded 0 bytes. Direct link might have expired."
+            return False
+            
         with state_lock:
             state["files"][index]["status"] = "finished"
             state["files"][index]["progress"] = 100
@@ -879,6 +1024,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 game_title = data.get("game_title", "Custom Game").strip()
                 download_dir = data.get("download_dir", "").strip()
                 files = data.get("files", [])
+                active_mirror = data.get("active_mirror", "").strip()
                 
                 if not download_dir:
                     self.send_response(400)
@@ -898,6 +1044,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     state["game_title"] = game_title
                     state["download_dir"] = os.path.abspath(download_dir)
                     state["files"] = files
+                    state["active_mirror"] = active_mirror
                     state["is_configured"] = True
                     state["is_running"] = False
                     state["should_stop"] = False
