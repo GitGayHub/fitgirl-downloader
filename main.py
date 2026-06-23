@@ -181,8 +181,35 @@ def parse_links_from_text(text):
                     "speed": 0,
                     "time_left": -1,
                     "error": ""
-                })
+                 })
+    prefill_part_sizes(parsed_files)
     return parsed_files
+
+def prefill_part_sizes(files):
+    # Find all files with part numbers
+    part_files = []
+    max_part = 0
+    
+    for f in files:
+        if f["type"] == "game_part" or f["filename"].endswith(".rar"):
+            # Check for part number in filename
+            match = re.search(r'\.part(\d+)\.rar$', f["filename"], re.IGNORECASE)
+            if match:
+                part_num = int(match.group(1))
+                part_files.append((f, part_num))
+                if part_num > max_part:
+                    max_part = part_num
+                    
+    # Now prefill size for all parts except the last one (max_part)
+    for f, part_num in part_files:
+        if part_num < max_part:
+            url_lower = f["url"].lower()
+            if "fuckingfast" in url_lower or "datanodes" in url_lower:
+                f["size"] = 2 * 1024 * 1024 * 1024  # 2 GB
+            elif "multiupload" in url_lower or "multiup" in url_lower:
+                f["size"] = int(1.95 * 1024 * 1024 * 1024)  # 1.95 GB
+            else:
+                f["size"] = 2 * 1024 * 1024 * 1024  # Default to 2 GB
 
 def guess_game_title(files):
     if not files:

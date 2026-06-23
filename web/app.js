@@ -39,6 +39,10 @@ const elFileGroupLangBox = document.getElementById("file-group-lang-box");
 const elFileGroupOtherBox = document.getElementById("file-group-other-box");
 const elConfirmQueueBtn = document.getElementById("btn-confirm-queue");
 
+const elActiveMirrorBadge = document.getElementById("active-mirror-badge-container");
+const elActiveMirrorName = document.getElementById("active-mirror-name");
+const elChecklistLoadingSpinner = document.getElementById("checklist-loading-spinner");
+
 // Download View Elements
 const elActiveGameTitle = document.getElementById("active-game-title");
 const elActiveGameSubtitle = document.getElementById("active-game-subtitle");
@@ -129,7 +133,7 @@ function updateUI(newState) {
     // 1. Manage setup vs download views
     if (newState.is_configured) {
         elSetupView.style.display = "none";
-        elDownloadView.style.display = "block";
+        elDownloadView.style.display = "flex";
         
         elSidebarSetupInfo.style.display = "none";
         elSidebarStatusSummary.style.display = "flex";
@@ -298,7 +302,7 @@ function updateUI(newState) {
         }
     } else {
         // Setup View is Active
-        elSetupView.style.display = "block";
+        elSetupView.style.display = "flex";
         elDownloadView.style.display = "none";
         
         elSidebarSetupInfo.style.display = "block";
@@ -368,7 +372,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                             pill.classList.add("active");
                             
                             // Load this mirror's PrivateBin/Direct links
-                            loadMirrorLinks(m.url);
+                            loadMirrorLinks(m.url, m.name);
                         });
                         elMirrorsContainer.appendChild(pill);
                     });
@@ -400,9 +404,13 @@ elAnalyzeBtn.addEventListener("click", async () => {
 });
 
 // Load links nested when user clicks mirror
-async function loadMirrorLinks(mirrorUrl) {
+async function loadMirrorLinks(mirrorUrl, mirrorName) {
     elConfirmQueueBtn.setAttribute("disabled", "true");
     elConfirmQueueBtn.innerText = "Resolving Mirror Paste...";
+    
+    // Show checklist loading overlay
+    elChecklistLoadingSpinner.style.display = "flex";
+    elActiveMirrorBadge.style.display = "none";
     
     try {
         const response = await fetch("/api/analyze", {
@@ -415,6 +423,11 @@ async function loadMirrorLinks(mirrorUrl) {
         if (response.ok && data.success) {
             analyzedFiles = data.files;
             renderChecklist(data.files);
+            
+            // Show mirror badge and update label
+            elActiveMirrorName.innerText = mirrorName;
+            elActiveMirrorBadge.style.display = "inline-block";
+            
             elConfirmQueueBtn.removeAttribute("disabled");
             elConfirmQueueBtn.innerText = "Confirm and Start Download";
         } else {
@@ -423,6 +436,8 @@ async function loadMirrorLinks(mirrorUrl) {
     } catch (e) {
         console.error("Error loading mirror:", e);
         alert("Failed to load mirror. Check internet connection.");
+    } finally {
+        elChecklistLoadingSpinner.style.display = "none";
     }
 }
 
@@ -432,6 +447,10 @@ function displayConfigCard(title, files) {
     
     const defaultDir = appState.default_download_dir || "C:\\Downloads";
     elSaveDirInput.value = defaultDir + "\\" + title.replace(/[:\/\\\*\?"<>\|]/g, '');
+    
+    // Hide mirror selection since it's a direct paste
+    elMirrorSelectSection.style.display = "none";
+    elActiveMirrorBadge.style.display = "none";
     
     analyzedFiles = files;
     renderChecklist(files);

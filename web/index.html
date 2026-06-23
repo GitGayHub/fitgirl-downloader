@@ -6,9 +6,10 @@
     <title>FitGirl Repack Automated Downloader</title>
     <link rel="stylesheet" href="style.css">
     <script src="app.js" defer></script>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
+    <div class="glass-bg-glow"></div>
     <div class="app-container">
         <!-- Sidebar / Navigation -->
         <aside class="sidebar">
@@ -44,7 +45,8 @@
             
             <div class="sidebar-setup-info" id="sidebar-setup-info">
                 <div class="setup-welcome-card">
-                    <h3>Welcome</h3>
+                    <div class="liquid-bubble"></div>
+                    <h3>Control Panel</h3>
                     <p>Enter a repack page or link to configure a download queue.</p>
                 </div>
             </div>
@@ -69,7 +71,7 @@
                     <span>Launch Installer</span>
                 </button>
                 <button id="btn-reset-session" class="btn btn-accent" style="margin-top: 15px; background-color: rgba(231, 76, 60, 0.15); border-color: rgba(231, 76, 60, 0.3); color: #e74c3c;">
-                    Reset Downloader
+                    Reset Session
                 </button>
             </div>
         </aside>
@@ -89,21 +91,23 @@
                 <div class="setup-wizard">
                     <!-- Step 1: Input URL -->
                     <div class="wizard-card" id="url-input-card">
+                        <div class="card-glass-shine"></div>
                         <h3>1. Paste Repack Link</h3>
                         <p class="wizard-desc">Paste a <strong>fitgirl-repacks.site</strong> page URL, a <strong>PrivateBin</strong> URL (paste.fitgirl...), or a <strong>raw list of direct download links</strong>.</p>
                         
                         <div class="url-input-wrapper">
-                            <textarea id="url-textarea" placeholder="Example:&#10;https://fitgirl-repacks.site/arma-reforger/&#10;OR&#10;http://paste.fitgirl-repacks.site/?34673303ae842272#CvxbxuAdHZnx91ARYUbJE4Q3KbzUyXTGXvu9hbg4c4RF&#10;OR&#10;https://fuckingfast.co/xxxx#part1.rar&#10;https://fuckingfast.co/yyyy#part2.rar"></textarea>
+                            <textarea id="url-textarea" placeholder="Example:&#10;https://fitgirl-repacks.site/arma-reforger/&#10;OR&#10;http://paste.fitgirl-repacks.site/?34673303ae842272#CvxbxuAdHZnx91ARYUbJE4Q3KbzUyXTGXvu9hbg4c4RF"></textarea>
                             <button id="btn-analyze" class="btn btn-primary">
                                 <span class="spinner" id="analyze-spinner" style="display: none; width: 16px; height: 16px; border-width: 2px;"></span>
                                 <span id="analyze-btn-text">Analyze Link</span>
                             </button>
                         </div>
-                        <div id="analyze-error" class="error-text" style="display: none; color: #e74c3c; margin-top: 10px; font-size: 0.85rem;"></div>
+                        <div id="analyze-error" class="error-text" style="display: none;"></div>
                     </div>
 
                     <!-- Step 2: Configure Mirror & Files (Visible after successful analysis) -->
                     <div class="wizard-card" id="config-card" style="display: none; margin-top: 20px;">
+                        <div class="card-glass-shine"></div>
                         <h3>2. Configure Download Queue</h3>
                         
                         <!-- Mirror Selector (Visible if mirrors found) -->
@@ -128,9 +132,14 @@
                         </div>
 
                         <!-- Component Checklist -->
-                        <div class="config-section" style="margin-top: 20px;">
+                        <div class="config-section" style="margin-top: 20px; position: relative;">
                             <div class="checklist-header">
-                                <label>Select Files to Download</label>
+                                <label>
+                                    Select Files to Download 
+                                    <span class="active-mirror-badge" id="active-mirror-badge-container" style="display:none;">
+                                        (Mirror: <span id="active-mirror-name">Loading...</span>)
+                                    </span>
+                                </label>
                                 <div class="checklist-actions">
                                     <button id="btn-sel-main" class="btn btn-accent btn-sm">Main Game Only</button>
                                     <button id="btn-sel-all" class="btn btn-accent btn-sm">Select All</button>
@@ -138,26 +147,34 @@
                                 </div>
                             </div>
 
-                            <div class="files-checklist-container">
-                                <!-- Groups -->
-                                <div class="file-group-box">
-                                    <div class="file-group-title">Main Game Parts & Setup</div>
-                                    <div class="file-checkbox-list" id="files-list-main"></div>
+                            <div class="files-checklist-wrapper" style="position: relative;">
+                                <!-- Spinner overlay while mirror links fetch -->
+                                <div class="checklist-loading-overlay" id="checklist-loading-spinner" style="display: none;">
+                                    <div class="spinner" style="width: 40px; height: 40px; border-width: 3px;"></div>
+                                    <p>Decrypting mirror paste...</p>
                                 </div>
-                                <div class="file-group-box" id="file-group-lang-box" style="margin-top: 12px;">
-                                    <div class="file-group-title">Optional Language Packs (Unchecked by default)</div>
-                                    <div class="file-checkbox-list" id="files-list-lang"></div>
-                                </div>
-                                <div class="file-group-box" id="file-group-other-box" style="margin-top: 12px;">
-                                    <div class="file-group-title">Optional Bonus Files / Extras</div>
-                                    <div class="file-checkbox-list" id="files-list-other"></div>
+
+                                <div class="files-checklist-container">
+                                    <!-- Groups -->
+                                    <div class="file-group-box">
+                                        <div class="file-group-title">Main Game Parts & Setup</div>
+                                        <div class="file-checkbox-list" id="files-list-main"></div>
+                                    </div>
+                                    <div class="file-group-box" id="file-group-lang-box" style="margin-top: 12px;">
+                                        <div class="file-group-title">Optional Language Packs (Unchecked by default)</div>
+                                        <div class="file-checkbox-list" id="files-list-lang"></div>
+                                    </div>
+                                    <div class="file-group-box" id="file-group-other-box" style="margin-top: 12px;">
+                                        <div class="file-group-title">Optional Bonus Files / Extras</div>
+                                        <div class="file-checkbox-list" id="files-list-other"></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
                         <!-- Start Trigger -->
                         <div class="confirm-actions-bar" style="margin-top: 25px; display: flex; justify-content: flex-end;">
-                            <button id="btn-confirm-queue" class="btn btn-primary btn-pulse-green" style="background-color: #2ecc71; box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3);">
+                            <button id="btn-confirm-queue" class="btn btn-primary btn-pulse-green" style="background-color: var(--color-accent); box-shadow: 0 4px 15px var(--color-accent-glow);">
                                 Confirm and Start Download
                             </button>
                         </div>
@@ -217,8 +234,8 @@
                 </section>
             </div>
 
-            <!-- Console Log Panel (Shared at the bottom) -->
-            <section class="console-section" style="margin-top: 10px;">
+            <!-- Console Log Panel (Shared at the bottom, strictly separate) -->
+            <section class="console-section">
                 <div class="section-header">
                     <h3>System Log</h3>
                     <button id="btn-clear-logs" class="btn-text">Clear logs</button>
