@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FitGirl Repack Automated Downloader</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="app.js" defer></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar / Navigation -->
+        <aside class="sidebar">
+            <div class="logo-area">
+                <div class="fitgirl-avatar">FG</div>
+                <div class="logo-text">
+                    <h1>FitGirl</h1>
+                    <span>Repack Downloader</span>
+                </div>
+            </div>
+            
+            <div class="status-summary">
+                <div class="summary-label">OVERALL PROGRESS</div>
+                <div class="progress-container">
+                    <svg class="progress-circle" viewBox="0 0 100 100">
+                        <circle class="progress-circle-bg" cx="50" cy="50" r="45"></circle>
+                        <circle class="progress-circle-bar" cx="50" cy="50" r="45" style="stroke-dashoffset: 283;"></circle>
+                    </svg>
+                    <div class="progress-text" id="total-progress-text">0%</div>
+                </div>
+                
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <span class="stat-title">Current Speed</span>
+                        <span class="stat-value" id="global-speed">0.0 MB/s</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-title">Time Left</span>
+                        <span class="stat-value" id="global-time-left">--:--</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="sidebar-actions">
+                <button id="btn-start-pause" class="btn btn-primary btn-pulse">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                    <span>Start Download</span>
+                </button>
+                <button id="btn-extract" class="btn btn-secondary" disabled style="background-color: #34495e; color: white;">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                        <path d="M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-6 10H6v-2h8v2zm4-4H6v-2h12v2z"/>
+                    </svg>
+                    <span>Extract Archives</span>
+                </button>
+                <button id="btn-install" class="btn btn-secondary" disabled>
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                        <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                    </svg>
+                    <span>Launch Installer</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <main class="main-content">
+            <header class="header">
+                <div class="title-section">
+                    <span class="badge">GAME REPACK</span>
+                    <h2>Call of Duty: Modern Warfare (2019)</h2>
+                    <p class="subtitle">Campaign Mode + Special Ops | Complete Packaged Download</p>
+                </div>
+                <div class="settings-section">
+                    <div class="folder-section">
+                        <label for="download-dir-input">Save Directory</label>
+                        <div class="folder-input-wrapper">
+                            <input type="text" id="download-dir-input" placeholder="Loading folder...">
+                            <button id="btn-save-dir" class="btn btn-accent">Save</button>
+                        </div>
+                    </div>
+                    <div class="threads-section">
+                        <label for="threads-select">Parallel Threads</label>
+                        <div class="threads-input-wrapper">
+                            <select id="threads-select">
+                                <option value="1">1 Thread</option>
+                                <option value="2">2 Threads</option>
+                                <option value="3">3 Threads</option>
+                                <option value="4" selected>4 Threads</option>
+                                <option value="5">5 Threads</option>
+                                <option value="6">6 Threads</option>
+                                <option value="7">7 Threads</option>
+                                <option value="8">8 Threads</option>
+                            </select>
+                            <button id="btn-save-threads" class="btn btn-accent">Apply</button>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <section class="queue-section">
+                <div class="section-header">
+                    <h3>Download Queue</h3>
+                    <div class="queue-stats">
+                        <span id="queue-completed-count">0 / 0 Completed</span>
+                    </div>
+                </div>
+
+                <div class="queue-list" id="queue-list-container">
+                    <!-- File item rows will be injected dynamically -->
+                    <div class="loading-placeholder">
+                        <div class="spinner"></div>
+                        <p>Initializing and loading queue items...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Console Log Panel -->
+            <section class="console-section">
+                <div class="section-header">
+                    <h3>System Log</h3>
+                    <button id="btn-clear-logs" class="btn-text">Clear logs</button>
+                </div>
+                <div class="console-box" id="console-box">
+                    <div class="console-line system">[SYSTEM] Ready. Click Start to begin downloading.</div>
+                </div>
+            </section>
+        </main>
+    </div>
+</body>
+</html>
