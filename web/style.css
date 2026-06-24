@@ -2026,7 +2026,7 @@ body {
     overflow: hidden !important;
 }
 
-/* Catalog Grid Adjustments */
+/* Catalog Flex Grid Adjustments */
 .games-grid-wrapper {
     flex: 1 !important;
     min-height: 0 !important;
@@ -2037,9 +2037,10 @@ body {
 }
 
 .games-grid {
-    display: grid !important;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)) !important;
-    gap: 16px !important;
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    gap: 20px !important;
     max-height: none !important;
     flex: 1 !important;
     overflow-y: auto !important;
@@ -2047,13 +2048,12 @@ body {
 }
 
 .game-card {
-    width: 100% !important;
-    max-width: 200px !important;
-    flex: unset !important;
+    width: 170px !important;
+    flex: 0 0 auto !important;
 }
 
 .card-cover-area {
-    height: 200px !important;
+    height: 220px !important;
 }
 
 /* Details Panel Internal Scroll */
