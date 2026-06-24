@@ -1,2 +1,7 @@
 __pycache__/
 sizes_cache.json
+cover_cache/
+scratch/
+*.json
+*.html
+*.jpg

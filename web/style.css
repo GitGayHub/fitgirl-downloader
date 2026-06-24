@@ -2007,3 +2007,171 @@ body {
     cursor: not-allowed !important;
     pointer-events: none !important;
 }
+
+/* ==================================================
+   Layout Lock, Internal Scroll, and Grid Updates
+   ================================================== */
+#setup-view {
+    height: 100% !important;
+    overflow: hidden !important;
+    display: grid !important;
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+
+.subview-container {
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+
+/* Catalog Grid Adjustments */
+.games-grid-wrapper {
+    flex: 1 !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+    margin-bottom: 10px !important;
+}
+
+.games-grid {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)) !important;
+    gap: 16px !important;
+    max-height: none !important;
+    flex: 1 !important;
+    overflow-y: auto !important;
+    padding-right: 8px;
+}
+
+.game-card {
+    width: 100% !important;
+    max-width: 200px !important;
+    flex: unset !important;
+}
+
+.card-cover-area {
+    height: 200px !important;
+}
+
+/* Details Panel Internal Scroll */
+#setup-dashboard {
+    flex: 1 !important;
+    min-height: 0 !important;
+    display: grid !important;
+    grid-template-columns: 280px 1.1fr 1.4fr !important;
+    gap: 20px !important;
+    overflow: hidden !important;
+    height: calc(100% - 20px) !important;
+}
+
+#setup-dashboard.no-info-card {
+    grid-template-columns: 280px 1fr !important;
+}
+
+.metadata-sidebar {
+    height: 100% !important;
+    overflow-y: auto !important;
+    position: static !important;
+}
+
+#game-info-card {
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+    margin: 0 !important;
+}
+
+#game-description {
+    flex: 1 !important;
+    overflow-y: auto !important;
+}
+
+#config-card {
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+    margin: 0 !important;
+}
+
+#config-card .config-section {
+    flex: 1 !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+
+.files-checklist-wrapper {
+    flex: 1 !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+
+.files-checklist-container {
+    flex: 1 !important;
+    overflow-y: auto !important;
+    max-height: none !important;
+}
+
+/* Screenshot gallery styles */
+.screenshot-img {
+    width: 120px;
+    height: 75px;
+    object-fit: cover;
+    border-radius: 8px;
+    cursor: pointer;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), border-color 0.2s;
+    flex-shrink: 0;
+}
+
+.screenshot-img:hover {
+    transform: scale(1.05) translateY(-2px);
+    border-color: var(--color-accent);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+}
+
+.screenshots-gallery::-webkit-scrollbar {
+    height: 6px;
+}
+.screenshots-gallery::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+}
+.screenshots-gallery::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+/* Red selection badge style for Deselected All */
+.selection-pill.state-none {
+    background: rgba(231, 76, 60, 0.12);
+    border-color: rgba(231, 76, 60, 0.3);
+    color: #e74c3c;
+}
+
+/* Rainbow Background animation active state */
+@keyframes rainbow-bg {
+    0% { filter: blur(60px) saturate(1.9) brightness(0.65) hue-rotate(0deg); }
+    100% { filter: blur(60px) saturate(1.9) brightness(0.65) hue-rotate(360deg); }
+}
+.rainbow-active #haze-background img {
+    animation: haze-float 20s infinite alternate ease-in-out, rainbow-bg 20s infinite linear !important;
+}
+
+/* Transparent and readable loading overlay */
+.checklist-loading-overlay {
+    background: rgba(5, 5, 10, 0.45) !important;
+    backdrop-filter: blur(8px) !important;
+}
+.checklist-loading-overlay p {
+    color: var(--text-white) !important;
+    font-weight: 700 !important;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.6) !important;
+}

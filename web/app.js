@@ -34,6 +34,14 @@ const elCloseSettingsModalBtn = document.getElementById("btn-close-settings-moda
 const elSaveSettingsBtn = document.getElementById("btn-save-settings");
 const elProviderSelect = document.getElementById("provider-select");
 const elChkShowLogs = document.getElementById("chk-show-logs");
+const elChkRainbowBg = document.getElementById("chk-rainbow-bg");
+const elGameInfoCard = document.getElementById("game-info-card");
+const elGameDescription = document.getElementById("game-description");
+const elGameScreenshotsSection = document.getElementById("game-screenshots-section");
+const elGameScreenshotsContainer = document.getElementById("game-screenshots-container");
+const elScreenshotModal = document.getElementById("screenshot-modal");
+const elScreenshotModalImg = document.getElementById("screenshot-modal-img");
+const elCloseScreenshotModalBtn = document.getElementById("btn-close-screenshot-modal");
 
 // Pagination Controls
 const elBtnPrevPage = document.getElementById("btn-prev-page");
@@ -545,12 +553,22 @@ function resetSetupDashboard() {
     elSetupCover.src = "";
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
+    
+    // Clear game info card contents
+    if (elGameDescription) elGameDescription.innerText = "";
+    if (elGameScreenshotsContainer) elGameScreenshotsContainer.innerHTML = "";
+    if (elGameScreenshotsSection) elGameScreenshotsSection.style.display = "none";
+    if (elGameInfoCard) elGameInfoCard.style.display = "none";
+    if (elSetupDashboard) elSetupDashboard.classList.add("no-info-card");
 }
 
 function initCheckedFiles(files) {
     checkedFiles.clear();
+    const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
     files.forEach(f => {
         if (f.type === "game_part" || f.type === "installer") {
+            checkedFiles.add(f.filename);
+        } else if (f.filename && rusRegex.test(f.filename)) {
             checkedFiles.add(f.filename);
         }
     });
@@ -682,6 +700,43 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     elAnalyzeError.style.display = "block";
                     elAnalyzeError.innerText = "No download mirror links found on this page. Try copying direct links instead.";
                 }
+
+                // Render description & screenshots
+                if (elGameDescription && data.description) {
+                    elGameDescription.innerText = data.description;
+                    elGameDescription.style.display = "block";
+                } else if (elGameDescription) {
+                    elGameDescription.innerText = "";
+                    elGameDescription.style.display = "none";
+                }
+
+                if (elGameScreenshotsSection && elGameScreenshotsContainer && data.screenshots && data.screenshots.length > 0) {
+                    elGameScreenshotsSection.style.display = "block";
+                    elGameScreenshotsContainer.innerHTML = "";
+                    data.screenshots.forEach(src => {
+                        const img = document.createElement("img");
+                        img.className = "screenshot-img";
+                        img.src = `/api/proxy_image?url=${encodeURIComponent(src)}`;
+                        img.alt = "Screenshot";
+                        img.addEventListener("click", () => {
+                            openScreenshotModal(img.src);
+                        });
+                        elGameScreenshotsContainer.appendChild(img);
+                    });
+                } else if (elGameScreenshotsSection) {
+                    elGameScreenshotsSection.style.display = "none";
+                    if (elGameScreenshotsContainer) elGameScreenshotsContainer.innerHTML = "";
+                }
+
+                if (elGameInfoCard) {
+                    if (data.description || (data.screenshots && data.screenshots.length > 0)) {
+                        elGameInfoCard.style.display = "block";
+                        if (elSetupDashboard) elSetupDashboard.classList.remove("no-info-card");
+                    } else {
+                        elGameInfoCard.style.display = "none";
+                        if (elSetupDashboard) elSetupDashboard.classList.add("no-info-card");
+                    }
+                }
                 
                 elSetupDashboard.style.display = "grid";
                 elConfigCard.style.display = "block";
@@ -804,6 +859,9 @@ function displayConfigCard(title, files, url = "") {
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
     clearDynamicBackground();
+    
+    if (elGameInfoCard) elGameInfoCard.style.display = "none";
+    if (elSetupDashboard) elSetupDashboard.classList.add("no-info-card");
     
     rawFilesList = files;
     initCheckedFiles(files);
@@ -1040,6 +1098,11 @@ function renderChecklist(files) {
     elFileGroupLangBox.style.display = langCount > 0 ? "block" : "none";
     elFileGroupOtherBox.style.display = otherCount > 0 ? "block" : "none";
     
+    // Collapse all detail sections by default when rendering
+    document.querySelectorAll("#game-details-container details.file-group-collapsible").forEach(d => {
+        d.open = false;
+    });
+    
     updateSelectionPill();
 }
 
@@ -1073,7 +1136,11 @@ function updateSelectionPill() {
     let text = "Custom Selection";
     let icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`;
     
-    if (mainChecked && optionalNoneChecked) {
+    if (checkedFiles.size === 0) {
+        state = "none";
+        text = "Deselected All";
+        icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+    } else if (mainChecked && optionalNoneChecked) {
         state = "main";
         text = "Main Game Only";
         icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`;
@@ -1755,6 +1822,7 @@ elPillPopularMonth.addEventListener("click", () => {
     elPillPopularYear.classList.remove("active");
     elSearchInput.value = "";
     searchQuery = "";
+    activeTab = "popular-month";
     currentPage = 1;
     loadCatalogGames();
 });
@@ -1764,6 +1832,7 @@ elPillPopularYear.addEventListener("click", () => {
     elPillPopularYear.classList.add("active");
     elSearchInput.value = "";
     searchQuery = "";
+    activeTab = "popular-year";
     currentPage = 1;
     loadCatalogGames();
 });
@@ -1814,6 +1883,13 @@ elSaveSettingsBtn.addEventListener("click", () => {
     const showLogs = elChkShowLogs.checked;
     elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
     localStorage.setItem("showLogs", showLogs ? "true" : "false");
+    
+    if (elChkRainbowBg) {
+        const rainbowBg = elChkRainbowBg.checked;
+        document.body.classList.toggle("rainbow-active", rainbowBg);
+        localStorage.setItem("rainbowBg", rainbowBg ? "true" : "false");
+    }
+    
     closeSettings();
 });
 
@@ -1961,11 +2037,16 @@ if (elToggleManualInputBtn && elUrlInputCard) {
 function initSettings() {
     activeProvider = localStorage.getItem("activeProvider") || "fitgirl";
     const showLogs = localStorage.getItem("showLogs") === "true"; // False by default
+    const rainbowBg = localStorage.getItem("rainbowBg") === "true";
     
     if (elProviderSelect) {
         elProviderSelect.value = activeProvider;
     }
     elChkShowLogs.checked = showLogs;
+    if (elChkRainbowBg) {
+        elChkRainbowBg.checked = rainbowBg;
+    }
+    document.body.classList.toggle("rainbow-active", rainbowBg);
     
     elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
     
@@ -2009,6 +2090,28 @@ if (elChecklistContainer) {
 initSettings();
 syncViewState();
 loadCatalogGames();
+
+// Screenshot modal controls
+function openScreenshotModal(imgSrc) {
+    if (elScreenshotModal && elScreenshotModalImg) {
+        elScreenshotModalImg.src = imgSrc;
+        elScreenshotModal.style.display = "flex";
+    }
+}
+
+if (elCloseScreenshotModalBtn) {
+    elCloseScreenshotModalBtn.addEventListener("click", () => {
+        if (elScreenshotModal) elScreenshotModal.style.display = "none";
+    });
+}
+
+if (elScreenshotModal) {
+    elScreenshotModal.addEventListener("click", (e) => {
+        if (e.target === elScreenshotModal) {
+            elScreenshotModal.style.display = "none";
+        }
+    });
+}
 
 // Start Polling Loop
 fetchState();

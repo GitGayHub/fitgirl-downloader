@@ -286,7 +286,7 @@ def parse_links_from_text(text):
             filename_lower = filename.lower()
             if "setup" in filename_lower or filename_lower.endswith(".exe"):
                 file_type = "installer"
-            elif "optional" in filename_lower or "language" in filename_lower or "lang" in filename_lower or any(lang in filename_lower for lang in ["russian", "english", "french", "german", "spanish", "chinese", "brazilian", "japanese", "korean", "polish", "mexican", "italian"]):
+            elif "optional" in filename_lower or "selective" in filename_lower or "language" in filename_lower or "lang" in filename_lower or any(lang in filename_lower for lang in ["russian", "english", "french", "german", "spanish", "chinese", "brazilian", "japanese", "korean", "polish", "mexican", "italian", "greek", "portuguese"]):
                 file_type = "lang_part"
                 
             if not any(f["filename"] == filename for f in parsed_files):
@@ -764,6 +764,9 @@ def clean_and_parse_title(raw_title):
             
     # Clean up trailing/leading dashes/commas from title
     title = re.sub(r'^[\s,–—\-]+|[\s,–—\-]+$', '', title).strip()
+    # Strip edition suffixes like Deluxe Edition, Gold Edition, Ultimate, etc.
+    title = re.sub(r'[\s:–—\-]+(?:digital\s+)?(?:deluxe|ultimate|premium|standard|limited|gold|complete|special)\s+edition\b', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'[\s:–—\-]+(?:digital\s+)?(?:deluxe|ultimate|premium|standard|limited|gold|complete|special)\b', '', title, flags=re.IGNORECASE)
     # Strip DLC suffixes like + 3 DLCs/Bonuses, + All DLCs, OST, etc.
     title = re.sub(r'\+\s*(?:\d+\s*|All\s+)?(?:DLCs?|Bonuses?|OST|Soundtracks?|Music|Bonus|Extras?)(?:\s*(?:/|\+|and)\s*(?:\d+\s*|All\s+)?(?:DLCs?|Bonuses?|OST|Soundtracks?|Music|Bonus|Extras?))*\b', '', title, flags=re.IGNORECASE)
     # Clean empty parenthesis/brackets
@@ -925,6 +928,20 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     return
                 
+                # Check for fastpic and imageban and convert to thumbnails to bypass hotlinking protection
+                lower_url = img_url.lower()
+                if "fastpic.ru" in lower_url or "fastpic.org" in lower_url:
+                    thumb = img_url.replace("/big/", "/thumb/")
+                    thumb = thumb.split('?')[0]
+                    if thumb.endswith(".jpg"):
+                        thumb = thumb[:-4] + ".jpeg"
+                    elif thumb.endswith(".png"):
+                        thumb = thumb[:-4] + ".jpeg"
+                    thumb = thumb.replace(".ru/", ".org/")
+                    img_url = thumb
+                elif "imageban.ru" in lower_url or "imageban.net" in lower_url:
+                    img_url = img_url.replace("/out/", "/thumbs/")
+                
                 # Check cache first
                 import hashlib
                 url_hash = hashlib.md5(img_url.encode('utf-8')).hexdigest()
@@ -957,23 +974,29 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     return
 
                 # Download and cache
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                response = requests.get(img_url, headers=headers, timeout=15)
-                if response.status_code == 200:
+                add_log(f"Proxying image: {img_url}")
+                session = cf_requests.Session()
+                response = session.get(img_url, impersonate="chrome120", timeout=15, verify=False)
+                
+                content_type = response.headers.get("Content-Type", "image/jpeg")
+                content = response.content
+                is_success = (response.status_code == 200)
+                
+                if is_success:
                     with open(cache_path, "wb") as f:
-                        f.write(response.content)
+                        f.write(content)
                     
                     self.send_response(200)
-                    content_type = response.headers.get("Content-Type", "image/jpeg")
                     self.send_header("Content-Type", content_type)
                     self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Cache-Control", "public, max-age=31536000")
                     self.end_headers()
-                    self.wfile.write(response.content)
+                    self.wfile.write(content)
                 else:
                     self.send_response(response.status_code)
                     self.end_headers()
             except Exception as e:
+                add_log(f"Proxy image exception: {str(e)}")
                 self.send_response(500)
                 self.end_headers()
             return
@@ -1458,6 +1481,60 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     if src not in videos:
                                         videos.append(src)
 
+                        # Extract description and screenshots
+                        description = ""
+                        screenshots = []
+                        if content_el:
+                            paragraphs = []
+                            for p in content_el.find_all('p', recursive=True):
+                                p_copy = BeautifulSoup(str(p), 'html.parser')
+                                for br in p_copy.find_all('br'):
+                                    br.replace_with('\n')
+                                text = p_copy.get_text()
+                                
+                                cleaned_lines = []
+                                for line in text.split('\n'):
+                                    line = line.strip()
+                                    if not line:
+                                        continue
+                                    line_lower = line.lower()
+                                    if line_lower.endswith('.rar') or line_lower.endswith('.bin') or line_lower.endswith('.exe') or 'fitgirl-repacks' in line_lower:
+                                        continue
+                                    if any(token in line_lower for token in [
+                                        "genres/tags:", "companies:", "languages:", "original size:", "repack size:", 
+                                        "screenshots:", "discussion and", "download mirrors", "filehoster:", "repack features",
+                                        "backwards compatibility", "game description", "if you experience", "repack notes",
+                                        "show direct links", "magnet", "1337x", "rutor", "tapochek.net", "compatibl",
+                                        "requires windows", "game updates", "unpack to", "run patch.bat", "patch", "update",
+                                        "elamigos", "rune", "flt", "tenoke", "soundtrack"
+                                    ]):
+                                        continue
+                                    cleaned_lines.append(line)
+                                    
+                                if cleaned_lines:
+                                    p_text = " ".join(cleaned_lines)
+                                    if len(p_text) > 40:
+                                        paragraphs.append(p_text)
+                                        if len(paragraphs) == 3:
+                                            break
+                            description = "\n\n".join(paragraphs)
+                            
+                            for a in content_el.find_all('a'):
+                                href = a.get('href', '')
+                                img = a.find('img')
+                                img_src = img.get('src', '') if img else ''
+                                for candidate in [href, img_src]:
+                                    if not candidate:
+                                        continue
+                                    cand_lower = candidate.lower()
+                                    if 'riotpixels.net/data/' in cand_lower:
+                                        candidate = re.sub(r'\.(?:240p|400p)\.(?:jpg|jpeg|png)$', '', candidate, flags=re.IGNORECASE)
+                                        cand_lower = candidate.lower()
+                                    if cand_lower.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')) or ('riotpixels.net/data/' in cand_lower and '.jpg' in cand_lower):
+                                        if candidate not in screenshots and candidate != cover_image:
+                                            screenshots.append(candidate)
+                            screenshots = screenshots[:10]
+
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
@@ -1470,7 +1547,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "repack_size": repack_size,
                             "cover_image": cover_image,
                             "mirrors": mirrors,
-                            "videos": videos
+                            "videos": videos,
+                            "description": description,
+                            "screenshots": screenshots
                         }).encode())
                         return
                     else:
@@ -1567,6 +1646,27 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                 if src not in videos:
                                     videos.append(src)
 
+                        # Extract description and screenshots
+                        description = ""
+                        screenshots = []
+                        story = soup.find(class_='full-story-content')
+                        if story:
+                            text = story.get_text()
+                            match = re.search(r'(?:Информация о игре:|Информация об игре:)\s*(.*?)(?=(?:Файлы для игры:|Как запускать:|Скачать с|1\.|$))', text, re.DOTALL | re.IGNORECASE)
+                            if match:
+                                description = match.group(1).strip()
+                            # Online-Fix doesn't typically list screenshots in full-story-content,
+                            # but we can check if there are any direct images inside the article content.
+                            for img in story.find_all('img'):
+                                img_src = img.get('src', '')
+                                if img_src:
+                                    img_url = urllib.parse.urljoin(url, img_src)
+                                    img_url_lower = img_url.lower()
+                                    if img_url_lower.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')) and "poster" not in img_url_lower:
+                                        if img_url not in screenshots and img_url != cover_image:
+                                            screenshots.append(img_url)
+                            screenshots = screenshots[:10]
+
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
@@ -1579,7 +1679,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "repack_size": "Unknown",
                             "cover_image": cover_image,
                             "mirrors": mirrors,
-                            "videos": videos
+                            "videos": videos,
+                            "description": description,
+                            "screenshots": screenshots
                         }).encode())
                         return
                     else:
@@ -1654,7 +1756,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         filename_lower = filename.lower()
                         if "setup" in filename_lower or filename_lower.endswith(".exe"):
                             file_type = "installer"
-                        elif "optional" in filename_lower or "language" in filename_lower or "lang" in filename_lower or any(lang in filename_lower for lang in ["russian", "english", "french", "german", "spanish", "chinese", "brazilian", "japanese", "korean", "polish", "mexican", "italian"]):
+                        elif "optional" in filename_lower or "selective" in filename_lower or "language" in filename_lower or "lang" in filename_lower or any(lang in filename_lower for lang in ["russian", "english", "french", "german", "spanish", "chinese", "brazilian", "japanese", "korean", "polish", "mexican", "italian", "greek", "portuguese"]):
                             file_type = "lang_part"
                             
                         cached_size = sizes_cache.get(filename, 0)
