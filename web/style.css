@@ -47,10 +47,10 @@ body {
     bottom: 0;
     z-index: -1;
     background: 
-        radial-gradient(circle at 20% 15%, rgba(168, 50, 121, 0.18) 0%, transparent 45%),
-        radial-gradient(circle at 80% 85%, rgba(155, 89, 182, 0.12) 0%, transparent 45%),
+        radial-gradient(circle at 20% 15%, var(--color-primary-glow) 0%, transparent 45%),
+        radial-gradient(circle at 80% 85%, var(--border-glow) 0%, transparent 45%),
         radial-gradient(circle at 50% 50%, rgba(46, 204, 113, 0.05) 0%, transparent 50%),
-        #04040a;
+        transparent;
     pointer-events: none;
 }
 
@@ -489,16 +489,16 @@ body {
 }
 
 .mirror-pill.active {
-    background: linear-gradient(135deg, rgba(168, 50, 121, 0.6), rgba(155, 89, 182, 0.6));
+    background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
     border-color: var(--color-secondary);
     color: var(--text-white);
-    box-shadow: 0 0 15px rgba(155, 89, 182, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 15px var(--color-primary-glow), inset 0 1px 1px rgba(255, 255, 255, 0.3);
 }
 
 .active-mirror-badge {
     background-color: var(--color-primary-glow);
     color: var(--text-main);
-    border: 1px solid rgba(168, 50, 121, 0.3);
+    border: 1px solid var(--color-primary);
     padding: 2px 8px;
     border-radius: 12px;
     font-size: 0.65rem;
@@ -606,9 +606,9 @@ body {
 }
 
 .checkbox-item input[type="checkbox"]:checked {
-    background: linear-gradient(135deg, #a83279, #9b59b6);
+    background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
     border-color: var(--color-secondary);
-    box-shadow: 0 0 8px rgba(155,89,182,0.4);
+    box-shadow: 0 0 8px var(--color-primary-glow);
 }
 
 .checkbox-item input[type="checkbox"]:checked::after {
@@ -654,14 +654,14 @@ body {
 }
 
 .btn-primary {
-    background: linear-gradient(135deg, #a83279, #9b59b6);
+    background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
     color: var(--text-white);
-    box-shadow: 0 4px 15px rgba(155, 89, 182, 0.4), inset 0 1px 1px rgba(255,255,255,0.2);
+    box-shadow: 0 4px 15px var(--color-primary-glow), inset 0 1px 1px rgba(255,255,255,0.2);
 }
 
 .btn-primary:hover:not(:disabled) {
     transform: translateY(-1.5px);
-    box-shadow: 0 6px 20px rgba(155, 89, 182, 0.5), inset 0 1px 1px rgba(255,255,255,0.3);
+    box-shadow: 0 6px 20px var(--color-primary-glow), inset 0 1px 1px rgba(255,255,255,0.3);
 }
 
 .btn-primary:active:not(:disabled) {
@@ -767,9 +767,9 @@ body {
 }
 
 .queue-item.active {
-    background-color: rgba(155, 89, 182, 0.05);
-    border-color: rgba(155, 89, 182, 0.15);
-    box-shadow: 0 0 10px rgba(155,89,182,0.1);
+    background-color: var(--border-glow);
+    border-color: var(--color-primary-glow);
+    box-shadow: 0 0 10px var(--border-glow);
 }
 
 .file-name {
@@ -793,9 +793,9 @@ body {
 }
 
 .file-badge.game_part {
-    background-color: rgba(155, 89, 182, 0.15);
-    color: #c39bd3;
-    border: 1px solid rgba(155, 89, 182, 0.25);
+    background-color: var(--color-primary-glow);
+    color: var(--text-white);
+    border: 1px solid var(--color-primary);
 }
 
 .file-badge.lang_part {
@@ -1496,4 +1496,116 @@ body {
     color: var(--text-muted);
     font-size: 0.88rem;
     padding: 40px 0;
+}
+
+/* --------------------------------------------------
+   Catalog View & Details View UI Enhancements
+   -------------------------------------------------- */
+
+/* Clean Card Hover Action */
+.card-overlay {
+    display: none !important; /* Remove large hover analyze button overlay */
+}
+
+.game-card {
+    transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.game-card:hover {
+    transform: translateY(-4px) scale(1.015) !important;
+    border-color: var(--color-primary) !important;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4), 0 0 12px var(--color-primary-glow) !important;
+}
+
+/* Expanded Grid height to fit more games */
+.games-grid {
+    max-height: 700px !important; /* Increase from 480px to show more games */
+}
+
+/* Haze Background Blur (Harmonoid style) */
+#haze-background {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: -2;
+    pointer-events: none;
+    overflow: hidden;
+    background-color: var(--bg-main);
+    transition: background-color 1s ease;
+}
+
+#haze-background img {
+    position: absolute;
+    top: -10%;
+    left: -10%;
+    width: 120%;
+    height: 120%;
+    object-fit: cover;
+    filter: blur(100px) saturate(1.9) brightness(0.65);
+    transition: opacity 1.5s cubic-bezier(0.25, 0.8, 0.25, 1);
+    animation: haze-float 50s infinite alternate ease-in-out;
+}
+
+#haze-bg-img-active {
+    z-index: 1;
+}
+
+#haze-bg-img-next {
+    z-index: 2;
+}
+
+@keyframes haze-float {
+    0% {
+        transform: scale(1) translate(0, 0) rotate(0deg);
+    }
+    50% {
+        transform: scale(1.1) translate(2%, 1%) rotate(1.5deg);
+    }
+    100% {
+        transform: scale(1.05) translate(-1%, -2%) rotate(-1deg);
+    }
+}
+
+/* Version badge / pill */
+.version-badge {
+    background-color: var(--color-primary-glow) !important;
+    border: 1px solid var(--color-primary) !important;
+    color: var(--text-white) !important;
+    font-size: 0.72rem !important;
+    font-weight: 700 !important;
+    padding: 3px 8px !important;
+    border-radius: 6px !important;
+    display: inline-block;
+    letter-spacing: 0.3px;
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.1);
+}
+
+/* Hide System Logs by default */
+.console-section.hidden {
+    display: none !important;
+}
+
+/* Icon only button */
+.btn-icon-only {
+    width: 40px;
+    height: 40px;
+    padding: 0 !important;
+    justify-content: center;
+    align-items: center;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Pagination container */
+.pagination-container button:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.pagination-container span {
+    font-family: inherit;
+    font-weight: 600;
 }

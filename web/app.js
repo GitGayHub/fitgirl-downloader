@@ -15,15 +15,32 @@ const elSidebarActionsContainer = document.getElementById("sidebar-actions-conta
 const elSetupView = document.getElementById("setup-view");
 const elDownloadView = document.getElementById("download-view");
 
+// New Subviews
+const elCatalogContainer = document.getElementById("catalog-container");
+const elGameDetailsContainer = document.getElementById("game-details-container");
+
 // Browse Catalog & Search Elements
 const elSearchInput = document.getElementById("search-input");
-const elPillLatest = document.getElementById("pill-latest");
-const elPillPopular = document.getElementById("pill-popular");
+const elPillPopularMonth = document.getElementById("pill-popular-month");
+const elPillPopularYear = document.getElementById("pill-popular-year");
 const elGamesLoader = document.getElementById("games-loader");
 const elGamesGridContainer = document.getElementById("games-grid-container");
 const elSearchResultsTitle = document.getElementById("search-results-title");
 
-// Setup Wizard Elements
+// Settings Modal & Gear
+const elSettingsGearBtn = document.getElementById("btn-settings-gear");
+const elSettingsModal = document.getElementById("settings-modal");
+const elCloseSettingsModalBtn = document.getElementById("btn-close-settings-modal");
+const elSaveSettingsBtn = document.getElementById("btn-save-settings");
+const elProviderSelect = document.getElementById("provider-select");
+const elChkShowLogs = document.getElementById("chk-show-logs");
+
+// Pagination Controls
+const elBtnPrevPage = document.getElementById("btn-prev-page");
+const elBtnNextPage = document.getElementById("btn-next-page");
+const elPageIndicator = document.getElementById("page-indicator");
+
+// Setup Wizard Elements (Pasted URL / Config)
 const elUrlTextarea = document.getElementById("url-textarea");
 const elAnalyzeBtn = document.getElementById("btn-analyze");
 const elAnalyzeSpinner = document.getElementById("analyze-spinner");
@@ -63,7 +80,6 @@ const elChecklistLoadingSpinner = document.getElementById("checklist-loading-spi
 const elSetupDashboard = document.getElementById("setup-dashboard");
 const elSetupCover = document.getElementById("setup-cover");
 const elSetupCoverPlaceholder = document.getElementById("setup-cover-placeholder");
-const elMetadataGameTitle = document.getElementById("metadata-game-title");
 const elMetadataOriginalSize = document.getElementById("metadata-original-size");
 const elMetadataRepackSize = document.getElementById("metadata-repack-size");
 const elMetadataTotalParts = document.getElementById("metadata-total-parts");
@@ -71,6 +87,16 @@ const elMetadataSelectedSize = document.getElementById("metadata-selected-size")
 const elMetadataEta = document.getElementById("metadata-eta");
 const elMetadataAvgSpeed = document.getElementById("metadata-avg-speed");
 const elSortingSelect = document.getElementById("sorting-select");
+
+// Details view specific elements
+const elBtnBackToCatalog = document.getElementById("btn-back-to-catalog");
+const elDetailsGameTitle = document.getElementById("details-game-title");
+const elDetailsVersionBadge = document.getElementById("details-version-badge");
+const elBtnOpenBrowser = document.getElementById("btn-open-browser");
+
+// Haze Background Elements
+const elHazeBgImgActive = document.getElementById("haze-bg-img-active");
+const elHazeBgImgNext = document.getElementById("haze-bg-img-next");
 
 // Download View Elements
 const elActiveGameTitle = document.getElementById("active-game-title");
@@ -425,16 +451,7 @@ function updateUI(newState) {
             }
         }
     } else {
-        // Setup View is Active
-        document.querySelector(".app-container").classList.remove("has-sidebar");
-        document.querySelector(".sidebar").style.display = "none";
-        
-        elSetupView.style.display = "flex";
-        elDownloadView.style.display = "none";
-        
-        elSidebarSetupInfo.style.display = "block";
-        elSidebarStatusSummary.style.display = "none";
-        elSidebarActionsContainer.style.display = "none";
+        syncViewState();
     }
     
     // Global: Sync Console logs
@@ -463,7 +480,8 @@ function resetSetupDashboard() {
     checkedFiles.clear();
     
     // Clear sidebar metadata
-    elMetadataGameTitle.innerText = "Game Title";
+    elDetailsGameTitle.innerText = "Game Title";
+    elDetailsVersionBadge.style.display = "none";
     elMetadataOriginalSize.innerText = "--";
     elMetadataRepackSize.innerText = "--";
     elMetadataTotalParts.innerText = "--";
@@ -472,6 +490,7 @@ function resetSetupDashboard() {
     elSetupCover.src = "";
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
+    clearDynamicBackground();
 }
 
 function initCheckedFiles(files) {
@@ -510,18 +529,35 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 scrapedMetadata.repack_size = data.repack_size || "Unknown";
                 scrapedMetadata.cover_image = data.cover_image || "";
                 
-                elMetadataGameTitle.innerText = data.title || "Custom Repack";
+                elDetailsGameTitle.innerText = data.title || "Custom Repack";
+                if (data.version) {
+                    elDetailsVersionBadge.innerText = data.version;
+                    elDetailsVersionBadge.style.display = "inline-block";
+                } else {
+                    elDetailsVersionBadge.style.display = "none";
+                }
+                
+                // Open in Browser URL mapping
+                if (elBtnOpenBrowser) {
+                    elBtnOpenBrowser.href = url;
+                    elBtnOpenBrowser.style.display = "inline-block";
+                }
+                
                 elMetadataOriginalSize.innerText = scrapedMetadata.original_size;
                 elMetadataRepackSize.innerText = scrapedMetadata.repack_size;
                 
                 if (scrapedMetadata.cover_image) {
-                    elSetupCover.src = scrapedMetadata.cover_image;
+                    const proxiedUrl = `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
+                    elSetupCover.src = proxiedUrl;
                     elSetupCover.style.display = "block";
                     elSetupCoverPlaceholder.style.display = "none";
+                    setHazeBackground(proxiedUrl);
+                    updateAccentFromImage(elSetupCover);
                 } else {
                     elSetupCover.src = "";
                     elSetupCover.style.display = "none";
                     elSetupCoverPlaceholder.style.display = "flex";
+                    clearDynamicBackground();
                 }
 
                 // Show game title
@@ -563,8 +599,9 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 
                 elSetupDashboard.style.display = "grid";
                 elConfigCard.style.display = "block";
+                setViewState("details");
             } else if (data.type === "files") {
-                displayConfigCard(data.title, data.files);
+                displayConfigCard(data.title, data.files, url);
             }
         } else {
             elAnalyzeError.style.display = "block";
@@ -623,7 +660,7 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
 }
 
 // Display config card for direct files/PrivateBin
-function displayConfigCard(title, files) {
+function displayConfigCard(title, files, url = "") {
     activeMirrorName = "";
     elGameNameInput.value = title;
     
@@ -639,12 +676,22 @@ function displayConfigCard(title, files) {
     scrapedMetadata.repack_size = "N/A";
     scrapedMetadata.cover_image = "";
     
-    elMetadataGameTitle.innerText = title;
+    elDetailsGameTitle.innerText = title;
+    elDetailsVersionBadge.style.display = "none";
+    
+    if (elBtnOpenBrowser && url) {
+        elBtnOpenBrowser.href = url;
+        elBtnOpenBrowser.style.display = "inline-block";
+    } else if (elBtnOpenBrowser) {
+        elBtnOpenBrowser.style.display = "none";
+    }
+    
     elMetadataOriginalSize.innerText = "N/A";
     elMetadataRepackSize.innerText = "N/A";
     elSetupCover.src = "";
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
+    clearDynamicBackground();
     
     rawFilesList = files;
     initCheckedFiles(files);
@@ -653,6 +700,7 @@ function displayConfigCard(title, files) {
     elConfigCard.style.display = "block";
     
     updateChecklistSorted();
+    setViewState("details");
 }
 
 // Render Checklists
@@ -1012,134 +1060,320 @@ elConfirmProviderSwitchBtn.addEventListener("click", async () => {
     }
 });
 
-// Browse Catalog & Search Functionality
+// ViewState Router
+let viewState = "catalog"; // "catalog", "details", "downloading"
+
+function setViewState(state) {
+    viewState = state;
+    syncViewState();
+}
+
+function syncViewState() {
+    if (appState.is_configured) {
+        viewState = "downloading";
+    } else if (viewState === "downloading") {
+        viewState = "catalog";
+    }
+
+    if (viewState === "downloading") {
+        document.querySelector(".app-container").classList.add("has-sidebar");
+        document.querySelector(".sidebar").style.display = "flex";
+        
+        elSetupView.style.display = "none";
+        elDownloadView.style.display = "flex";
+        
+        elSidebarSetupInfo.style.display = "none";
+        elSidebarStatusSummary.style.display = "flex";
+        elSidebarActionsContainer.style.display = "flex";
+    } else {
+        document.querySelector(".app-container").classList.remove("has-sidebar");
+        document.querySelector(".sidebar").style.display = "none";
+        
+        elSetupView.style.display = "flex";
+        elDownloadView.style.display = "none";
+        
+        elSidebarSetupInfo.style.display = "block";
+        elSidebarStatusSummary.style.display = "none";
+        elSidebarActionsContainer.style.display = "none";
+
+        if (viewState === "catalog") {
+            elCatalogContainer.style.display = "block";
+            elGameDetailsContainer.style.display = "none";
+            clearDynamicBackground();
+        } else if (viewState === "details") {
+            elCatalogContainer.style.display = "none";
+            elGameDetailsContainer.style.display = "block";
+        }
+    }
+}
+
+let dynamicResetTimeout = null;
+
+// Haze Background Swap (Harmonoid style)
+function setHazeBackground(coverUrl) {
+    if (dynamicResetTimeout) {
+        clearTimeout(dynamicResetTimeout);
+        dynamicResetTimeout = null;
+    }
+    if (!coverUrl) {
+        clearDynamicBackground();
+        return;
+    }
+    
+    if (elHazeBgImgActive.src === coverUrl) return;
+
+    elHazeBgImgNext.onload = () => {
+        elHazeBgImgNext.style.opacity = "1";
+        setTimeout(() => {
+            elHazeBgImgActive.src = coverUrl;
+            elHazeBgImgActive.style.opacity = "1";
+            elHazeBgImgNext.style.opacity = "0";
+        }, 1500);
+    };
+    elHazeBgImgNext.src = coverUrl;
+}
+
+function clearDynamicBackground() {
+    if (dynamicResetTimeout) {
+        clearTimeout(dynamicResetTimeout);
+    }
+    elHazeBgImgNext.style.opacity = "0";
+    dynamicResetTimeout = setTimeout(() => {
+        elHazeBgImgActive.src = "";
+        elHazeBgImgActive.style.opacity = "0";
+        // Reset dynamic CSS accent colors back to standard purple
+        document.documentElement.style.setProperty('--color-primary', '#a83279');
+        document.documentElement.style.setProperty('--color-secondary', '#9b59b6');
+        document.documentElement.style.setProperty('--color-primary-glow', 'rgba(155, 89, 182, 0.35)');
+        document.documentElement.style.setProperty('--border-glow', 'rgba(155, 89, 182, 0.15)');
+        dynamicResetTimeout = null;
+    }, 500);
+}
+
+// Canvas Dynamic Accent Extraction
+function updateAccentFromImage(imgElement) {
+    if (dynamicResetTimeout) {
+        clearTimeout(dynamicResetTimeout);
+        dynamicResetTimeout = null;
+    }
+    if (!imgElement || !imgElement.src || imgElement.style.display === "none") {
+        return;
+    }
+
+    const extract = () => {
+        try {
+            const canvas = document.createElement("canvas");
+            canvas.width = 16;
+            canvas.height = 16;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(imgElement, 0, 0, 16, 16);
+            
+            const imageData = ctx.getImageData(0, 0, 16, 16);
+            const data = imageData.data;
+            
+            let rSum = 0, gSum = 0, bSum = 0, count = 0;
+            let bestColor = null;
+            let maxSaturation = -1;
+            
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i+1];
+                const b = data[i+2];
+                const a = data[i+3];
+                
+                if (a < 200) continue;
+                
+                // RGB to HSL
+                const rNorm = r / 255;
+                const gNorm = g / 255;
+                const bNorm = b / 255;
+                const max = Math.max(rNorm, gNorm, bNorm);
+                const min = Math.min(rNorm, gNorm, bNorm);
+                let h = 0, s = 0, l = (max + min) / 2;
+                
+                if (max !== min) {
+                    const d = max - min;
+                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                    switch (max) {
+                        case rNorm: h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0); break;
+                        case gNorm: h = (bNorm - rNorm) / d + 2; break;
+                        case bNorm: h = (rNorm - gNorm) / d + 4; break;
+                    }
+                    h /= 6;
+                }
+                
+                // Keep S > 25% and L in [30%, 75%] for a nice vibrant accent
+                if (l >= 0.3 && l <= 0.75 && s >= 0.25) {
+                    const energy = s * l;
+                    if (energy > maxSaturation) {
+                        maxSaturation = energy;
+                        bestColor = { r, g, b };
+                    }
+                }
+                
+                rSum += r;
+                gSum += g;
+                bSum += b;
+                count++;
+            }
+            
+            let rgb = bestColor;
+            if (!rgb && count > 0) {
+                rgb = {
+                    r: Math.floor(rSum / count),
+                    g: Math.floor(gSum / count),
+                    b: Math.floor(bSum / count)
+                };
+            }
+            
+            if (rgb) {
+                const accent = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+                const glow = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.35)`;
+                const border = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`;
+                
+                // Calculate secondary color
+                const factor = 1.2;
+                const r2 = Math.min(255, Math.floor(rgb.r * factor));
+                const g2 = Math.min(255, Math.floor(rgb.g * factor));
+                const b2 = Math.min(255, Math.floor(rgb.b * factor));
+                const secondaryAccent = `rgb(${r2}, ${g2}, ${b2})`;
+
+                document.documentElement.style.setProperty('--color-primary', accent);
+                document.documentElement.style.setProperty('--color-secondary', secondaryAccent);
+                document.documentElement.style.setProperty('--color-primary-glow', glow);
+                document.documentElement.style.setProperty('--border-glow', border);
+            }
+        } catch (e) {
+            console.error("Color extraction exception:", e);
+        }
+    };
+
+    if (imgElement.complete) {
+        extract();
+    } else {
+        imgElement.onload = extract;
+    }
+}
+
+// Catalog Pagination and State Controls
+let currentPage = 1;
+let activeTab = "popular-month";
+let searchQuery = "";
+let activeProvider = "fitgirl";
+
 function renderGamesList(results) {
     elGamesGridContainer.innerHTML = "";
     if (!results || results.length === 0) {
         elGamesGridContainer.innerHTML = `<div class="no-results-message">No repacks found.</div>`;
         return;
     }
+    
     results.forEach(game => {
         const card = document.createElement("div");
         card.className = "game-card";
         
-        const imgHtml = game.cover_image 
-            ? `<img class="card-cover" src="${game.cover_image}" alt="Cover">`
+        const coverUrl = game.cover_image 
+            ? `/api/proxy_image?url=${encodeURIComponent(game.cover_image)}`
+            : "";
+        const imgHtml = coverUrl 
+            ? `<img class="card-cover" src="${coverUrl}" alt="Cover">`
             : `<div class="card-cover-placeholder">FG</div>`;
+            
+        const verBadge = game.version 
+            ? `<span class="version-badge" style="margin-left: auto;">${game.version}</span>`
+            : "";
             
         card.innerHTML = `
             <div class="card-cover-area">
                 ${imgHtml}
-                <div class="card-overlay">
-                    <button class="btn btn-primary btn-sm btn-card-load">Analyze</button>
-                </div>
             </div>
             <div class="card-info">
                 <h4 class="card-title" title="${game.title}">${game.title}</h4>
-                <div class="card-sizes">
+                <div class="card-sizes" style="display: flex; align-items: center; width: 100%;">
                     ${game.repack_size !== "Unknown" ? `<span class="size-badge repack">Repack: ${game.repack_size}</span>` : ""}
                     ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
+                    ${verBadge}
                 </div>
                 <p class="card-summary">${game.summary || ""}</p>
             </div>
         `;
         
-        const triggerAnalyze = () => {
-            elUrlTextarea.value = game.url;
-            elUrlTextarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            elAnalyzeBtn.click();
-        };
-        card.querySelector(".btn-card-load").addEventListener("click", (e) => {
-            e.stopPropagation();
-            triggerAnalyze();
-        });
         card.addEventListener("click", () => {
-            triggerAnalyze();
+            elUrlTextarea.value = game.url;
+            elAnalyzeBtn.click();
         });
+        
         elGamesGridContainer.appendChild(card);
     });
 }
 
-async function loadLatestRepacks() {
+async function loadCatalogGames() {
     elGamesLoader.style.display = "flex";
     elGamesGridContainer.innerHTML = "";
     elSearchResultsTitle.style.display = "none";
+    
     try {
-        const response = await fetch("/api/latest");
+        let response;
+        if (searchQuery) {
+            elSearchResultsTitle.style.display = "block";
+            elSearchResultsTitle.innerText = `Search results for: "${searchQuery}"`;
+            
+            response = await fetch("/api/search", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    query: searchQuery,
+                    provider: activeProvider,
+                    page: currentPage
+                })
+            });
+        } else {
+            const type = (activeTab === "popular-year" ? "yearly" : "monthly");
+            response = await fetch(`/api/popular?provider=${activeProvider}&type=${type}&page=${currentPage}`);
+        }
+        
         const data = await response.json();
         if (data.success) {
             renderGamesList(data.results);
+            
+            // Toggle pagination next button based on has_next returned from server
+            if (data.has_next) {
+                elBtnNextPage.removeAttribute("disabled");
+            } else {
+                elBtnNextPage.setAttribute("disabled", "true");
+            }
         } else {
-            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to load latest repacks: ${data.error}</div>`;
+            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to load catalog repacks: ${data.error}</div>`;
         }
     } catch (e) {
-        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error loading latest repacks.</div>`;
+        console.error("Load catalog games exception:", e);
+        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error loading catalog repacks.</div>`;
     } finally {
         elGamesLoader.style.display = "none";
+        
+        // Update pagination buttons state
+        elBtnPrevPage.disabled = (currentPage === 1);
+        elPageIndicator.innerText = `Page ${currentPage}`;
     }
 }
 
-async function loadPopularRepacks() {
-    elGamesLoader.style.display = "flex";
-    elGamesGridContainer.innerHTML = "";
-    elSearchResultsTitle.style.display = "none";
-    try {
-        const response = await fetch("/api/popular");
-        const data = await response.json();
-        if (data.success) {
-            renderGamesList(data.results);
-        } else {
-            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to load popular repacks: ${data.error}</div>`;
-        }
-    } catch (e) {
-        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error loading popular repacks.</div>`;
-    } finally {
-        elGamesLoader.style.display = "none";
-    }
-}
-
-async function searchRepacks(query) {
-    if (!query) return;
-    elGamesLoader.style.display = "flex";
-    elGamesGridContainer.innerHTML = "";
-    
-    elPillLatest.classList.remove("active");
-    elPillPopular.classList.remove("active");
-    
-    elSearchResultsTitle.style.display = "block";
-    elSearchResultsTitle.innerText = `Search results for: "${query}"`;
-    
-    try {
-        const response = await fetch("/api/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: query })
-        });
-        const data = await response.json();
-        if (data.success) {
-            renderGamesList(data.results);
-        } else {
-            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to search: ${data.error}</div>`;
-        }
-    } catch (e) {
-        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error searching repacks.</div>`;
-    } finally {
-        elGamesLoader.style.display = "none";
-    }
-}
-
-elPillLatest.addEventListener("click", () => {
-    elPillLatest.classList.add("active");
-    elPillPopular.classList.remove("active");
+// Navigation event listeners
+elPillPopularMonth.addEventListener("click", () => {
+    elPillPopularMonth.classList.add("active");
+    elPillPopularYear.classList.remove("active");
     elSearchInput.value = "";
-    loadLatestRepacks();
+    searchQuery = "";
+    currentPage = 1;
+    loadCatalogGames();
 });
 
-elPillPopular.addEventListener("click", () => {
-    elPillLatest.classList.remove("active");
-    elPillPopular.classList.add("active");
+elPillPopularYear.addEventListener("click", () => {
+    elPillPopularMonth.classList.remove("active");
+    elPillPopularYear.classList.add("active");
     elSearchInput.value = "";
-    loadPopularRepacks();
+    searchQuery = "";
+    currentPage = 1;
+    loadCatalogGames();
 });
 
 elSearchInput.addEventListener("keydown", (e) => {
@@ -1147,13 +1381,100 @@ elSearchInput.addEventListener("keydown", (e) => {
         e.preventDefault();
         const q = elSearchInput.value.trim();
         if (q) {
-            searchRepacks(q);
+            searchQuery = q;
+            currentPage = 1;
+            elPillPopularMonth.classList.remove("active");
+            elPillPopularYear.classList.remove("active");
+            loadCatalogGames();
         }
     }
 });
 
-// Load latest on startup
-loadLatestRepacks();
+elBtnPrevPage.addEventListener("click", () => {
+    if (currentPage > 1) {
+        currentPage--;
+        loadCatalogGames();
+    }
+});
+
+elBtnNextPage.addEventListener("click", () => {
+    currentPage++;
+    loadCatalogGames();
+});
+
+elBtnBackToCatalog.addEventListener("click", () => {
+    setViewState("catalog");
+});
+
+// Settings Modal controls
+elSettingsGearBtn.addEventListener("click", () => {
+    elSettingsModal.style.display = "flex";
+});
+
+const closeSettings = () => {
+    elSettingsModal.style.display = "none";
+};
+
+elCloseSettingsModalBtn.addEventListener("click", closeSettings);
+elSaveSettingsBtn.addEventListener("click", () => {
+    const oldProvider = activeProvider;
+    activeProvider = elProviderSelect.value;
+    
+    const showLogs = elChkShowLogs.checked;
+    elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
+    
+    // Save to localStorage
+    localStorage.setItem("activeProvider", activeProvider);
+    localStorage.setItem("showLogs", showLogs ? "true" : "false");
+    
+    closeSettings();
+    
+    if (activeProvider !== oldProvider) {
+        currentPage = 1;
+        searchQuery = "";
+        elSearchInput.value = "";
+        
+        // Reset navigation pills for the current provider
+        elPillPopularMonth.classList.add("active");
+        elPillPopularYear.classList.remove("active");
+        
+        // For Online-Fix, Monthly/Yearly pills don't make sense since we scrape home page news list.
+        // We can rename tabs dynamically to reflect provider!
+        if (activeProvider === "onlinefix") {
+            elPillPopularMonth.innerText = "Latest Fixes";
+            elPillPopularYear.style.display = "none";
+        } else {
+            elPillPopularMonth.innerText = "Top 50 Month";
+            elPillPopularYear.style.display = "inline-block";
+        }
+        
+        loadCatalogGames();
+    }
+});
+
+// Initialize Settings state on startup
+function initSettings() {
+    activeProvider = localStorage.getItem("activeProvider") || "fitgirl";
+    const showLogs = localStorage.getItem("showLogs") === "true"; // False by default
+    
+    elProviderSelect.value = activeProvider;
+    elChkShowLogs.checked = showLogs;
+    
+    elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
+    
+    if (activeProvider === "onlinefix") {
+        elPillPopularMonth.innerText = "Latest Fixes";
+        elPillPopularYear.style.display = "none";
+    } else {
+        elPillPopularMonth.innerText = "Top 50 Month";
+        elPillPopularYear.style.display = "inline-block";
+    }
+}
+
+// Start Application logic
+initSettings();
+syncViewState();
+loadCatalogGames();
 
 // Start Polling Loop
 fetchState();

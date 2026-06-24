@@ -707,6 +707,114 @@ def extraction_worker():
         
     add_log("Extraction workflow complete!")
 
+def clean_size(size_str):
+    if not size_str:
+        return "Unknown"
+    s = re.sub(r'^from\s+', '', size_str, flags=re.IGNORECASE)
+    s = re.sub(r'\s*\[Selective\s+Download[^\]]*\]', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'\s*\(\s*Selective\s+Download[^\)]*\)', '', s, flags=re.IGNORECASE)
+    return s.strip()
+
+def clean_cover_url(url):
+    if not url:
+        return ""
+    url = url.split('?')[0]
+    # Strip WordPress Jetpack CDN prefixes (e.g. i0.wp.com/)
+    url = re.sub(r'^https?://i\d+\.wp\.com/', 'https://', url)
+    # Strip WordPress size suffixes (e.g. -150x150, -300x225)
+    url = re.sub(r'-\d+x\d+\.(jpg|jpeg|png|gif|webp)$', r'.\1', url, flags=re.IGNORECASE)
+    return url
+
+def clean_and_parse_title(raw_title):
+    # Remove #number prefix
+    title = re.sub(r'^#\d+\s*', '', raw_title).strip()
+    title = re.sub(r'\s+по\s+сети.*$', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'\s+скачать.*$', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'\s+', ' ', title)
+    
+    # We want to find where the version info starts.
+    pattern = r'[\s,–—\-]+(v\s*\d|build\s*\d|b\s*\d)'
+    match = re.search(pattern, title, re.IGNORECASE)
+    
+    version = ""
+    if match:
+        idx = match.start()
+        # The main title is everything before the match
+        main_title = title[:idx].strip()
+        # The version/details start at the matched version string
+        version_part = title[idx:].strip(' ,–—-')
+        
+        # Now let's extract the version number itself
+        v_match = re.search(r'\b(v\s*\d[\w\.]*|Build\s*\d[\w\.]*|b\s*\d[\w\.]*)\b', version_part, re.IGNORECASE)
+        if v_match:
+            version = v_match.group(1).strip()
+        else:
+            version = version_part
+            
+        title = main_title
+    else:
+        # If no version pattern is found, check if there's a simple version suffix
+        v_match = re.search(r'\b(v\s*\d[\w\.]*|Build\s*\d[\w\.]*)\b', title, re.IGNORECASE)
+        if v_match:
+            version = v_match.group(1).strip()
+            title = title.replace(v_match.group(0), "").strip()
+            
+    # Clean up trailing/leading dashes/commas from title
+    title = re.sub(r'^[\s,–—\-]+|[\s,–—\-]+$', '', title).strip()
+    title = re.sub(r'\s+', ' ', title)
+    return title, version
+
+def parse_online_fix_page(html, base_url):
+    soup = BeautifulSoup(html, 'html.parser')
+    articles = soup.find_all(class_=['article', 'article-short'])
+    results = []
+    for art in articles:
+        title_a = art.find('a', class_=['news-title', 'title', 'post-title'])
+        if not title_a:
+            for h in art.find_all(['h1', 'h2', 'h3']):
+                a = h.find('a')
+                if a:
+                    title_a = a
+                    break
+        if not title_a:
+            for a in art.find_all('a'):
+                if '/games/' in a.get('href', ''):
+                    title_a = a
+                    break
+        if not title_a:
+            continue
+            
+        title_text = title_a.text.strip()
+        title_text = title_text.split('\n')[0].strip()
+        href = title_a.get('href', '')
+        if '/games/' not in href:
+            continue
+            
+        img = art.find('img')
+        img_src = ""
+        if img:
+            img_src = img.get('data-src') or img.get('src', '')
+        if img_src:
+            img_src = urllib.parse.urljoin(base_url, img_src)
+            img_src = clean_cover_url(img_src)
+            
+        summary_el = art.find(class_='preview-text') or art.find(class_='entry-content')
+        summary = summary_el.text.strip() if summary_el else ""
+        summary = summary[:150] + "..." if len(summary) > 150 else summary
+        
+        clean_t, version = clean_and_parse_title(title_text)
+        
+        results.append({
+            "title": clean_t,
+            "version": version,
+            "url": href,
+            "cover_image": img_src,
+            "original_size": "Unknown",
+            "repack_size": "Unknown",
+            "summary": summary
+        })
+    return results
+
 def fetch_repack_details_helper(item):
     url = item['url']
     try:
@@ -729,11 +837,16 @@ def fetch_repack_details_helper(item):
             text_all = soup.get_text()
             orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
             repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
-            item['cover_image'] = cover_image
-            item['original_size'] = orig_match.group(1).strip() if orig_match else "Unknown"
-            item['repack_size'] = repack_match.group(1).strip() if repack_match else "Unknown"
+            
+            item['cover_image'] = clean_cover_url(cover_image)
+            item['original_size'] = clean_size(orig_match.group(1)) if orig_match else "Unknown"
+            item['repack_size'] = clean_size(repack_match.group(1)) if repack_match else "Unknown"
     except Exception as e:
         pass
+        
+    title, version = clean_and_parse_title(item.get('title', ''))
+    item['title'] = title
+    item['version'] = version
     return item
 
 # HTTP Web Server
@@ -794,42 +907,107 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(state).encode())
             return
             
+        elif path == "/api/proxy_image":
+            try:
+                query_params = urllib.parse.parse_qs(url_parsed.query)
+                img_url = query_params.get("url", [""])[0]
+                if not img_url:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                # Use standard requests with User-Agent to get the raw image directly
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                response = requests.get(img_url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    self.send_response(200)
+                    content_type = response.headers.get("Content-Type", "image/jpeg")
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(response.content)
+                else:
+                    self.send_response(response.status_code)
+                    self.end_headers()
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+            return
         elif path == "/api/popular":
             try:
-                add_log("Fetching popular FitGirl repacks...")
-                url = "https://fitgirl-repacks.site/pop-repacks/"
-                response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    content_el = soup.find('div', class_='entry-content')
-                    results = []
-                    if content_el:
-                        items = content_el.find_all('div', class_='widget-grid-view-image')
-                        for item in items:
-                            a = item.find('a')
-                            img = item.find('img')
-                            if a and img:
-                                title = a.get('title', '')
-                                repack_url = a.get('href', '')
-                                cover_image = img.get('src', '')
-                                results.append({
-                                    "title": title,
-                                    "url": repack_url,
-                                    "cover_image": cover_image,
-                                    "original_size": "Unknown",
-                                    "repack_size": "Unknown",
-                                    "summary": "Popular Repack"
-                                })
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"success": True, "results": results}).encode())
-                else:
-                    self.send_response(500)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"success": False, "error": f"HTTP status: {response.status_code}"}).encode())
+                query_params = urllib.parse.parse_qs(url_parsed.query)
+                provider = query_params.get("provider", ["fitgirl"])[0]
+                type_val = query_params.get("type", ["monthly"])[0]
+                page = int(query_params.get("page", ["1"])[0])
+                
+                results = []
+                has_next = False
+                if provider == "onlinefix":
+                    add_log(f"Fetching Online-Fix page {page}...")
+                    if page == 1:
+                        url = "https://online-fix.me/"
+                    else:
+                        url = f"https://online-fix.me/page/{page}/"
+                        
+                    response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
+                    if response.status_code == 200:
+                        results = parse_online_fix_page(response.text, url)
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        next_page_str = f"/page/{page+1}/"
+                        has_next = any(next_page_str in (a.get('href') or '') for a in soup.find_all('a'))
+                    else:
+                        raise Exception(f"HTTP status: {response.status_code}")
+                else: # fitgirl
+                    add_log(f"Fetching popular FitGirl repacks ({type_val}, page {page})...")
+                    if type_val == "yearly":
+                        url = "https://fitgirl-repacks.site/popular-repacks-of-the-year/"
+                    else: # monthly
+                        url = "https://fitgirl-repacks.site/pop-repacks/"
+                            
+                    response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        content_el = soup.find('div', class_='entry-content')
+                        all_results = []
+                        if content_el:
+                            items = content_el.find_all('div', class_='widget-grid-view-image')
+                            for item in items:
+                                a = item.find('a')
+                                img = item.find('img')
+                                if a and img:
+                                    title = a.get('title', '')
+                                    repack_url = a.get('href', '')
+                                    
+                                    repack_url_lower = repack_url.lower()
+                                    if "digest" in repack_url_lower or "uncategorized" in repack_url_lower or "announcement" in repack_url_lower:
+                                        continue
+                                        
+                                    clean_t, version = clean_and_parse_title(title)
+                                    cover_image = clean_cover_url(img.get('src', ''))
+                                    all_results.append({
+                                        "title": clean_t,
+                                        "version": version,
+                                        "url": repack_url,
+                                        "cover_image": cover_image,
+                                        "original_size": "Unknown",
+                                        "repack_size": "Unknown",
+                                        "summary": "Popular Repack"
+                                    })
+                        
+                        PAGE_SIZE = 24
+                        start_idx = (page - 1) * PAGE_SIZE
+                        end_idx = page * PAGE_SIZE
+                        results = all_results[start_idx:end_idx]
+                        has_next = end_idx < len(all_results)
+                    else:
+                        raise Exception(f"HTTP status: {response.status_code}")
+                
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "results": results, "has_next": has_next}).encode())
             except Exception as e:
+                add_log(f"Popular fetch exception: {str(e)}")
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1040,57 +1218,102 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(post_data)
                 query = data.get("query", "").strip()
+                provider = data.get("provider", "fitgirl")
+                page = int(data.get("page", 1))
+                
                 if not query:
                     self.send_response(400)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
                     self.wfile.write(json.dumps({"success": False, "error": "Query cannot be empty."}).encode())
                     return
-                    
-                add_log(f"Searching FitGirl for: {query}")
-                search_url = f"https://fitgirl-repacks.site/?s={urllib.parse.quote(query)}"
-                response = cf_requests.get(search_url, impersonate="chrome120", timeout=20, verify=False)
-                if response.status_code == 200:
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    articles = soup.find_all('article')
-                    results = []
-                    
-                    for art in articles[:10]: # Limit to top 10 results
-                        title_el = art.find('h1', class_=['entry-title', 'post-title']) or art.find('h2', class_=['entry-title', 'post-title'])
-                        link_el = title_el.find('a') if title_el else None
-                        if not link_el:
-                            continue
-                        title = link_el.text.strip()
-                        repack_url = link_el.get('href')
+                
+                results = []
+                has_next = False
+                if provider == "onlinefix":
+                    add_log(f"Searching Online-Fix for: {query} (page {page})...")
+                    search_url = "https://online-fix.me/index.php?do=search"
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Referer": "https://online-fix.me/"
+                    }
+                    post_body = {
+                        "do": "search",
+                        "subaction": "search",
+                        "search_start": str(page),
+                        "story": query
+                    }
+                    response = cf_requests.post(search_url, headers=headers, data=post_body, impersonate="chrome120", timeout=20, verify=False)
+                    if response.status_code == 200:
+                        results = parse_online_fix_page(response.text, search_url)
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        next_page_num = str(page + 1)
+                        for a in soup.find_all('a'):
+                            href = a.get('href') or ''
+                            onclick = a.get('onclick') or ''
+                            if f'search_start={next_page_num}' in href or f'list_submit({next_page_num})' in onclick or f'search_start:{next_page_num}' in onclick:
+                                has_next = True
+                                break
+                        if not has_next and len(results) >= 10:
+                            has_next = True
+                    else:
+                        raise Exception(f"HTTP status: {response.status_code}")
+                else: # fitgirl
+                    add_log(f"Searching FitGirl for: {query} (page {page})...")
+                    if page == 1:
+                        search_url = f"https://fitgirl-repacks.site/?s={urllib.parse.quote(query)}"
+                    else:
+                        search_url = f"https://fitgirl-repacks.site/page/{page}/?s={urllib.parse.quote(query)}"
                         
-                        summary_el = art.find(class_='entry-summary') or art.find(class_='entry-content')
-                        summary = summary_el.text.strip() if summary_el else ""
-                        summary = re.sub(r'\s*Continue reading\s*→.*$', '', summary, flags=re.IGNORECASE)
-                        summary = summary[:150] + "..." if len(summary) > 150 else summary
+                    response = cf_requests.get(search_url, impersonate="chrome120", timeout=20, verify=False)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        articles = soup.find_all('article')
+                        raw_results = []
                         
-                        results.append({
-                            "title": title,
-                            "url": repack_url,
-                            "summary": summary,
-                            "cover_image": "",
-                            "original_size": "Unknown",
-                            "repack_size": "Unknown"
-                        })
-                    
-                    from concurrent.futures import ThreadPoolExecutor
-                    with ThreadPoolExecutor(max_workers=8) as executor:
-                        final_results = list(executor.map(fetch_repack_details_helper, results))
+                        for art in articles:
+                            title_el = art.find('h1', class_=['entry-title', 'post-title']) or art.find('h2', class_=['entry-title', 'post-title'])
+                            link_el = title_el.find('a') if title_el else None
+                            if not link_el:
+                                continue
+                            title = link_el.text.strip()
+                            repack_url = link_el.get('href')
+                            
+                            repack_url_lower = repack_url.lower()
+                            if "digest" in repack_url_lower or "uncategorized" in repack_url_lower or "announcement" in repack_url_lower:
+                                continue
+                                
+                            summary_el = art.find(class_='entry-summary') or art.find(class_='entry-content')
+                            summary = summary_el.text.strip() if summary_el else ""
+                            summary = re.sub(r'\s*Continue reading\s*→.*$', '', summary, flags=re.IGNORECASE)
+                            summary = summary[:150] + "..." if len(summary) > 150 else summary
+                            
+                            raw_results.append({
+                                "title": title,
+                                "url": repack_url,
+                                "summary": summary,
+                                "cover_image": "",
+                                "original_size": "Unknown",
+                                "repack_size": "Unknown"
+                            })
                         
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"success": True, "results": final_results}).encode())
-                else:
-                    self.send_response(500)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"success": False, "error": f"HTTP status: {response.status_code}"}).encode())
+                        from concurrent.futures import ThreadPoolExecutor
+                        with ThreadPoolExecutor(max_workers=8) as executor:
+                            results = list(executor.map(fetch_repack_details_helper, raw_results))
+                            
+                        # Filter out non-repacks
+                        results = [r for r in results if not (r.get("repack_size") == "Unknown" and r.get("original_size") == "Unknown")]
+                        has_next = (soup.find('a', class_='next') is not None) or (soup.find('a', class_='next page-numbers') is not None)
+                    else:
+                        raise Exception(f"HTTP status: {response.status_code}")
+                
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "results": results, "has_next": has_next}).encode())
             except Exception as e:
+                add_log(f"Search exception: {str(e)}")
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1117,16 +1340,15 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     if response.status_code == 200:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         title_el = soup.find('h1', class_='entry-title')
-                        title = title_el.get_text(strip=True) if title_el else "Unknown Game"
-                        title = re.sub(r'\s+Repack\s*$', '', title, flags=re.IGNORECASE)
-                        title = re.sub(r'\s+Updated\s*$', '', title, flags=re.IGNORECASE)
+                        raw_title = title_el.get_text(strip=True) if title_el else "Unknown Game"
+                        title, version = clean_and_parse_title(raw_title)
                         
                         # Scrape sizes
                         text_all = soup.get_text()
                         orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
                         repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
-                        original_size = orig_match.group(1).strip() if orig_match else "Unknown"
-                        repack_size = repack_match.group(1).strip() if repack_match else "Unknown"
+                        original_size = clean_size(orig_match.group(1)) if orig_match else "Unknown"
+                        repack_size = clean_size(repack_match.group(1)) if repack_match else "Unknown"
                         
                         # Scrape cover image
                         cover_image = ""
@@ -1141,7 +1363,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     cover_image = img_el.get('src', '')
                                     
                         if cover_image:
-                            cover_image = urllib.parse.urljoin(url, cover_image)
+                            cover_image = clean_cover_url(urllib.parse.urljoin(url, cover_image))
                         
                         mirrors = []
                         if content_el:
@@ -1188,6 +1410,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "success": True,
                             "type": "fitgirl_page",
                             "title": title,
+                            "version": version,
                             "original_size": original_size,
                             "repack_size": repack_size,
                             "cover_image": cover_image,
@@ -1211,9 +1434,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         # Parse title
                         title_el = soup.find('h1', id='news-title') or soup.find('h1')
                         raw_title = title_el.text.strip() if title_el else "Unknown Game"
-                        cleaned_title = re.sub(r'\s+по\s+сети.*$', '', raw_title, flags=re.IGNORECASE)
-                        cleaned_title = re.sub(r'\s+скачать.*$', '', cleaned_title, flags=re.IGNORECASE)
-                        title = cleaned_title.strip()
+                        title, version = clean_and_parse_title(raw_title)
                         
                         # Parse cover image
                         cover_image = ""
@@ -1231,7 +1452,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     img_el = img
                                     break
                         if img_el:
-                            cover_image = urllib.parse.urljoin(url, img_el.get('src', ''))
+                            cover_image = clean_cover_url(urllib.parse.urljoin(url, img_el.get('src', '')))
                             
                         # Find hoster URL
                         hoster_url = None
@@ -1287,6 +1508,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "success": True,
                             "type": "fitgirl_page",
                             "title": title,
+                            "version": version,
                             "original_size": "Unknown",
                             "repack_size": "Unknown",
                             "cover_image": cover_image,
