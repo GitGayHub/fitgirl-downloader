@@ -15,6 +15,14 @@ const elSidebarActionsContainer = document.getElementById("sidebar-actions-conta
 const elSetupView = document.getElementById("setup-view");
 const elDownloadView = document.getElementById("download-view");
 
+// Browse Catalog & Search Elements
+const elSearchInput = document.getElementById("search-input");
+const elPillLatest = document.getElementById("pill-latest");
+const elPillPopular = document.getElementById("pill-popular");
+const elGamesLoader = document.getElementById("games-loader");
+const elGamesGridContainer = document.getElementById("games-grid-container");
+const elSearchResultsTitle = document.getElementById("search-results-title");
+
 // Setup Wizard Elements
 const elUrlTextarea = document.getElementById("url-textarea");
 const elAnalyzeBtn = document.getElementById("btn-analyze");
@@ -1003,6 +1011,149 @@ elConfirmProviderSwitchBtn.addEventListener("click", async () => {
         elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
     }
 });
+
+// Browse Catalog & Search Functionality
+function renderGamesList(results) {
+    elGamesGridContainer.innerHTML = "";
+    if (!results || results.length === 0) {
+        elGamesGridContainer.innerHTML = `<div class="no-results-message">No repacks found.</div>`;
+        return;
+    }
+    results.forEach(game => {
+        const card = document.createElement("div");
+        card.className = "game-card";
+        
+        const imgHtml = game.cover_image 
+            ? `<img class="card-cover" src="${game.cover_image}" alt="Cover">`
+            : `<div class="card-cover-placeholder">FG</div>`;
+            
+        card.innerHTML = `
+            <div class="card-cover-area">
+                ${imgHtml}
+                <div class="card-overlay">
+                    <button class="btn btn-primary btn-sm btn-card-load">Analyze</button>
+                </div>
+            </div>
+            <div class="card-info">
+                <h4 class="card-title" title="${game.title}">${game.title}</h4>
+                <div class="card-sizes">
+                    ${game.repack_size !== "Unknown" ? `<span class="size-badge repack">Repack: ${game.repack_size}</span>` : ""}
+                    ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
+                </div>
+                <p class="card-summary">${game.summary || ""}</p>
+            </div>
+        `;
+        
+        const triggerAnalyze = () => {
+            elUrlTextarea.value = game.url;
+            elUrlTextarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            elAnalyzeBtn.click();
+        };
+        card.querySelector(".btn-card-load").addEventListener("click", (e) => {
+            e.stopPropagation();
+            triggerAnalyze();
+        });
+        card.addEventListener("click", () => {
+            triggerAnalyze();
+        });
+        elGamesGridContainer.appendChild(card);
+    });
+}
+
+async function loadLatestRepacks() {
+    elGamesLoader.style.display = "flex";
+    elGamesGridContainer.innerHTML = "";
+    elSearchResultsTitle.style.display = "none";
+    try {
+        const response = await fetch("/api/latest");
+        const data = await response.json();
+        if (data.success) {
+            renderGamesList(data.results);
+        } else {
+            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to load latest repacks: ${data.error}</div>`;
+        }
+    } catch (e) {
+        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error loading latest repacks.</div>`;
+    } finally {
+        elGamesLoader.style.display = "none";
+    }
+}
+
+async function loadPopularRepacks() {
+    elGamesLoader.style.display = "flex";
+    elGamesGridContainer.innerHTML = "";
+    elSearchResultsTitle.style.display = "none";
+    try {
+        const response = await fetch("/api/popular");
+        const data = await response.json();
+        if (data.success) {
+            renderGamesList(data.results);
+        } else {
+            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to load popular repacks: ${data.error}</div>`;
+        }
+    } catch (e) {
+        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error loading popular repacks.</div>`;
+    } finally {
+        elGamesLoader.style.display = "none";
+    }
+}
+
+async function searchRepacks(query) {
+    if (!query) return;
+    elGamesLoader.style.display = "flex";
+    elGamesGridContainer.innerHTML = "";
+    
+    elPillLatest.classList.remove("active");
+    elPillPopular.classList.remove("active");
+    
+    elSearchResultsTitle.style.display = "block";
+    elSearchResultsTitle.innerText = `Search results for: "${query}"`;
+    
+    try {
+        const response = await fetch("/api/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: query })
+        });
+        const data = await response.json();
+        if (data.success) {
+            renderGamesList(data.results);
+        } else {
+            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to search: ${data.error}</div>`;
+        }
+    } catch (e) {
+        elGamesGridContainer.innerHTML = `<div class="error-text">Connection error searching repacks.</div>`;
+    } finally {
+        elGamesLoader.style.display = "none";
+    }
+}
+
+elPillLatest.addEventListener("click", () => {
+    elPillLatest.classList.add("active");
+    elPillPopular.classList.remove("active");
+    elSearchInput.value = "";
+    loadLatestRepacks();
+});
+
+elPillPopular.addEventListener("click", () => {
+    elPillLatest.classList.remove("active");
+    elPillPopular.classList.add("active");
+    elSearchInput.value = "";
+    loadPopularRepacks();
+});
+
+elSearchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        const q = elSearchInput.value.trim();
+        if (q) {
+            searchRepacks(q);
+        }
+    }
+});
+
+// Load latest on startup
+loadLatestRepacks();
 
 // Start Polling Loop
 fetchState();

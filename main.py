@@ -707,6 +707,35 @@ def extraction_worker():
         
     add_log("Extraction workflow complete!")
 
+def fetch_repack_details_helper(item):
+    url = item['url']
+    try:
+        res = cf_requests.get(url, impersonate="chrome120", timeout=15, verify=False)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            cover_image = ""
+            content_el = soup.find('div', class_='entry-content')
+            if content_el:
+                img_el = content_el.find('img', class_='alignleft')
+                if img_el:
+                    cover_image = img_el.get('src', '')
+                else:
+                    img_el = content_el.find('img')
+                    if img_el:
+                        cover_image = img_el.get('src', '')
+            if cover_image:
+                cover_image = urllib.parse.urljoin(url, cover_image)
+            
+            text_all = soup.get_text()
+            orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+            repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+            item['cover_image'] = cover_image
+            item['original_size'] = orig_match.group(1).strip() if orig_match else "Unknown"
+            item['repack_size'] = repack_match.group(1).strip() if repack_match else "Unknown"
+    except Exception as e:
+        pass
+    return item
+
 # HTTP Web Server
 class APIRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -763,6 +792,99 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     # Look for standard setup .bin files or output to check if extracted
                     state["is_extracted"] = any(f.endswith(".bin") for f in os.listdir(state["download_dir"]))
                 self.wfile.write(json.dumps(state).encode())
+            return
+            
+        elif path == "/api/popular":
+            try:
+                add_log("Fetching popular FitGirl repacks...")
+                url = "https://fitgirl-repacks.site/pop-repacks/"
+                response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    content_el = soup.find('div', class_='entry-content')
+                    results = []
+                    if content_el:
+                        items = content_el.find_all('div', class_='widget-grid-view-image')
+                        for item in items:
+                            a = item.find('a')
+                            img = item.find('img')
+                            if a and img:
+                                title = a.get('title', '')
+                                repack_url = a.get('href', '')
+                                cover_image = img.get('src', '')
+                                results.append({
+                                    "title": title,
+                                    "url": repack_url,
+                                    "cover_image": cover_image,
+                                    "original_size": "Unknown",
+                                    "repack_size": "Unknown",
+                                    "summary": "Popular Repack"
+                                })
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True, "results": results}).encode())
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": f"HTTP status: {response.status_code}"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+            return
+            
+        elif path == "/api/latest":
+            try:
+                add_log("Fetching latest FitGirl repacks...")
+                url = "https://fitgirl-repacks.site/"
+                response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    articles = soup.find_all('article')
+                    results = []
+                    for art in articles[:10]:
+                        title_el = art.find('h1', class_=['entry-title', 'post-title']) or art.find('h2', class_=['entry-title', 'post-title'])
+                        link_el = title_el.find('a') if title_el else None
+                        if not link_el:
+                            continue
+                        title = link_el.text.strip()
+                        repack_url = link_el.get('href')
+                        
+                        summary_el = art.find(class_='entry-summary') or art.find(class_='entry-content')
+                        summary = summary_el.text.strip() if summary_el else ""
+                        summary = re.sub(r'\s*Continue reading\s*→.*$', '', summary, flags=re.IGNORECASE)
+                        summary = summary[:150] + "..." if len(summary) > 150 else summary
+                        
+                        results.append({
+                            "title": title,
+                            "url": repack_url,
+                            "summary": summary,
+                            "cover_image": "",
+                            "original_size": "Unknown",
+                            "repack_size": "Unknown"
+                        })
+                    
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=8) as executor:
+                        final_results = list(executor.map(fetch_repack_details_helper, results))
+                        
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True, "results": final_results}).encode())
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": f"HTTP status: {response.status_code}"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
             return
             
         # Serve static web files
@@ -912,6 +1034,69 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode())
             
+        elif path == "/api/search":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                query = data.get("query", "").strip()
+                if not query:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": "Query cannot be empty."}).encode())
+                    return
+                    
+                add_log(f"Searching FitGirl for: {query}")
+                search_url = f"https://fitgirl-repacks.site/?s={urllib.parse.quote(query)}"
+                response = cf_requests.get(search_url, impersonate="chrome120", timeout=20, verify=False)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    articles = soup.find_all('article')
+                    results = []
+                    
+                    for art in articles[:10]: # Limit to top 10 results
+                        title_el = art.find('h1', class_=['entry-title', 'post-title']) or art.find('h2', class_=['entry-title', 'post-title'])
+                        link_el = title_el.find('a') if title_el else None
+                        if not link_el:
+                            continue
+                        title = link_el.text.strip()
+                        repack_url = link_el.get('href')
+                        
+                        summary_el = art.find(class_='entry-summary') or art.find(class_='entry-content')
+                        summary = summary_el.text.strip() if summary_el else ""
+                        summary = re.sub(r'\s*Continue reading\s*→.*$', '', summary, flags=re.IGNORECASE)
+                        summary = summary[:150] + "..." if len(summary) > 150 else summary
+                        
+                        results.append({
+                            "title": title,
+                            "url": repack_url,
+                            "summary": summary,
+                            "cover_image": "",
+                            "original_size": "Unknown",
+                            "repack_size": "Unknown"
+                        })
+                    
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=8) as executor:
+                        final_results = list(executor.map(fetch_repack_details_helper, results))
+                        
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True, "results": final_results}).encode())
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": f"HTTP status: {response.status_code}"}).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+            return
+            
         elif path == "/api/analyze":
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length).decode()
@@ -984,6 +1169,17 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         continue
                                     if not any(m["url"] == href or m["name"] == name for m in mirrors):
                                         mirrors.append({"name": name, "url": href})
+                                        
+                        if len(mirrors) > 3:
+                            filtered = []
+                            for m in mirrors:
+                                m_name_lower = m["name"].lower()
+                                m_url_lower = m["url"].lower()
+                                if "datanodes" in m_name_lower or "datanodes" in m_url_lower or \
+                                   "fuckingfast" in m_name_lower or "fuckingfast" in m_url_lower or \
+                                   "multiupload" in m_name_lower or "multiup" in m_url_lower:
+                                    filtered.append(m)
+                            mirrors = filtered
                                         
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
