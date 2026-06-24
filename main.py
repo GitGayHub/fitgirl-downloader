@@ -726,14 +726,17 @@ def clean_cover_url(url):
     return url
 
 def clean_and_parse_title(raw_title):
+    import html
+    # Decode HTML entities
+    title = html.unescape(raw_title)
     # Remove #number prefix
-    title = re.sub(r'^#\d+\s*', '', raw_title).strip()
+    title = re.sub(r'^#\d+\s*', '', title).strip()
     title = re.sub(r'\s+по\s+сети.*$', '', title, flags=re.IGNORECASE)
     title = re.sub(r'\s+скачать.*$', '', title, flags=re.IGNORECASE)
     title = re.sub(r'\s+', ' ', title)
     
     # We want to find where the version info starts.
-    pattern = r'[\s,–—\-]+(v\s*\d|build\s*\d|b\s*\d)'
+    pattern = r'[\s,–—\-(\[]+(v[\s.]*\d|build[\s.]*\d|b[\s.]*\d)'
     match = re.search(pattern, title, re.IGNORECASE)
     
     version = ""
@@ -742,10 +745,10 @@ def clean_and_parse_title(raw_title):
         # The main title is everything before the match
         main_title = title[:idx].strip()
         # The version/details start at the matched version string
-        version_part = title[idx:].strip(' ,–—-')
+        version_part = title[idx:].strip(' ,–—-()[]')
         
         # Now let's extract the version number itself
-        v_match = re.search(r'\b(v\s*\d[\w\.]*|Build\s*\d[\w\.]*|b\s*\d[\w\.]*)\b', version_part, re.IGNORECASE)
+        v_match = re.search(r'\b(v[\s.]*\d[\w\.]*|Build[\s.]*\d[\w\.]*|b[\s.]*\d[\w\.]*)\b', version_part, re.IGNORECASE)
         if v_match:
             version = v_match.group(1).strip()
         else:
@@ -754,7 +757,7 @@ def clean_and_parse_title(raw_title):
         title = main_title
     else:
         # If no version pattern is found, check if there's a simple version suffix
-        v_match = re.search(r'\b(v\s*\d[\w\.]*|Build\s*\d[\w\.]*)\b', title, re.IGNORECASE)
+        v_match = re.search(r'\b(v[\s.]*\d[\w\.]*|Build[\s.]*\d[\w\.]*)\b', title, re.IGNORECASE)
         if v_match:
             version = v_match.group(1).strip()
             title = title.replace(v_match.group(0), "").strip()
@@ -915,15 +918,50 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     self.send_response(400)
                     self.end_headers()
                     return
-                # Use standard requests with User-Agent to get the raw image directly
+                
+                # Check cache first
+                import hashlib
+                url_hash = hashlib.md5(img_url.encode('utf-8')).hexdigest()
+                ext = "jpg"
+                if "." in img_url.split('/')[-1]:
+                    parts = img_url.split('/')[-1].split('.')
+                    if len(parts) > 1 and len(parts[-1]) <= 4 and parts[-1].isalnum():
+                        ext = parts[-1]
+                
+                cache_dir = os.path.join(os.getcwd(), "cover_cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                cache_path = os.path.join(cache_dir, f"{url_hash}.{ext}")
+                
+                if os.path.exists(cache_path):
+                    self.send_response(200)
+                    content_type = "image/jpeg"
+                    if ext.lower() == "png":
+                        content_type = "image/png"
+                    elif ext.lower() == "gif":
+                        content_type = "image/gif"
+                    elif ext.lower() == "webp":
+                        content_type = "image/webp"
+                    
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Cache-Control", "public, max-age=31536000")
+                    self.end_headers()
+                    with open(cache_path, "rb") as f:
+                        self.wfile.write(f.read())
+                    return
+
+                # Download and cache
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 response = requests.get(img_url, headers=headers, timeout=15)
                 if response.status_code == 200:
+                    with open(cache_path, "wb") as f:
+                        f.write(response.content)
+                    
                     self.send_response(200)
                     content_type = response.headers.get("Content-Type", "image/jpeg")
                     self.send_header("Content-Type", content_type)
                     self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.send_header("Cache-Control", "public, max-age=31536000")
                     self.end_headers()
                     self.wfile.write(response.content)
                 else:
@@ -1264,7 +1302,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     if page == 1:
                         search_url = f"https://fitgirl-repacks.site/?s={urllib.parse.quote(query)}"
                     else:
-                        search_url = f"https://fitgirl-repacks.site/page/{page}/?s={urllib.parse.quote(query)}"
+                        search_url = f"https://fitgirl-repacks.site/?s={urllib.parse.quote(query)}&paged={page}"
                         
                     response = cf_requests.get(search_url, impersonate="chrome120", timeout=20, verify=False)
                     if response.status_code == 200:
@@ -1866,4 +1904,9 @@ def start_server():
 
 if __name__ == "__main__":
     add_log("[SYSTEM] Server initialized in idle setup mode.")
+    try:
+        import os
+        os.makedirs(os.path.join(os.getcwd(), "cover_cache"), exist_ok=True)
+    except Exception:
+        pass
     start_server()

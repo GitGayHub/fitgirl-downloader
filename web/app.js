@@ -64,6 +64,12 @@ const elChkDeleteOldFiles = document.getElementById("chk-delete-old-files");
 const elSelMainBtn = document.getElementById("btn-sel-main");
 const elSelAllBtn = document.getElementById("btn-sel-all");
 const elSelNoneBtn = document.getElementById("btn-sel-none");
+const elSelRusBtn = document.getElementById("btn-sel-rus");
+const elSiteToggleTrigger = document.getElementById("site-toggle-trigger");
+const elLabelSiteFitGirl = document.getElementById("label-site-fitgirl");
+const elLabelSiteOnlineFix = document.getElementById("label-site-onlinefix");
+const elToggleManualInputBtn = document.getElementById("btn-toggle-manual-input");
+const elUrlInputCard = document.getElementById("url-input-card");
 const elFilesListMain = document.getElementById("files-list-main");
 const elFilesListLang = document.getElementById("files-list-lang");
 const elFilesListOther = document.getElementById("files-list-other");
@@ -93,10 +99,12 @@ const elBtnBackToCatalog = document.getElementById("btn-back-to-catalog");
 const elDetailsGameTitle = document.getElementById("details-game-title");
 const elDetailsVersionBadge = document.getElementById("details-version-badge");
 const elBtnOpenBrowser = document.getElementById("btn-open-browser");
+const elCatalogTitle = document.getElementById("catalog-title");
 
 // Haze Background Elements
-const elHazeBgImgActive = document.getElementById("haze-bg-img-active");
-const elHazeBgImgNext = document.getElementById("haze-bg-img-next");
+const elHazeBgImg1 = document.getElementById("haze-bg-img-1");
+const elHazeBgImg2 = document.getElementById("haze-bg-img-2");
+let activeHazeBuffer = 1;
 
 // Download View Elements
 const elActiveGameTitle = document.getElementById("active-game-title");
@@ -127,6 +135,27 @@ let appState = {
     max_workers: 4,
     average_download_speed: 5000000.0
 };
+// Local memory cache for cover blobs to prevent pagination re-loading lag
+const blobUrlCache = new Map();
+
+async function getCachedImageUrl(url) {
+    if (!url) return "";
+    if (blobUrlCache.has(url)) {
+        return blobUrlCache.get(url);
+    }
+    try {
+        const res = await fetch(url);
+        if (res.ok) {
+            const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            blobUrlCache.set(url, blobUrl);
+            return blobUrl;
+        }
+    } catch (e) {
+        console.warn("Failed caching image in memory:", e);
+    }
+    return url;
+}
 
 let analyzedFiles = [];
 let smoothedSpeed = 0;
@@ -198,6 +227,32 @@ function sortFiles(files, orderType) {
     if (orderType === "original") {
         return [...files];
     }
+    const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
+    const isOptionalRussianFile = (f) => {
+        if (f.type === "game_part" || f.type === "installer") return false;
+        return f.filename && rusRegex.test(f.filename);
+    };
+    
+    if (orderType === "russian_first") {
+        return [...files].sort((a, b) => {
+            const isRusA = isOptionalRussianFile(a);
+            const isRusB = isOptionalRussianFile(b);
+            if (isRusA && !isRusB) return -1;
+            if (isRusB && !isRusA) return 1;
+            
+            if (a.type === "installer" && b.type !== "installer") return -1;
+            if (b.type === "installer" && a.type !== "installer") return 1;
+            
+            const partA = getPartNumber(a.filename);
+            const partB = getPartNumber(b.filename);
+            if (partA !== null && partB !== null) return partA - partB;
+            if (partA !== null) return 1;
+            if (partB !== null) return -1;
+            
+            return a.filename.localeCompare(b.filename, undefined, {numeric: true, sensitivity: 'base'});
+        });
+    }
+    
     return [...files].sort((a, b) => {
         if (a.type === "installer" && b.type !== "installer") return -1;
         if (b.type === "installer" && a.type !== "installer") return 1;
@@ -490,7 +545,6 @@ function resetSetupDashboard() {
     elSetupCover.src = "";
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
-    clearDynamicBackground();
 }
 
 function initCheckedFiles(files) {
@@ -548,11 +602,13 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 
                 if (scrapedMetadata.cover_image) {
                     const proxiedUrl = `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
-                    elSetupCover.src = proxiedUrl;
-                    elSetupCover.style.display = "block";
-                    elSetupCoverPlaceholder.style.display = "none";
-                    setHazeBackground(proxiedUrl);
-                    updateAccentFromImage(elSetupCover);
+                    getCachedImageUrl(proxiedUrl).then(cachedUrl => {
+                        elSetupCover.src = cachedUrl;
+                        elSetupCover.style.display = "block";
+                        elSetupCoverPlaceholder.style.display = "none";
+                        setHazeBackground(cachedUrl);
+                        updateAccentFromImage(elSetupCover);
+                    });
                 } else {
                     elSetupCover.src = "";
                     elSetupCover.style.display = "none";
@@ -618,6 +674,30 @@ elAnalyzeBtn.addEventListener("click", async () => {
     }
 });
 
+function configureRussianSorting(files) {
+    const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
+    const hasOptRus = files.some(f => (f.type !== "game_part" && f.type !== "installer") && f.filename && rusRegex.test(f.filename));
+    const optRusExists = Array.from(elSortingSelect.options).some(o => o.value === "russian_first");
+    
+    if (hasOptRus) {
+        elSelRusBtn.style.display = "inline-block";
+        if (!optRusExists) {
+            const opt = document.createElement("option");
+            opt.value = "russian_first";
+            opt.innerText = "Сначала русские + По порядку";
+            elSortingSelect.insertBefore(opt, elSortingSelect.firstChild);
+        }
+        elSortingSelect.value = "russian_first";
+    } else {
+        elSelRusBtn.style.display = "none";
+        if (optRusExists) {
+            const optIndex = Array.from(elSortingSelect.options).findIndex(o => o.value === "russian_first");
+            if (optIndex !== -1) elSortingSelect.remove(optIndex);
+        }
+        elSortingSelect.value = "sequential";
+    }
+}
+
 // Load links nested when user clicks mirror
 async function loadMirrorLinks(mirrorUrl, mirrorName) {
     activeMirrorName = mirrorName;
@@ -639,6 +719,8 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
         if (response.ok && data.success) {
             rawFilesList = data.files;
             initCheckedFiles(data.files);
+            
+            configureRussianSorting(data.files);
             
             // Show mirror badge and update label
             elActiveMirrorName.innerText = mirrorName;
@@ -696,6 +778,8 @@ function displayConfigCard(title, files, url = "") {
     rawFilesList = files;
     initCheckedFiles(files);
     
+    configureRussianSorting(files);
+    
     elSetupDashboard.style.display = "grid";
     elConfigCard.style.display = "block";
     
@@ -703,16 +787,154 @@ function displayConfigCard(title, files, url = "") {
     setViewState("details");
 }
 
-// Render Checklists
-function renderChecklist(files) {
-    elFilesListMain.innerHTML = "";
-    elFilesListLang.innerHTML = "";
-    elFilesListOther.innerHTML = "";
+// Part Files Grouping helpers
+function getPartGroupInfo(filename) {
+    // Match "part 1", ".part1", "_part01", etc.
+    const match = filename.match(/(.*?)([\s\.\-_]+part\s*(\d+))([^/\\]*)$/i);
+    if (match) {
+        return {
+            base: match[1].trim(),
+            partNum: parseInt(match[3], 10),
+            suffix: match[4]
+        };
+    }
+    return null;
+}
+
+function setupGroupCheckboxBehavior(headerCheckbox, childCheckboxes, filesInGroup) {
+    const updateHeaderState = () => {
+        let checkedCount = 0;
+        childCheckboxes.forEach(cb => {
+            if (cb.checked) checkedCount++;
+        });
+        if (checkedCount === 0) {
+            headerCheckbox.checked = false;
+            headerCheckbox.indeterminate = false;
+        } else if (checkedCount === childCheckboxes.length) {
+            headerCheckbox.checked = true;
+            headerCheckbox.indeterminate = false;
+        } else {
+            headerCheckbox.checked = false;
+            headerCheckbox.indeterminate = true;
+        }
+    };
     
-    let langCount = 0;
-    let otherCount = 0;
+    headerCheckbox.addEventListener("change", () => {
+        const checked = headerCheckbox.checked;
+        childCheckboxes.forEach((cb, idx) => {
+            cb.checked = checked;
+            const f = filesInGroup[idx];
+            if (checked) {
+                checkedFiles.add(f.filename);
+            } else {
+                checkedFiles.delete(f.filename);
+            }
+        });
+        updateMetadataETA();
+    });
     
-    files.forEach((f) => {
+    childCheckboxes.forEach((cb, idx) => {
+        cb.addEventListener("change", () => {
+            const f = filesInGroup[idx];
+            if (cb.checked) {
+                checkedFiles.add(f.filename);
+            } else {
+                checkedFiles.delete(f.filename);
+            }
+            updateHeaderState();
+            updateMetadataETA();
+        });
+    });
+    
+    updateHeaderState();
+}
+
+function renderFileListToContainer(files, containerElement) {
+    containerElement.innerHTML = "";
+    if (files.length === 0) return;
+    
+    // Group files by Part
+    const groups = {};
+    const singleFiles = [];
+    
+    files.forEach(f => {
+        const info = getPartGroupInfo(f.filename);
+        if (info) {
+            const key = `${info.base}`;
+            if (!groups[key]) groups[key] = [];
+            groups[key].push(f);
+        } else {
+            singleFiles.push(f);
+        }
+    });
+    
+    // Move groups with only 1 file to singleFiles
+    for (const key in groups) {
+        if (groups[key].length === 1) {
+            singleFiles.push(groups[key][0]);
+            delete groups[key];
+        }
+    }
+    
+    // Render groups
+    for (const groupName in groups) {
+        const groupFiles = groups[groupName];
+        
+        // Sort files within the group by part number
+        groupFiles.sort((a, b) => {
+            const infoA = getPartGroupInfo(a.filename);
+            const infoB = getPartGroupInfo(b.filename);
+            return (infoA ? infoA.partNum : 0) - (infoB ? infoB.partNum : 0);
+        });
+        
+        const details = document.createElement("details");
+        details.className = "file-group-collapsible";
+        details.open = false;
+        
+        const totalSize = groupFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+        const totalSizeText = totalSize > 0 ? formatBytes(totalSize) : "Pending...";
+        
+        details.innerHTML = `
+            <summary class="file-group-summary">
+                <span class="summary-toggle-icon">⏵</span>
+                <input type="checkbox" class="group-header-checkbox">
+                <span class="group-title-label">${groupName} (${groupFiles.length} Parts)</span>
+                <span class="checkbox-badge">${totalSizeText}</span>
+            </summary>
+            <div class="file-group-list"></div>
+        `;
+        
+        const listDiv = details.querySelector(".file-group-list");
+        const headerCheckbox = details.querySelector(".group-header-checkbox");
+        const childCheckboxes = [];
+        
+        groupFiles.forEach(f => {
+            const item = document.createElement("label");
+            item.className = "checkbox-item group-child-item";
+            
+            const sizeText = f.size > 0 ? formatBytes(f.size) : "Pending...";
+            const checkedStr = checkedFiles.has(f.filename) ? "checked" : "";
+            
+            item.innerHTML = `
+                <input type="checkbox" data-filename="${f.filename}" ${checkedStr}>
+                <span class="checkbox-label" title="${f.filename}">${cleanFilename(f.filename)}</span>
+                <span class="checkbox-badge">${sizeText}</span>
+            `;
+            listDiv.appendChild(item);
+            childCheckboxes.push(item.querySelector("input"));
+        });
+        
+        setupGroupCheckboxBehavior(headerCheckbox, childCheckboxes, groupFiles);
+        containerElement.appendChild(details);
+        
+        // Prevent clicking summary checkbox from toggling details expansion
+        headerCheckbox.addEventListener("click", (e) => {
+            e.stopPropagation();
+        });
+    }
+    
+    // Render single files
+    singleFiles.forEach(f => {
         const item = document.createElement("label");
         item.className = "checkbox-item";
         
@@ -735,16 +957,42 @@ function renderChecklist(files) {
             updateMetadataETA();
         });
         
-        if (f.type === "game_part" || f.type === "installer") {
-            elFilesListMain.appendChild(item);
+        containerElement.appendChild(item);
+    });
+}
+
+// Render Checklists
+function renderChecklist(files) {
+    elFilesListMain.innerHTML = "";
+    elFilesListLang.innerHTML = "";
+    elFilesListOther.innerHTML = "";
+    
+    let langCount = 0;
+    let otherCount = 0;
+    
+    const mainFiles = [];
+    const langFiles = [];
+    const otherFiles = [];
+    
+    const sortVal = elSortingSelect ? elSortingSelect.value : "sequential";
+    const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
+    
+    files.forEach(f => {
+        const isRus = (f.type !== "game_part" && f.type !== "installer") && f.filename && rusRegex.test(f.filename);
+        if (f.type === "game_part" || f.type === "installer" || (sortVal === "russian_first" && isRus)) {
+            mainFiles.push(f);
         } else if (f.type === "lang_part") {
-            elFilesListLang.appendChild(item);
+            langFiles.push(f);
             langCount++;
         } else {
-            elFilesListOther.appendChild(item);
+            otherFiles.push(f);
             otherCount++;
         }
     });
+    
+    renderFileListToContainer(mainFiles, elFilesListMain);
+    renderFileListToContainer(langFiles, elFilesListLang);
+    renderFileListToContainer(otherFiles, elFilesListOther);
     
     // Hide empty group containers
     elFileGroupLangBox.style.display = langCount > 0 ? "block" : "none";
@@ -752,6 +1000,28 @@ function renderChecklist(files) {
 }
 
 // Checkbox selection controls
+function syncGroupHeaders() {
+    document.querySelectorAll(".file-group-collapsible").forEach(details => {
+        const headerCheckbox = details.querySelector(".group-header-checkbox");
+        if (!headerCheckbox) return;
+        const childCheckboxes = details.querySelectorAll(".file-group-list input");
+        let checkedCount = 0;
+        childCheckboxes.forEach(cb => {
+            if (cb.checked) checkedCount++;
+        });
+        if (checkedCount === 0) {
+            headerCheckbox.checked = false;
+            headerCheckbox.indeterminate = false;
+        } else if (checkedCount === childCheckboxes.length) {
+            headerCheckbox.checked = true;
+            headerCheckbox.indeterminate = false;
+        } else {
+            headerCheckbox.checked = false;
+            headerCheckbox.indeterminate = true;
+        }
+    });
+}
+
 elSelMainBtn.addEventListener("click", () => {
     document.querySelectorAll(".checkbox-item input").forEach(cb => {
         const filename = cb.getAttribute("data-filename");
@@ -764,6 +1034,7 @@ elSelMainBtn.addEventListener("click", () => {
             checkedFiles.delete(filename);
         }
     });
+    syncGroupHeaders();
     updateMetadataETA();
 });
 
@@ -773,6 +1044,7 @@ elSelAllBtn.addEventListener("click", () => {
         cb.checked = true;
         checkedFiles.add(filename);
     });
+    syncGroupHeaders();
     updateMetadataETA();
 });
 
@@ -782,6 +1054,21 @@ elSelNoneBtn.addEventListener("click", () => {
         cb.checked = false;
         checkedFiles.delete(filename);
     });
+    syncGroupHeaders();
+    updateMetadataETA();
+});
+
+elSelRusBtn.addEventListener("click", () => {
+    const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
+    document.querySelectorAll(".checkbox-item input").forEach(cb => {
+        const filename = cb.getAttribute("data-filename");
+        if (filename && rusRegex.test(filename)) {
+            cb.checked = true;
+            checkedFiles.add(filename);
+        }
+    });
+    
+    syncGroupHeaders();
     updateMetadataETA();
 });
 
@@ -962,103 +1249,13 @@ window.triggerRetry = async (index) => {
     }
 };
 
-// Provider Switching Modal Listeners
-elChangeProviderBtn.addEventListener("click", () => {
-    openChangeProviderModal();
-});
-
-elCloseProviderModalBtn.addEventListener("click", () => {
-    elProviderModal.style.display = "none";
-});
-
-elCancelProviderSwitchBtn.addEventListener("click", () => {
-    elProviderModal.style.display = "none";
-});
-
-function openChangeProviderModal() {
-    elModalMirrorsContainer.innerHTML = "";
-    
-    // Filter out active mirror
-    const availableMirrors = scrapedMirrors.filter(m => m.name !== appState.active_mirror);
-    
-    if (availableMirrors.length === 0) {
-        elModalMirrorsContainer.innerHTML = "<p style='color: var(--text-muted); font-size: 0.85rem;'>Нет других доступных зеркал для этого репака.</p>";
-        elConfirmProviderSwitchBtn.setAttribute("disabled", "true");
-    } else {
-        availableMirrors.forEach(m => {
-            const pill = document.createElement("button");
-            pill.className = "mirror-pill";
-            pill.innerText = m.name;
-            pill.addEventListener("click", () => {
-                document.querySelectorAll("#modal-mirrors-container .mirror-pill").forEach(p => p.classList.remove("active"));
-                pill.classList.add("active");
-                
-                elConfirmProviderSwitchBtn.removeAttribute("disabled");
-                elConfirmProviderSwitchBtn.setAttribute("data-mirror-url", m.url);
-                elConfirmProviderSwitchBtn.setAttribute("data-mirror-name", m.name);
-            });
-            elModalMirrorsContainer.appendChild(pill);
-        });
-        elConfirmProviderSwitchBtn.setAttribute("disabled", "true");
-    }
-    
-    elChkDeleteOldFiles.checked = false;
-    elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
-    elProviderModal.style.display = "flex";
+// Sidebar provider switch immediately toggles the site provider
+if (elChangeProviderBtn) {
+    elChangeProviderBtn.addEventListener("click", () => {
+        const next = activeProvider === "fitgirl" ? "onlinefix" : "fitgirl";
+        switchProvider(next);
+    });
 }
-
-elConfirmProviderSwitchBtn.addEventListener("click", async () => {
-    const newMirrorUrl = elConfirmProviderSwitchBtn.getAttribute("data-mirror-url");
-    const newMirrorName = elConfirmProviderSwitchBtn.getAttribute("data-mirror-name");
-    const deleteOld = elChkDeleteOldFiles.checked;
-    
-    if (!newMirrorUrl || !newMirrorName) return;
-    
-    elConfirmProviderSwitchBtn.setAttribute("disabled", "true");
-    elConfirmProviderSwitchBtn.innerText = "Resolving New Mirror...";
-    
-    try {
-        const analyzeRes = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: newMirrorUrl })
-        });
-        
-        const analyzeData = await analyzeRes.json();
-        if (!analyzeRes.ok || !analyzeData.success) {
-            alert("Failed to resolve links from the new mirror: " + (analyzeData.error || "Unknown error"));
-            elConfirmProviderSwitchBtn.removeAttribute("disabled");
-            elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
-            return;
-        }
-        
-        elConfirmProviderSwitchBtn.innerText = "Switching Provider...";
-        const switchRes = await fetch("/api/switch_provider", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                new_mirror: newMirrorName,
-                files: analyzeData.files,
-                delete_old: deleteOld
-            })
-        });
-        
-        const switchData = await switchRes.json();
-        if (switchRes.ok && switchData.success) {
-            elProviderModal.style.display = "none";
-            fetchState();
-        } else {
-            alert("Failed to switch provider: " + (switchData.error || "Unknown error"));
-            elConfirmProviderSwitchBtn.removeAttribute("disabled");
-            elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
-        }
-    } catch (e) {
-        console.error("Error switching provider:", e);
-        alert("Connection error switching provider.");
-        elConfirmProviderSwitchBtn.removeAttribute("disabled");
-        elConfirmProviderSwitchBtn.innerText = "Сменить провайдера";
-    }
-});
 
 // ViewState Router
 let viewState = "catalog"; // "catalog", "details", "downloading"
@@ -1097,19 +1294,19 @@ function syncViewState() {
         elSidebarActionsContainer.style.display = "none";
 
         if (viewState === "catalog") {
-            elCatalogContainer.style.display = "block";
-            elGameDetailsContainer.style.display = "none";
+            elCatalogContainer.classList.remove("hidden-view");
+            elGameDetailsContainer.classList.add("hidden-view");
             clearDynamicBackground();
         } else if (viewState === "details") {
-            elCatalogContainer.style.display = "none";
-            elGameDetailsContainer.style.display = "block";
+            elCatalogContainer.classList.add("hidden-view");
+            elGameDetailsContainer.classList.remove("hidden-view");
         }
     }
 }
 
 let dynamicResetTimeout = null;
 
-// Haze Background Swap (Harmonoid style)
+// Haze Background Swap (Harmonoid style - double-buffered cross-fade)
 function setHazeBackground(coverUrl) {
     if (dynamicResetTimeout) {
         clearTimeout(dynamicResetTimeout);
@@ -1120,32 +1317,88 @@ function setHazeBackground(coverUrl) {
         return;
     }
     
-    if (elHazeBgImgActive.src === coverUrl) return;
+    const currentImg = activeHazeBuffer === 1 ? elHazeBgImg1 : elHazeBgImg2;
+    const nextImg = activeHazeBuffer === 1 ? elHazeBgImg2 : elHazeBgImg1;
+    
+    if (currentImg.src === coverUrl && currentImg.style.opacity === "1") return;
 
-    elHazeBgImgNext.onload = () => {
-        elHazeBgImgNext.style.opacity = "1";
-        setTimeout(() => {
-            elHazeBgImgActive.src = coverUrl;
-            elHazeBgImgActive.style.opacity = "1";
-            elHazeBgImgNext.style.opacity = "0";
-        }, 1500);
+    nextImg.onload = () => {
+        nextImg.style.opacity = "1";
+        currentImg.style.opacity = "0";
+        activeHazeBuffer = activeHazeBuffer === 1 ? 2 : 1;
     };
-    elHazeBgImgNext.src = coverUrl;
+    nextImg.src = coverUrl;
+}
+
+// Smoothly animate theme colors transition
+function animateCSSColorVariables(targetPrimary, targetSecondary, duration = 400) {
+    const startPrimary = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim() || '#a83279';
+    const startSecondary = getComputedStyle(document.documentElement).getPropertyValue('--color-secondary').trim() || '#9b59b6';
+    
+    function parseRgb(colorStr) {
+        if (colorStr.startsWith("rgb")) {
+            const m = colorStr.match(/\d+/g);
+            if (m) return { r: parseInt(m[0]), g: parseInt(m[1]), b: parseInt(m[2]) };
+        } else if (colorStr.startsWith("#")) {
+            let hex = colorStr.slice(1);
+            if (hex.length === 3) hex = hex.split('').map(x => x + x).join('');
+            return {
+                r: parseInt(hex.slice(0, 2), 16),
+                g: parseInt(hex.slice(2, 4), 16),
+                b: parseInt(hex.slice(4, 6), 16)
+            };
+        }
+        return { r: 168, g: 50, b: 121 };
+    }
+    
+    const fromP = parseRgb(startPrimary);
+    const fromS = parseRgb(startSecondary);
+    const toP = parseRgb(targetPrimary);
+    const toS = parseRgb(targetSecondary);
+    
+    const startTime = performance.now();
+    
+    function update(time) {
+        const elapsed = time - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        
+        const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        
+        const rP = Math.round(fromP.r + (toP.r - fromP.r) * ease);
+        const gP = Math.round(fromP.g + (toP.g - fromP.g) * ease);
+        const bP = Math.round(fromP.b + (toP.b - fromP.b) * ease);
+        
+        const rS = Math.round(fromS.r + (toS.r - fromS.r) * ease);
+        const gS = Math.round(fromS.g + (toS.g - fromS.g) * ease);
+        const bS = Math.round(fromS.b + (toS.b - fromS.b) * ease);
+        
+        const primary = `rgb(${rP}, ${gP}, ${bP})`;
+        const secondary = `rgb(${rS}, ${gS}, ${bS})`;
+        const glow = `rgba(${rP}, ${gP}, ${bP}, 0.35)`;
+        const border = `rgba(${rP}, ${gP}, ${bP}, 0.15)`;
+        
+        document.documentElement.style.setProperty('--color-primary', primary);
+        document.documentElement.style.setProperty('--color-secondary', secondary);
+        document.documentElement.style.setProperty('--color-primary-glow', glow);
+        document.documentElement.style.setProperty('--border-glow', border);
+        
+        if (progress < 1) {
+            requestAnimationFrame(update);
+        }
+    }
+    
+    requestAnimationFrame(update);
 }
 
 function clearDynamicBackground() {
     if (dynamicResetTimeout) {
         clearTimeout(dynamicResetTimeout);
     }
-    elHazeBgImgNext.style.opacity = "0";
     dynamicResetTimeout = setTimeout(() => {
-        elHazeBgImgActive.src = "";
-        elHazeBgImgActive.style.opacity = "0";
-        // Reset dynamic CSS accent colors back to standard purple
-        document.documentElement.style.setProperty('--color-primary', '#a83279');
-        document.documentElement.style.setProperty('--color-secondary', '#9b59b6');
-        document.documentElement.style.setProperty('--color-primary-glow', 'rgba(155, 89, 182, 0.35)');
-        document.documentElement.style.setProperty('--border-glow', 'rgba(155, 89, 182, 0.15)');
+        if (elHazeBgImg1) elHazeBgImg1.style.opacity = "0";
+        if (elHazeBgImg2) elHazeBgImg2.style.opacity = "0";
+        // Smoothly animate back to neutral purple
+        animateCSSColorVariables('#a83279', '#9b59b6', 1200);
         dynamicResetTimeout = null;
     }, 500);
 }
@@ -1238,10 +1491,8 @@ function updateAccentFromImage(imgElement) {
                 const b2 = Math.min(255, Math.floor(rgb.b * factor));
                 const secondaryAccent = `rgb(${r2}, ${g2}, ${b2})`;
 
-                document.documentElement.style.setProperty('--color-primary', accent);
-                document.documentElement.style.setProperty('--color-secondary', secondaryAccent);
-                document.documentElement.style.setProperty('--color-primary-glow', glow);
-                document.documentElement.style.setProperty('--border-glow', border);
+                // Smoothly animate colors to dynamic values
+                animateCSSColorVariables(accent, secondaryAccent, 1200);
             }
         } catch (e) {
             console.error("Color extraction exception:", e);
@@ -1275,9 +1526,6 @@ function renderGamesList(results) {
         const coverUrl = game.cover_image 
             ? `/api/proxy_image?url=${encodeURIComponent(game.cover_image)}`
             : "";
-        const imgHtml = coverUrl 
-            ? `<img class="card-cover" src="${coverUrl}" alt="Cover">`
-            : `<div class="card-cover-placeholder">FG</div>`;
             
         const verBadge = game.version 
             ? `<span class="version-badge" style="margin-left: auto;">${game.version}</span>`
@@ -1285,7 +1533,7 @@ function renderGamesList(results) {
             
         card.innerHTML = `
             <div class="card-cover-area">
-                ${imgHtml}
+                <div class="card-cover-placeholder">FG</div>
             </div>
             <div class="card-info">
                 <h4 class="card-title" title="${game.title}">${game.title}</h4>
@@ -1294,9 +1542,17 @@ function renderGamesList(results) {
                     ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
                     ${verBadge}
                 </div>
-                <p class="card-summary">${game.summary || ""}</p>
             </div>
         `;
+        
+        if (coverUrl) {
+            getCachedImageUrl(coverUrl).then(cachedUrl => {
+                const coverArea = card.querySelector(".card-cover-area");
+                if (coverArea) {
+                    coverArea.innerHTML = `<img class="card-cover" src="${cachedUrl}" alt="Cover">`;
+                }
+            });
+        }
         
         card.addEventListener("click", () => {
             elUrlTextarea.value = game.url;
@@ -1417,58 +1673,232 @@ const closeSettings = () => {
 
 elCloseSettingsModalBtn.addEventListener("click", closeSettings);
 elSaveSettingsBtn.addEventListener("click", () => {
-    const oldProvider = activeProvider;
-    activeProvider = elProviderSelect.value;
-    
     const showLogs = elChkShowLogs.checked;
     elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
-    
-    // Save to localStorage
-    localStorage.setItem("activeProvider", activeProvider);
     localStorage.setItem("showLogs", showLogs ? "true" : "false");
-    
     closeSettings();
+});
+
+// Quick site switcher behavior
+function switchProvider(newProvider) {
+    if (activeProvider === newProvider) return;
     
-    if (activeProvider !== oldProvider) {
+    activeProvider = newProvider;
+    localStorage.setItem("activeProvider", activeProvider);
+    
+    if (elProviderSelect) {
+        elProviderSelect.value = activeProvider;
+    }
+    
+    // Sync header quick switch toggle
+    if (activeProvider === "onlinefix") {
+        if (elSiteToggleTrigger) elSiteToggleTrigger.classList.add("onlinefix-active");
+        if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.add("active");
+        if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.remove("active");
+        
+        elPillPopularMonth.innerText = "Latest Fixes";
+        elPillPopularYear.style.display = "none";
+    } else {
+        if (elSiteToggleTrigger) elSiteToggleTrigger.classList.remove("onlinefix-active");
+        if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.add("active");
+        if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.remove("active");
+        
+        elPillPopularMonth.innerText = "Top 50 Month";
+        elPillPopularYear.style.display = "inline-block";
+    }
+    
+    if (elChangeProviderBtn) {
+        const span = elChangeProviderBtn.querySelector("span");
+        if (span) {
+            span.innerText = activeProvider === "onlinefix" ? "Active: Online-Fix" : "Active: FitGirl";
+        }
+    }
+    
+    if (elSearchInput) {
+        elSearchInput.placeholder = activeProvider === "onlinefix" ? "Search Online-Fix..." : "Search FitGirl repacks...";
+    }
+    
+    // Reset state
+    currentPage = 1;
+    searchQuery = "";
+    elSearchInput.value = "";
+    
+    // Reset navigation pills
+    elPillPopularMonth.classList.add("active");
+    elPillPopularYear.classList.remove("active");
+    
+    loadCatalogGames();
+}
+
+// Bind sliding toggle click & drag behaviors (vertical slider)
+let isDraggingSiteToggle = false;
+let startDragY = 0;
+
+if (elSiteToggleTrigger) {
+    elSiteToggleTrigger.addEventListener("click", (e) => {
+        if (isDraggingSiteToggle) return;
+        const nextProvider = activeProvider === "fitgirl" ? "onlinefix" : "fitgirl";
+        switchProvider(nextProvider);
+    });
+    
+    const onDragStart = (clientY) => {
+        isDraggingSiteToggle = false;
+        startDragY = clientY;
+        const wrapper = elSiteToggleTrigger.querySelector(".site-toggle-labels-wrapper");
+        if (wrapper) wrapper.style.transition = "none";
+    };
+    
+    const onDragMove = (clientY) => {
+        const diffY = clientY - startDragY;
+        const wrapper = elSiteToggleTrigger.querySelector(".site-toggle-labels-wrapper");
+        if (!wrapper) return;
+        
+        if (activeProvider === "fitgirl") {
+            if (diffY > 0 && diffY < 40) {
+                wrapper.style.transform = `translateY(${diffY}px)`;
+                if (diffY > 15) {
+                    isDraggingSiteToggle = true;
+                }
+            }
+        } else if (activeProvider === "onlinefix") {
+            if (diffY < 0 && diffY > -40) {
+                wrapper.style.transform = `translateY(${-30 + diffY}px)`;
+                if (diffY < -15) {
+                    isDraggingSiteToggle = true;
+                }
+            }
+        }
+    };
+    
+    const onDragEnd = () => {
+        const wrapper = elSiteToggleTrigger.querySelector(".site-toggle-labels-wrapper");
+        if (wrapper) wrapper.style.transition = "";
+        
+        if (isDraggingSiteToggle) {
+            const nextProvider = activeProvider === "fitgirl" ? "onlinefix" : "fitgirl";
+            switchProvider(nextProvider);
+            setTimeout(() => { isDraggingSiteToggle = false; }, 50);
+        } else {
+            // Snap back
+            if (wrapper) {
+                if (activeProvider === "fitgirl") {
+                    wrapper.style.transform = "translateY(0)";
+                } else {
+                    wrapper.style.transform = "translateY(-30px)";
+                }
+            }
+        }
+    };
+    
+    elSiteToggleTrigger.addEventListener("mousedown", (e) => {
+        onDragStart(e.clientY);
+        const onMouseMove = (eMove) => onDragMove(eMove.clientY);
+        const onMouseUp = () => {
+            document.removeEventListener("mousemove", onMouseMove);
+            document.removeEventListener("mouseup", onMouseUp);
+            onDragEnd();
+        };
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+    });
+    
+    elSiteToggleTrigger.addEventListener("touchstart", (e) => {
+        onDragStart(e.touches[0].clientY);
+    }, { passive: true });
+    
+    elSiteToggleTrigger.addEventListener("touchmove", (e) => {
+        onDragMove(e.touches[0].clientY);
+    }, { passive: true });
+    
+    elSiteToggleTrigger.addEventListener("touchend", () => {
+        onDragEnd();
+    });
+}
+
+// Catalog Title Click Navigation
+if (elCatalogTitle) {
+    elCatalogTitle.addEventListener("click", () => {
         currentPage = 1;
         searchQuery = "";
-        elSearchInput.value = "";
-        
-        // Reset navigation pills for the current provider
-        elPillPopularMonth.classList.add("active");
-        elPillPopularYear.classList.remove("active");
-        
-        // For Online-Fix, Monthly/Yearly pills don't make sense since we scrape home page news list.
-        // We can rename tabs dynamically to reflect provider!
-        if (activeProvider === "onlinefix") {
-            elPillPopularMonth.innerText = "Latest Fixes";
-            elPillPopularYear.style.display = "none";
-        } else {
-            elPillPopularMonth.innerText = "Top 50 Month";
-            elPillPopularYear.style.display = "inline-block";
-        }
-        
+        activeTab = "popular-month";
+        if (elSearchInput) elSearchInput.value = "";
+        if (elPillPopularMonth) elPillPopularMonth.classList.add("active");
+        if (elPillPopularYear) elPillPopularYear.classList.remove("active");
+        viewState = "catalog";
+        syncViewState();
         loadCatalogGames();
-    }
-});
+    });
+}
+
+// Centered manual input toggler
+if (elToggleManualInputBtn && elUrlInputCard) {
+    elToggleManualInputBtn.addEventListener("click", () => {
+        if (elUrlInputCard.style.display === "none" || elUrlInputCard.style.display === "") {
+            elUrlInputCard.style.display = "block";
+            elToggleManualInputBtn.classList.add("active");
+            elToggleManualInputBtn.innerHTML = `
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/>
+                </svg>
+            `;
+        } else {
+            elUrlInputCard.style.display = "none";
+            elToggleManualInputBtn.classList.remove("active");
+            elToggleManualInputBtn.innerHTML = `
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                </svg>
+            `;
+        }
+    });
+}
 
 // Initialize Settings state on startup
 function initSettings() {
     activeProvider = localStorage.getItem("activeProvider") || "fitgirl";
     const showLogs = localStorage.getItem("showLogs") === "true"; // False by default
     
-    elProviderSelect.value = activeProvider;
+    if (elProviderSelect) {
+        elProviderSelect.value = activeProvider;
+    }
     elChkShowLogs.checked = showLogs;
     
     elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
     
     if (activeProvider === "onlinefix") {
+        if (elSiteToggleTrigger) elSiteToggleTrigger.classList.add("onlinefix-active");
+        if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.add("active");
+        if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.remove("active");
+        
         elPillPopularMonth.innerText = "Latest Fixes";
         elPillPopularYear.style.display = "none";
     } else {
+        if (elSiteToggleTrigger) elSiteToggleTrigger.classList.remove("onlinefix-active");
+        if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.add("active");
+        if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.remove("active");
+        
         elPillPopularMonth.innerText = "Top 50 Month";
         elPillPopularYear.style.display = "inline-block";
     }
+    
+    if (elChangeProviderBtn) {
+        const span = elChangeProviderBtn.querySelector("span");
+        if (span) {
+            span.innerText = activeProvider === "onlinefix" ? "Active: Online-Fix" : "Active: FitGirl";
+        }
+    }
+    
+    if (elSearchInput) {
+        elSearchInput.placeholder = activeProvider === "onlinefix" ? "Search Online-Fix..." : "Search FitGirl repacks...";
+    }
+}
+
+// Fallback wheel scroll event listener to fix Electron/Chromium nested scrollbar bugs
+const elChecklistContainer = document.querySelector(".files-checklist-container");
+if (elChecklistContainer) {
+    elChecklistContainer.addEventListener("wheel", (e) => {
+        elChecklistContainer.scrollTop += e.deltaY;
+    }, { passive: true });
 }
 
 // Start Application logic
