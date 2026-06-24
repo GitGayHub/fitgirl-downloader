@@ -600,12 +600,42 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 elMetadataOriginalSize.innerText = scrapedMetadata.original_size;
                 elMetadataRepackSize.innerText = scrapedMetadata.repack_size;
                 
+                // Render video trailer
+                const elVideoContainer = document.getElementById("details-video-container");
+                const elVideoIframe = document.getElementById("video-iframe");
+                if (elVideoContainer && elVideoIframe) {
+                    if (data.videos && data.videos.length > 0) {
+                        let videoUrl = data.videos[0];
+                        if (videoUrl.includes("youtube.com/watch?v=")) {
+                            const videoId = videoUrl.split("watch?v=")[1].split("&")[0];
+                            videoUrl = `https://www.youtube.com/embed/${videoId}`;
+                        } else if (videoUrl.includes("youtu.be/")) {
+                            const videoId = videoUrl.split("youtu.be/")[1].split("?")[0];
+                            videoUrl = `https://www.youtube.com/embed/${videoId}`;
+                        }
+                        if (videoUrl.startsWith("//")) {
+                            videoUrl = "https:" + videoUrl;
+                        }
+                        elVideoIframe.src = videoUrl;
+                        elVideoContainer.style.display = "block";
+                    } else {
+                        elVideoIframe.src = "";
+                        elVideoContainer.style.display = "none";
+                    }
+                }
+
                 if (scrapedMetadata.cover_image) {
                     const proxiedUrl = `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
                     getCachedImageUrl(proxiedUrl).then(cachedUrl => {
                         elSetupCover.src = cachedUrl;
                         elSetupCover.style.display = "block";
                         elSetupCoverPlaceholder.style.display = "none";
+                        elSetupCover.onerror = () => {
+                            elSetupCover.src = "";
+                            elSetupCover.style.display = "none";
+                            elSetupCoverPlaceholder.style.display = "flex";
+                            clearDynamicBackground();
+                        };
                         setHazeBackground(cachedUrl);
                         updateAccentFromImage(elSetupCover);
                     });
@@ -962,6 +992,7 @@ function renderFileListToContainer(files, containerElement) {
 }
 
 // Render Checklists
+// Render Checklists
 function renderChecklist(files) {
     elFilesListMain.innerHTML = "";
     elFilesListLang.innerHTML = "";
@@ -978,8 +1009,7 @@ function renderChecklist(files) {
     const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
     
     files.forEach(f => {
-        const isRus = (f.type !== "game_part" && f.type !== "installer") && f.filename && rusRegex.test(f.filename);
-        if (f.type === "game_part" || f.type === "installer" || (sortVal === "russian_first" && isRus)) {
+        if (f.type === "game_part" || f.type === "installer") {
             mainFiles.push(f);
         } else if (f.type === "lang_part") {
             langFiles.push(f);
@@ -990,6 +1020,18 @@ function renderChecklist(files) {
         }
     });
     
+    if (sortVal === "russian_first") {
+        const sortRusFirst = (a, b) => {
+            const isRusA = a.filename && rusRegex.test(a.filename);
+            const isRusB = b.filename && rusRegex.test(b.filename);
+            if (isRusA && !isRusB) return -1;
+            if (isRusB && !isRusA) return 1;
+            return 0;
+        };
+        langFiles.sort(sortRusFirst);
+        otherFiles.sort(sortRusFirst);
+    }
+    
     renderFileListToContainer(mainFiles, elFilesListMain);
     renderFileListToContainer(langFiles, elFilesListLang);
     renderFileListToContainer(otherFiles, elFilesListOther);
@@ -997,6 +1039,60 @@ function renderChecklist(files) {
     // Hide empty group containers
     elFileGroupLangBox.style.display = langCount > 0 ? "block" : "none";
     elFileGroupOtherBox.style.display = otherCount > 0 ? "block" : "none";
+    
+    updateSelectionPill();
+}
+
+function updateSelectionPill() {
+    const elPillsContainer = document.getElementById("selection-status-pills");
+    if (!elPillsContainer) return;
+    
+    if (!rawFilesList || rawFilesList.length === 0) {
+        elPillsContainer.innerHTML = "";
+        return;
+    }
+    
+    const rusRegex = /(?:^|[\s\.\-_])(rus|russian)(?:$|[\s\.\-_])/i;
+    
+    // Categorize raw files list
+    const mainFiles = rawFilesList.filter(f => f.type === "game_part" || f.type === "installer");
+    const optionalFiles = rawFilesList.filter(f => f.type !== "game_part" && f.type !== "installer");
+    const russianFiles = optionalFiles.filter(f => f.filename && rusRegex.test(f.filename));
+    const nonRussianOptional = optionalFiles.filter(f => !f.filename || !rusRegex.test(f.filename));
+    
+    // Check currently selected
+    const mainChecked = mainFiles.every(f => checkedFiles.has(f.filename));
+    const optionalChecked = optionalFiles.every(f => checkedFiles.has(f.filename));
+    const optionalNoneChecked = optionalFiles.every(f => !checkedFiles.has(f.filename));
+    
+    const russianChecked = russianFiles.length > 0 && russianFiles.every(f => checkedFiles.has(f.filename));
+    const russianNoneChecked = russianFiles.every(f => !checkedFiles.has(f.filename));
+    const nonRussianOptionalNoneChecked = nonRussianOptional.every(f => !checkedFiles.has(f.filename));
+    
+    let state = "custom";
+    let text = "Custom Selection";
+    let icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>`;
+    
+    if (mainChecked && optionalNoneChecked) {
+        state = "main";
+        text = "Main Game Only";
+        icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`;
+    } else if (mainChecked && optionalChecked) {
+        state = "full";
+        text = "Full Repack";
+        icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M18 7l-1.41-1.41-6.34 6.34 1.41 1.41L18 7zm4.24-1.41L11.66 16.17 7.48 12l-1.41 1.41L11.66 19l12-12-1.42-1.41zM2 12.5l1.5-1.5L7 14.5l-1.5 1.5L2 12.5z"/></svg>`;
+    } else if (russianFiles.length > 0 && mainChecked && russianChecked && nonRussianOptionalNoneChecked) {
+        state = "russian";
+        text = "Russian Selected";
+        icon = `<svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>`;
+    }
+    
+    elPillsContainer.innerHTML = `
+        <span class="selection-pill state-${state}">
+            ${icon}
+            <span>${text}</span>
+        </span>
+    `;
 }
 
 // Checkbox selection controls
@@ -1020,6 +1116,7 @@ function syncGroupHeaders() {
             headerCheckbox.indeterminate = true;
         }
     });
+    updateSelectionPill();
 }
 
 elSelMainBtn.addEventListener("click", () => {
@@ -1074,7 +1171,6 @@ elSelRusBtn.addEventListener("click", () => {
 
 elBrowseDirBtn.addEventListener("click", async () => {
     elBrowseDirBtn.setAttribute("disabled", "true");
-    elBrowseDirBtn.innerText = "Opening...";
     try {
         const response = await fetch("/api/browse_folder");
         const data = await response.json();
@@ -1088,7 +1184,6 @@ elBrowseDirBtn.addEventListener("click", async () => {
         alert("Failed to open folder picker.");
     } finally {
         elBrowseDirBtn.removeAttribute("disabled");
-        elBrowseDirBtn.innerText = "Browse...";
     }
 });
 
@@ -1512,6 +1607,21 @@ let activeTab = "popular-month";
 let searchQuery = "";
 let activeProvider = "fitgirl";
 
+// Frontend page cache
+const catalogPagesCache = new Map();
+function getCatalogCacheKey(provider, page, query, tab) {
+    return `${provider}_${page}_${query || ''}_${tab || ''}`;
+}
+
+const GAMEPAD_SVG = `
+<svg class="gamepad-placeholder-icon" viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.45; color: var(--text-muted);">
+  <rect x="2" y="6" width="20" height="12" rx="3"></rect>
+  <path d="M6 12h4M8 10v4"></path>
+  <circle cx="15" cy="11" r="1" fill="currentColor"></circle>
+  <circle cx="18" cy="13" r="1" fill="currentColor"></circle>
+</svg>
+`;
+
 function renderGamesList(results) {
     elGamesGridContainer.innerHTML = "";
     if (!results || results.length === 0) {
@@ -1527,20 +1637,15 @@ function renderGamesList(results) {
             ? `/api/proxy_image?url=${encodeURIComponent(game.cover_image)}`
             : "";
             
-        const verBadge = game.version 
-            ? `<span class="version-badge" style="margin-left: auto;">${game.version}</span>`
-            : "";
-            
         card.innerHTML = `
             <div class="card-cover-area">
-                <div class="card-cover-placeholder">FG</div>
+                <div class="card-cover-placeholder">${GAMEPAD_SVG}</div>
             </div>
             <div class="card-info">
                 <h4 class="card-title" title="${game.title}">${game.title}</h4>
                 <div class="card-sizes" style="display: flex; align-items: center; width: 100%;">
                     ${game.repack_size !== "Unknown" ? `<span class="size-badge repack">Repack: ${game.repack_size}</span>` : ""}
                     ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
-                    ${verBadge}
                 </div>
             </div>
         `;
@@ -1549,7 +1654,15 @@ function renderGamesList(results) {
             getCachedImageUrl(coverUrl).then(cachedUrl => {
                 const coverArea = card.querySelector(".card-cover-area");
                 if (coverArea) {
-                    coverArea.innerHTML = `<img class="card-cover" src="${cachedUrl}" alt="Cover">`;
+                    const img = document.createElement("img");
+                    img.className = "card-cover";
+                    img.src = cachedUrl;
+                    img.alt = "Cover";
+                    img.onerror = () => {
+                        coverArea.innerHTML = `<div class="card-cover-placeholder">${GAMEPAD_SVG}</div>`;
+                    };
+                    coverArea.innerHTML = "";
+                    coverArea.appendChild(img);
                 }
             });
         }
@@ -1567,6 +1680,25 @@ async function loadCatalogGames() {
     elGamesLoader.style.display = "flex";
     elGamesGridContainer.innerHTML = "";
     elSearchResultsTitle.style.display = "none";
+    
+    const cacheKey = getCatalogCacheKey(activeProvider, currentPage, searchQuery, activeTab);
+    if (catalogPagesCache.has(cacheKey)) {
+        const cached = catalogPagesCache.get(cacheKey);
+        renderGamesList(cached.results);
+        if (cached.has_next) {
+            elBtnNextPage.removeAttribute("disabled");
+        } else {
+            elBtnNextPage.setAttribute("disabled", "true");
+        }
+        elGamesLoader.style.display = "none";
+        elBtnPrevPage.disabled = (currentPage === 1);
+        elPageIndicator.innerText = `Page ${currentPage}`;
+        if (searchQuery) {
+            elSearchResultsTitle.style.display = "block";
+            elSearchResultsTitle.innerText = `Search results for: "${searchQuery}"`;
+        }
+        return;
+    }
     
     try {
         let response;
@@ -1590,6 +1722,10 @@ async function loadCatalogGames() {
         
         const data = await response.json();
         if (data.success) {
+            catalogPagesCache.set(cacheKey, {
+                results: data.results,
+                has_next: data.has_next
+            });
             renderGamesList(data.results);
             
             // Toggle pagination next button based on has_next returned from server
@@ -1659,6 +1795,8 @@ elBtnNextPage.addEventListener("click", () => {
 });
 
 elBtnBackToCatalog.addEventListener("click", () => {
+    const elVideoIframe = document.getElementById("video-iframe");
+    if (elVideoIframe) elVideoIframe.src = "";
     setViewState("catalog");
 });
 
@@ -1731,88 +1869,54 @@ function switchProvider(newProvider) {
 }
 
 // Bind sliding toggle click & drag behaviors (vertical slider)
-let isDraggingSiteToggle = false;
-let startDragY = 0;
-
+// Bind sliding toggle click behaviors (click-to-expand vertical switcher)
 if (elSiteToggleTrigger) {
     elSiteToggleTrigger.addEventListener("click", (e) => {
-        if (isDraggingSiteToggle) return;
-        const nextProvider = activeProvider === "fitgirl" ? "onlinefix" : "fitgirl";
-        switchProvider(nextProvider);
-    });
-    
-    const onDragStart = (clientY) => {
-        isDraggingSiteToggle = false;
-        startDragY = clientY;
-        const wrapper = elSiteToggleTrigger.querySelector(".site-toggle-labels-wrapper");
-        if (wrapper) wrapper.style.transition = "none";
-    };
-    
-    const onDragMove = (clientY) => {
-        const diffY = clientY - startDragY;
-        const wrapper = elSiteToggleTrigger.querySelector(".site-toggle-labels-wrapper");
-        if (!wrapper) return;
+        e.stopPropagation();
         
-        if (activeProvider === "fitgirl") {
-            if (diffY > 0 && diffY < 40) {
-                wrapper.style.transform = `translateY(${diffY}px)`;
-                if (diffY > 15) {
-                    isDraggingSiteToggle = true;
+        // If not expanded, expand it
+        if (!elSiteToggleTrigger.classList.contains("expanded")) {
+            elSiteToggleTrigger.classList.add("expanded");
+            
+            // Add a one-time click handler to document to close it if clicked outside
+            const closeMenu = (event) => {
+                if (!elSiteToggleTrigger.contains(event.target)) {
+                    elSiteToggleTrigger.classList.remove("expanded");
+                    document.removeEventListener("click", closeMenu);
                 }
-            }
-        } else if (activeProvider === "onlinefix") {
-            if (diffY < 0 && diffY > -40) {
-                wrapper.style.transform = `translateY(${-30 + diffY}px)`;
-                if (diffY < -15) {
-                    isDraggingSiteToggle = true;
-                }
-            }
+            };
+            setTimeout(() => {
+                document.addEventListener("click", closeMenu);
+            }, 0);
         }
-    };
-    
-    const onDragEnd = () => {
-        const wrapper = elSiteToggleTrigger.querySelector(".site-toggle-labels-wrapper");
-        if (wrapper) wrapper.style.transition = "";
-        
-        if (isDraggingSiteToggle) {
-            const nextProvider = activeProvider === "fitgirl" ? "onlinefix" : "fitgirl";
-            switchProvider(nextProvider);
-            setTimeout(() => { isDraggingSiteToggle = false; }, 50);
-        } else {
-            // Snap back
-            if (wrapper) {
-                if (activeProvider === "fitgirl") {
-                    wrapper.style.transform = "translateY(0)";
-                } else {
-                    wrapper.style.transform = "translateY(-30px)";
+    });
+
+    const labelFitgirl = document.getElementById("label-site-fitgirl");
+    const labelOnlineFix = document.getElementById("label-site-onlinefix");
+
+    if (labelFitgirl) {
+        labelFitgirl.addEventListener("click", (e) => {
+            if (elSiteToggleTrigger.classList.contains("expanded")) {
+                e.stopPropagation();
+                elSiteToggleTrigger.classList.remove("expanded");
+                if (activeProvider !== "fitgirl") {
+                    switchProvider("fitgirl");
                 }
             }
-        }
-    };
-    
-    elSiteToggleTrigger.addEventListener("mousedown", (e) => {
-        onDragStart(e.clientY);
-        const onMouseMove = (eMove) => onDragMove(eMove.clientY);
-        const onMouseUp = () => {
-            document.removeEventListener("mousemove", onMouseMove);
-            document.removeEventListener("mouseup", onMouseUp);
-            onDragEnd();
-        };
-        document.addEventListener("mousemove", onMouseMove);
-        document.addEventListener("mouseup", onMouseUp);
-    });
-    
-    elSiteToggleTrigger.addEventListener("touchstart", (e) => {
-        onDragStart(e.touches[0].clientY);
-    }, { passive: true });
-    
-    elSiteToggleTrigger.addEventListener("touchmove", (e) => {
-        onDragMove(e.touches[0].clientY);
-    }, { passive: true });
-    
-    elSiteToggleTrigger.addEventListener("touchend", () => {
-        onDragEnd();
-    });
+        });
+    }
+
+    if (labelOnlineFix) {
+        labelOnlineFix.addEventListener("click", (e) => {
+            if (elSiteToggleTrigger.classList.contains("expanded")) {
+                e.stopPropagation();
+                elSiteToggleTrigger.classList.remove("expanded");
+                if (activeProvider !== "onlinefix") {
+                    switchProvider("onlinefix");
+                }
+            }
+        });
+    }
 }
 
 // Catalog Title Click Navigation

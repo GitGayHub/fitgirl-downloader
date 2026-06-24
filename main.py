@@ -764,6 +764,12 @@ def clean_and_parse_title(raw_title):
             
     # Clean up trailing/leading dashes/commas from title
     title = re.sub(r'^[\s,–—\-]+|[\s,–—\-]+$', '', title).strip()
+    # Strip DLC suffixes like + 3 DLCs/Bonuses, + All DLCs, OST, etc.
+    title = re.sub(r'\+\s*(?:\d+\s*|All\s+)?(?:DLCs?|Bonuses?|OST|Soundtracks?|Music|Bonus|Extras?)(?:\s*(?:/|\+|and)\s*(?:\d+\s*|All\s+)?(?:DLCs?|Bonuses?|OST|Soundtracks?|Music|Bonus|Extras?))*\b', '', title, flags=re.IGNORECASE)
+    # Clean empty parenthesis/brackets
+    title = re.sub(r'\(\s*\)', '', title)
+    title = re.sub(r'\[\s*\]', '', title)
+    title = re.sub(r'^[\s,–—\-]+|[\s,–—\-]+$', '', title).strip()
     title = re.sub(r'\s+', ' ', title)
     return title, version
 
@@ -1441,6 +1447,17 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     filtered.append(m)
                             mirrors = filtered
                                         
+                        # Scrape gameplay videos/trailers
+                        videos = []
+                        if content_el:
+                            for iframe in content_el.find_all('iframe'):
+                                src = iframe.get('src', '')
+                                if "youtube" in src or "youtu.be" in src:
+                                    if src.startswith('//'):
+                                        src = 'https:' + src
+                                    if src not in videos:
+                                        videos.append(src)
+
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
@@ -1452,7 +1469,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "original_size": original_size,
                             "repack_size": repack_size,
                             "cover_image": cover_image,
-                            "mirrors": mirrors
+                            "mirrors": mirrors,
+                            "videos": videos
                         }).encode())
                         return
                     else:
@@ -1539,6 +1557,16 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                 "url": encoded_url
                             })
                             
+                        # Scrape gameplay videos/trailers
+                        videos = []
+                        for iframe in soup.find_all('iframe'):
+                            src = iframe.get('src', '')
+                            if "youtube" in src or "youtu.be" in src:
+                                if src.startswith('//'):
+                                    src = 'https:' + src
+                                if src not in videos:
+                                    videos.append(src)
+
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
@@ -1550,7 +1578,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "original_size": "Unknown",
                             "repack_size": "Unknown",
                             "cover_image": cover_image,
-                            "mirrors": mirrors
+                            "mirrors": mirrors,
+                            "videos": videos
                         }).encode())
                         return
                     else:

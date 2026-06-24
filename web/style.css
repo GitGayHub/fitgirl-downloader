@@ -1867,9 +1867,9 @@ body {
 .haze-blob {
     position: absolute;
     border-radius: 50%;
-    opacity: 0.25;
+    opacity: 0.50;
     mix-blend-mode: screen;
-    transition: background-color 1s ease;
+    transition: background-color 1800ms ease;
     z-index: 0;
     pointer-events: none;
 }
@@ -1944,4 +1944,66 @@ body {
     transform: translateY(20px);
     pointer-events: none;
     z-index: 1;
+}
+
+/* Video trailer widget styles */
+.video-trailers-section {
+    width: 100%;
+    margin-top: 20px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 14px;
+    padding: 12px;
+    box-sizing: border-box;
+}
+
+/* Selection status pills */
+.selection-status-pills {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    min-height: 24px;
+}
+.selection-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    border: 1px solid transparent;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+.selection-pill svg {
+    flex-shrink: 0;
+}
+.selection-pill.state-main {
+    background: rgba(52, 152, 219, 0.12);
+    border-color: rgba(52, 152, 219, 0.3);
+    color: #5dade2;
+}
+.selection-pill.state-russian {
+    background: rgba(46, 204, 113, 0.12);
+    border-color: rgba(46, 204, 113, 0.3);
+    color: #2ecc71;
+}
+.selection-pill.state-full {
+    background: rgba(155, 89, 182, 0.12);
+    border-color: rgba(155, 89, 182, 0.3);
+    color: #af7ac5;
+}
+.selection-pill.state-custom {
+    background: rgba(241, 196, 15, 0.12);
+    border-color: rgba(241, 196, 15, 0.3);
+    color: #f1c40f;
+}
+
+#btn-browse-dir:disabled {
+    opacity: 0.6 !important;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
 }
