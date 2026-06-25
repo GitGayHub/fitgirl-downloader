@@ -272,106 +272,190 @@ def extract_fileditch_link(page_url):
         return None
 
 def extract_gofile_link(page_url):
-    try:
-        # Extract content ID from page_url
-        content_id = page_url.split("/d/")[-1].split("?")[0]
-        add_log(f"Extracting Gofile direct link for content: {content_id}")
-        
-        # Create guest account
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        headers = {
-            "User-Agent": user_agent,
-            "Referer": "https://gofile.io/",
-            "Origin": "https://gofile.io"
-        }
-        r = cf_requests.post("https://api.gofile.io/accounts", headers=headers, impersonate="chrome120", timeout=15)
-        if r.status_code != 200:
-            add_log(f"Gofile: Failed to create guest account (status {r.status_code})")
+    with extraction_lock:
+        from playwright.sync_api import sync_playwright
+        import os
+        add_log(f"Extracting Gofile direct link for: {page_url}")
+        try:
+            profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "scratch", "chrome_profile"))
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=profile_dir,
+                    headless=False,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox"
+                    ]
+                )
+                page = context.new_page()
+                
+                gofile_links = []
+                api_status = [None]
+                
+                def on_response(response):
+                    if "api.gofile.io" in response.url:
+                        try:
+                            data = response.json()
+                            status = data.get("status")
+                            if status:
+                                api_status[0] = status
+                            if status == "ok":
+                                children = data.get("data", {}).get("children", {})
+                                for cid, cinfo in children.items():
+                                    link = cinfo.get("link")
+                                    if link:
+                                        gofile_links.append(link)
+                        except Exception:
+                            pass
+                page.on("response", on_response)
+                
+                navigation_failed = False
+                try:
+                    page.goto(page_url, wait_until="domcontentloaded", timeout=25000)
+                except Exception as e:
+                    add_log(f"Gofile navigation warning (gofile.io may be blocked by your network firewall): {e}")
+                    navigation_failed = True
+                    
+                # Wait up to 15 seconds
+                for _ in range(15):
+                    if gofile_links or api_status[0]:
+                        break
+                    page.wait_for_timeout(1000)
+                
+                context.close()
+                
+                if gofile_links:
+                    add_log("Successfully extracted Gofile direct link!")
+                    return gofile_links[0]
+                elif api_status[0] == "error-notPremium":
+                    add_log("Gofile: Free accounts cannot download this folder. Premium account required.")
+                    return "ERROR_NOT_PREMIUM"
+                elif api_status[0] == "error-notFound":
+                    add_log("Gofile: Folder/file not found (404).")
+                    return "ERROR_NOT_FOUND"
+                elif navigation_failed or not api_status[0]:
+                    add_log("Gofile: Connection timed out. Gofile may be blocked on your network/VPN.")
+                    return "ERROR_BLOCKED"
+                else:
+                    return None
+        except Exception as e:
+            add_log(f"Gofile extraction exception: {str(e)}")
             return None
-        acct_data = r.json()
-        if acct_data.get("status") != "ok":
-            add_log(f"Gofile account status: {acct_data.get('status')}")
-            return None
-        api_token = acct_data["data"]["token"]
-        
-        # Generate website token
-        import time, hashlib
-        time_slot = int(time.time() / 14400)
-        salt = "5d4f7g8sd45fsd"
-        token_str = f"{user_agent}::en-US::{api_token}::{time_slot}::{salt}"
-        website_token = hashlib.sha256(token_str.encode()).hexdigest()
-        
-        # Query content details
-        headers = {
-            "User-Agent": user_agent,
-            "Referer": "https://gofile.io/",
-            "Origin": "https://gofile.io",
-            "Authorization": f"Bearer {api_token}",
-            "X-Website-Token": website_token,
-            "X-BL": "en-US"
-        }
-        cookies = {"accountToken": api_token}
-        params = {
-            "contentFilter": "",
-            "page": "1",
-            "pageSize": "1000",
-            "sortField": "name",
-            "sortDirection": "1"
-        }
-        url = f"https://api.gofile.io/contents/{content_id}"
-        r = cf_requests.get(url, headers=headers, cookies=cookies, params=params, impersonate="chrome120", timeout=15)
-        
-        data = r.json()
-        status = data.get("status")
-        if status == "error-notPremium":
-            add_log("Gofile: Free accounts cannot download this folder. Premium account required.")
-            return "ERROR_NOT_PREMIUM"
-        elif status == "error-notFound":
-            add_log("Gofile: Folder/file not found (404).")
-            return "ERROR_NOT_FOUND"
-        elif status != "ok":
-            add_log(f"Gofile API error: {status}")
-            return None
-            
-        children = data.get("data", {}).get("children", {})
-        if not children:
-            add_log("Gofile: No files found in folder.")
-            return None
-            
-        first_key = list(children.keys())[0]
-        direct_link = children[first_key].get("link")
-        if direct_link:
-            add_log("Successfully extracted Gofile direct link!")
-            return direct_link
-        return None
-    except Exception as e:
-        add_log(f"Gofile extraction exception: {str(e)}")
-        return None
 
 def extract_rootz_link(page_url):
-    try:
-        add_log(f"Checking Rootz page: {page_url}")
-        r = cf_requests.get(page_url, impersonate="chrome120", timeout=15, verify=False)
-        if r.status_code == 200:
-            if "This page could not be found" in r.text or "404" in r.text:
-                add_log("Rootz: File not found (404).")
+    with extraction_lock:
+        from playwright.sync_api import sync_playwright
+        add_log(f"Extracting Rootz direct link for: {page_url}")
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                
+                try:
+                    page.goto(page_url, wait_until="load", timeout=20000)
+                except Exception as e:
+                    add_log(f"Rootz: Navigation failed: {e}")
+                    browser.close()
+                    return None
+                
+                # Wait 4 seconds for client-side React rendering
+                page.wait_for_timeout(4000)
+                
+                # Check for 404
+                body_text = page.locator("body").inner_text()
+                if "This page could not be found" in body_text or "404" in body_text:
+                    add_log("Rootz: File not found (404).")
+                    browser.close()
+                    return "ERROR_NOT_FOUND"
+                    
+                download_btn = page.locator("button:has-text('Download')")
+                if download_btn.count() == 0:
+                    download_btn = page.locator("text=Download")
+                    
+                if download_btn.count() > 0:
+                    try:
+                        with page.expect_download(timeout=15000) as download_info:
+                            download_btn.first.click()
+                        download = download_info.value
+                        dl_url = download.url
+                        download.cancel()
+                        add_log("Successfully extracted Rootz direct link!")
+                        browser.close()
+                        return dl_url
+                    except Exception as click_err:
+                        add_log(f"Rootz click/download exception: {click_err}")
+                else:
+                    add_log("Rootz: Download button not found.")
+                
+                browser.close()
                 return "ERROR_NOT_FOUND"
-            return "ERROR_NOT_FOUND"
-        elif r.status_code == 404:
-            add_log("Rootz: File not found (404).")
-            return "ERROR_NOT_FOUND"
-        return None
-    except Exception as e:
-        add_log(f"Rootz extraction exception: {str(e)}")
-        return None
+        except Exception as e:
+            add_log(f"Rootz extraction exception: {str(e)}")
+            return None
 
 def extract_viking_link(page_url):
-    try:
+    with extraction_lock:
+        from playwright.sync_api import sync_playwright
+        import os
         add_log(f"Extracting VikingFile direct link for: {page_url}")
-        return "ERROR_CAPTCHA_REQUIRED"
-    except Exception as e:
-        add_log(f"VikingFile extraction exception: {str(e)}")
-        return None
+        try:
+            profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "scratch", "chrome_profile"))
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=profile_dir,
+                    headless=False,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox"
+                    ]
+                )
+                page = context.new_page()
+                
+                direct_link = [None]
+                
+                def on_response(response):
+                    if "vik1ngfile.site" in response.url and response.request.method == "POST":
+                        try:
+                            data = response.json()
+                            dl = data.get("direct-link")
+                            if dl:
+                                direct_link[0] = dl
+                        except Exception:
+                            pass
+                page.on("response", on_response)
+                
+                try:
+                    page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+                except Exception as e:
+                    add_log(f"VikingFile navigation error/timeout: {e}")
+                    
+                # Wait up to 20 seconds for the Turnstile response with direct-link
+                for _ in range(20):
+                    if direct_link[0]:
+                        break
+                    page.wait_for_timeout(1000)
+                
+                # Fallback: check DOM #download-link
+                if not direct_link[0]:
+                    dl_link = page.locator("#download-link")
+                    if dl_link.count() > 0:
+                        href = dl_link.get_attribute("href")
+                        if href and ("vikingfile" in href or "cloudflarestorage" in href):
+                            direct_link[0] = href
+                
+                context.close()
+                
+                if direct_link[0]:
+                    add_log("Successfully extracted VikingFile direct link!")
+                    return direct_link[0]
+                else:
+                    add_log("VikingFile: Failed to extract direct link (possibly captcha unsolved).")
+                    return "ERROR_CAPTCHA_REQUIRED"
+        except Exception as e:
+            add_log(f"VikingFile extraction exception: {str(e)}")
+            return None
 
 def get_expected_size(filename, file_type):
     if filename in sizes_cache:
@@ -595,6 +679,11 @@ def download_file(index, file_info):
             with state_lock:
                 state["files"][index]["status"] = "failed"
                 state["files"][index]["error"] = "Gofile: File not found (404)."
+            return False
+        elif direct_link == "ERROR_BLOCKED":
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Gofile: Connection timed out. Gofile may be blocked on your network (e.g. university firewall). Try enabling a VPN."
             return False
     elif "rootz.so" in page_url or "rootz.cc" in page_url:
         direct_link = extract_rootz_link(page_url)
