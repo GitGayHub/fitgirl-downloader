@@ -247,6 +247,132 @@ def extract_datanodes_link(page_url):
             add_log(f"DataNodes extraction exception: {str(e)}")
             return None
 
+def extract_fileditch_link(page_url):
+    try:
+        add_log(f"Extracting direct link for FileDitch: {page_url}")
+        response = cf_requests.get(page_url, impersonate="chrome120", timeout=20, verify=False)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                if "Download" in a.text:
+                    direct_link = a['href']
+                    add_log(f"Successfully extracted FileDitch direct link!")
+                    return direct_link
+            # Fallback to regex search if no download text
+            match = re.search(r'href="([^"]+)"[^>]*>\s*⬇ Download', response.text)
+            if match:
+                return match.group(1)
+            add_log("Error: Direct link button not found in FileDitch HTML.")
+            return None
+        else:
+            add_log(f"Error: FileDitch responded with status code {response.status_code}")
+            return None
+    except Exception as e:
+        add_log(f"FileDitch extraction exception: {str(e)}")
+        return None
+
+def extract_gofile_link(page_url):
+    try:
+        # Extract content ID from page_url
+        content_id = page_url.split("/d/")[-1].split("?")[0]
+        add_log(f"Extracting Gofile direct link for content: {content_id}")
+        
+        # Create guest account
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        headers = {
+            "User-Agent": user_agent,
+            "Referer": "https://gofile.io/",
+            "Origin": "https://gofile.io"
+        }
+        r = cf_requests.post("https://api.gofile.io/accounts", headers=headers, impersonate="chrome120", timeout=15)
+        if r.status_code != 200:
+            add_log(f"Gofile: Failed to create guest account (status {r.status_code})")
+            return None
+        acct_data = r.json()
+        if acct_data.get("status") != "ok":
+            add_log(f"Gofile account status: {acct_data.get('status')}")
+            return None
+        api_token = acct_data["data"]["token"]
+        
+        # Generate website token
+        import time, hashlib
+        time_slot = int(time.time() / 14400)
+        salt = "5d4f7g8sd45fsd"
+        token_str = f"{user_agent}::en-US::{api_token}::{time_slot}::{salt}"
+        website_token = hashlib.sha256(token_str.encode()).hexdigest()
+        
+        # Query content details
+        headers = {
+            "User-Agent": user_agent,
+            "Referer": "https://gofile.io/",
+            "Origin": "https://gofile.io",
+            "Authorization": f"Bearer {api_token}",
+            "X-Website-Token": website_token,
+            "X-BL": "en-US"
+        }
+        cookies = {"accountToken": api_token}
+        params = {
+            "contentFilter": "",
+            "page": "1",
+            "pageSize": "1000",
+            "sortField": "name",
+            "sortDirection": "1"
+        }
+        url = f"https://api.gofile.io/contents/{content_id}"
+        r = cf_requests.get(url, headers=headers, cookies=cookies, params=params, impersonate="chrome120", timeout=15)
+        
+        data = r.json()
+        status = data.get("status")
+        if status == "error-notPremium":
+            add_log("Gofile: Free accounts cannot download this folder. Premium account required.")
+            return "ERROR_NOT_PREMIUM"
+        elif status == "error-notFound":
+            add_log("Gofile: Folder/file not found (404).")
+            return "ERROR_NOT_FOUND"
+        elif status != "ok":
+            add_log(f"Gofile API error: {status}")
+            return None
+            
+        children = data.get("data", {}).get("children", {})
+        if not children:
+            add_log("Gofile: No files found in folder.")
+            return None
+            
+        first_key = list(children.keys())[0]
+        direct_link = children[first_key].get("link")
+        if direct_link:
+            add_log("Successfully extracted Gofile direct link!")
+            return direct_link
+        return None
+    except Exception as e:
+        add_log(f"Gofile extraction exception: {str(e)}")
+        return None
+
+def extract_rootz_link(page_url):
+    try:
+        add_log(f"Checking Rootz page: {page_url}")
+        r = cf_requests.get(page_url, impersonate="chrome120", timeout=15, verify=False)
+        if r.status_code == 200:
+            if "This page could not be found" in r.text or "404" in r.text:
+                add_log("Rootz: File not found (404).")
+                return "ERROR_NOT_FOUND"
+            return "ERROR_NOT_FOUND"
+        elif r.status_code == 404:
+            add_log("Rootz: File not found (404).")
+            return "ERROR_NOT_FOUND"
+        return None
+    except Exception as e:
+        add_log(f"Rootz extraction exception: {str(e)}")
+        return None
+
+def extract_viking_link(page_url):
+    try:
+        add_log(f"Extracting VikingFile direct link for: {page_url}")
+        return "ERROR_CAPTCHA_REQUIRED"
+    except Exception as e:
+        add_log(f"VikingFile extraction exception: {str(e)}")
+        return None
+
 def get_expected_size(filename, file_type):
     if filename in sizes_cache:
         return sizes_cache[filename]
@@ -446,6 +572,46 @@ def download_file(index, file_info):
                 state["files"][index]["status"] = "failed"
                 state["files"][index]["error"] = "Could not extract direct link for DataNodes."
             return False
+    elif "fileditchfiles.me" in page_url or "fileditch.com" in page_url:
+        direct_link = extract_fileditch_link(page_url)
+        if not direct_link:
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Could not extract direct link for FileDitch."
+            return False
+    elif "gofile.io" in page_url:
+        direct_link = extract_gofile_link(page_url)
+        if not direct_link:
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Could not extract direct link for Gofile."
+            return False
+        elif direct_link == "ERROR_NOT_PREMIUM":
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Gofile: Free accounts cannot download this folder. Premium account required."
+            return False
+        elif direct_link == "ERROR_NOT_FOUND":
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Gofile: File not found (404)."
+            return False
+    elif "rootz.so" in page_url or "rootz.cc" in page_url:
+        direct_link = extract_rootz_link(page_url)
+        if direct_link == "ERROR_NOT_FOUND" or not direct_link:
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "Rootz: File not found (404)."
+            return False
+    elif "vikingfile.com" in page_url or "vik1ngfile.site" in page_url:
+        direct_link = extract_viking_link(page_url)
+        if direct_link == "ERROR_CAPTCHA_REQUIRED" or not direct_link:
+            with state_lock:
+                state["files"][index]["status"] = "failed"
+                state["files"][index]["error"] = "VikingFile: Captcha verification required."
+            return False
+    elif "pixeldrain.com/u/" in page_url:
+        direct_link = page_url.replace("pixeldrain.com/u/", "pixeldrain.com/api/file/")
     elif "multiup.io" in page_url:
         with state_lock:
             state["files"][index]["status"] = "failed"
