@@ -110,6 +110,40 @@ def add_log(message):
         except Exception:
             print(f"[{timestamp}] [Log encoding error] " + "".join(c if ord(c) < 128 else '?' for c in message))
 
+def rotate_warp_ip():
+    add_log("Attempting to rotate IP using Cloudflare WARP...")
+    import shutil
+    warp_cli = shutil.which("warp-cli")
+    if not warp_cli:
+        std_path = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
+        if os.path.exists(std_path):
+            warp_cli = std_path
+            
+    if not warp_cli:
+        add_log("WARP CLI not found in PATH or standard Program Files location. Please install Cloudflare WARP to enable automatic IP rotation.")
+        return False
+        
+    try:
+        add_log("WARP: Disconnecting...")
+        subprocess.run([warp_cli, "disconnect"], capture_output=True, text=True, check=True)
+        time.sleep(2)
+        
+        add_log("WARP: Reconnecting...")
+        subprocess.run([warp_cli, "connect"], capture_output=True, text=True, check=True)
+        
+        # Wait up to 10 seconds for connection to be active
+        for _ in range(10):
+            time.sleep(1)
+            status_res = subprocess.run([warp_cli, "status"], capture_output=True, text=True)
+            if "Connected" in status_res.stdout:
+                add_log("WARP: Reconnected successfully with a new IP!")
+                return True
+        add_log("WARP: Reconnection timed out.")
+        return False
+    except Exception as e:
+        add_log(f"WARP: Failed to rotate IP: {e}")
+        return False
+
 def extract_direct_link(page_url):
     """Bypasses Cloudflare using curl_cffi to get the direct dl.fuckingfast.co link."""
     try:
@@ -741,9 +775,40 @@ def download_file(index, file_info):
         headers["Range"] = f"bytes={resume_byte}-"
         add_log(f"Attempting resume from byte {resume_byte} for {filename}...")
         
-    try:
-        response = requests.get(direct_link, headers=headers, stream=True, timeout=30)
+    max_retries = 3
+    response = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(direct_link, headers=headers, stream=True, timeout=30)
+            
+            # Check for Pixeldrain download limit reached (402 Payment Required or 429 Too Many Requests)
+            if response.status_code in [402, 429] and "pixeldrain.com" in direct_link:
+                add_log("Pixeldrain download limit reached (402/429). Attempting automatic IP rotation...")
+                response.close()
+                if rotate_warp_ip():
+                    add_log("WARP IP rotated successfully. Retrying connection...")
+                    continue
+                else:
+                    add_log("Pixeldrain: Download limit reached (402). Change VPN IP or install WARP to auto-rotate.")
+                    with state_lock:
+                        state["files"][index]["status"] = "failed"
+                        state["files"][index]["error"] = "Pixeldrain download limit reached. Please change VPN server or install WARP."
+                    return False
+            break
+        except Exception as conn_err:
+            if attempt == max_retries - 1:
+                add_log(f"Connection failed after {max_retries} attempts: {conn_err}")
+                with state_lock:
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = f"Connection failed: {str(conn_err)}"
+                return False
+            add_log(f"Connection attempt {attempt+1} failed: {conn_err}. Retrying...")
+            time.sleep(2)
+            
+    if not response:
+        return False
         
+    try:
         # Check if we accidentally downloaded an HTML page instead of binary data
         content_type = response.headers.get('content-type', '').lower()
         if 'text/html' in content_type:
