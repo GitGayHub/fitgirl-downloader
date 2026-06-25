@@ -35,6 +35,23 @@ const elSaveSettingsBtn = document.getElementById("btn-save-settings");
 const elProviderSelect = document.getElementById("provider-select");
 const elChkShowLogs = document.getElementById("chk-show-logs");
 const elChkRainbowBg = document.getElementById("chk-rainbow-bg");
+const elChkGofileProxy = document.getElementById("chk-gofile-proxy");
+
+// Google Drive Elements
+const elGDriveCleanupBtn = document.getElementById("btn-gdrive-cleanup");
+const elAddGDriveAccountBtn = document.getElementById("btn-add-gdrive-account");
+
+const elGDriveAccountsList = document.getElementById("gdrive-accounts-list");
+
+// WARP Modal Elements
+const elWarpModal = document.getElementById("warp-modal");
+const elWarpSpinner = document.getElementById("warp-spinner");
+const elWarpWarningIcon = document.getElementById("warp-warning-icon");
+const elWarpModalTitle = document.getElementById("warp-modal-title");
+const elWarpModalMessage = document.getElementById("warp-modal-message");
+const elWarpSkipBtn = document.getElementById("btn-skip-warp");
+const elWarpRetryBtn = document.getElementById("btn-retry-warp");
+
 const elGameInfoCard = document.getElementById("game-info-card");
 const elGameDescription = document.getElementById("game-description");
 const elGameScreenshotsSection = document.getElementById("game-screenshots-section");
@@ -330,8 +347,43 @@ async function fetchState() {
     }
 }
 
+function handleWarpState(newState) {
+    if (!elWarpModal) return;
+    
+    const status = newState.warp_status;
+    if (status === "checking") {
+        elWarpModal.style.display = "flex";
+        elWarpSpinner.style.display = "block";
+        elWarpWarningIcon.style.display = "none";
+        elWarpModalTitle.innerText = "Checking Cloudflare WARP";
+        elWarpModalMessage.innerText = "Checking if Cloudflare WARP is installed on your PC...";
+        elWarpSkipBtn.style.display = "none";
+        elWarpRetryBtn.style.display = "none";
+    } else if (status === "installing") {
+        elWarpModal.style.display = "flex";
+        elWarpSpinner.style.display = "block";
+        elWarpWarningIcon.style.display = "none";
+        elWarpModalTitle.innerText = "Installing Cloudflare WARP";
+        elWarpModalMessage.innerText = "Downloading and silently installing Cloudflare WARP...";
+        elWarpSkipBtn.style.display = "none";
+        elWarpRetryBtn.style.display = "none";
+    } else if (status === "error") {
+        elWarpModal.style.display = "flex";
+        elWarpSpinner.style.display = "none";
+        elWarpWarningIcon.style.display = "block";
+        elWarpModalTitle.innerText = "Cloudflare WARP Required";
+        elWarpModalMessage.innerText = newState.warp_error_message || "Cloudflare WARP is not installed and silent installation failed.";
+        elWarpSkipBtn.style.display = "block";
+        elWarpRetryBtn.style.display = "block";
+    } else {
+        // installed or skipped
+        elWarpModal.style.display = "none";
+    }
+}
+
 // Update UI based on loaded state
 function updateUI(newState) {
+    handleWarpState(newState);
     // 1. Manage setup vs download views
     if (newState.is_configured) {
         document.querySelector(".app-container").classList.add("has-sidebar");
@@ -355,6 +407,23 @@ function updateUI(newState) {
             elDownloadMirrorBadge.style.display = "inline-block";
         } else {
             elDownloadMirrorBadge.style.display = "none";
+        }
+        
+        // Google Drive manual cleanup button toggle
+        const isOnlineFixMirror = newState.active_mirror && 
+            (newState.active_mirror.toLowerCase().includes("online-fix") || 
+             newState.active_mirror.toLowerCase().includes("onlinefix") ||
+             newState.active_mirror.toLowerCase().includes("google") ||
+             newState.active_mirror.toLowerCase().includes("own google") ||
+             newState.active_mirror.toLowerCase().includes("disk"));
+        const hasGDriveFiles = newState.files && newState.files.some(f => f.url && f.url.includes("drive.online-fix.me"));
+        
+        if (elGDriveCleanupBtn) {
+            if (isOnlineFixMirror || hasGDriveFiles) {
+                elGDriveCleanupBtn.style.display = "inline-flex";
+            } else {
+                elGDriveCleanupBtn.style.display = "none";
+            }
         }
         
         // Sync worker select
@@ -1284,7 +1353,8 @@ elConfirmQueueBtn.addEventListener("click", async () => {
                 base_download_dir: downloadDir,
                 download_dir: downloadDir,
                 files: selectedFiles,
-                active_mirror: activeMirrorName
+                active_mirror: activeMirrorName,
+                gofile_proxy: elChkGofileProxy ? elChkGofileProxy.checked : false
             })
         });
         
@@ -1404,7 +1474,11 @@ elResetSessionBtn.addEventListener("click", async () => {
 // Global function to retry a specific index (failsafe if UI gets stuck)
 window.triggerRetry = async (index) => {
     try {
-        await fetch("/api/start", { method: "POST" });
+        await fetch("/api/retry", { 
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ index })
+        });
         fetchState();
     } catch (e) {
         console.error("Failed to retry download:", e);
@@ -1872,6 +1946,7 @@ elBtnBackToCatalog.addEventListener("click", () => {
 // Settings Modal controls
 elSettingsGearBtn.addEventListener("click", () => {
     elSettingsModal.style.display = "flex";
+    loadGDriveAccounts();
 });
 
 const closeSettings = () => {
@@ -1879,7 +1954,7 @@ const closeSettings = () => {
 };
 
 elCloseSettingsModalBtn.addEventListener("click", closeSettings);
-elSaveSettingsBtn.addEventListener("click", () => {
+elSaveSettingsBtn.addEventListener("click", async () => {
     const showLogs = elChkShowLogs.checked;
     elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
     localStorage.setItem("showLogs", showLogs ? "true" : "false");
@@ -1890,8 +1965,357 @@ elSaveSettingsBtn.addEventListener("click", () => {
         localStorage.setItem("rainbowBg", rainbowBg ? "true" : "false");
     }
     
+    if (elChkGofileProxy) {
+        localStorage.setItem("gofileProxy", elChkGofileProxy.checked ? "true" : "false");
+    }
+    
+    const elClientId = document.getElementById("txt-gdrive-client-id");
+    const elClientSecret = document.getElementById("txt-gdrive-client-secret");
+    if (elClientId && elClientSecret) {
+        const client_id = elClientId.value.trim();
+        const client_secret = elClientSecret.value.trim();
+        try {
+            await fetch("/api/gdrive/set_credentials", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ client_id, client_secret })
+            });
+        } catch (e) {
+            console.error("Failed to save custom credentials:", e);
+        }
+    }
+    
     closeSettings();
 });
+
+// Google Drive Account & Cleanup event bindings
+if (elAddGDriveAccountBtn) {
+    elAddGDriveAccountBtn.addEventListener("click", async () => {
+        elAddGDriveAccountBtn.disabled = true;
+        const originalText = elAddGDriveAccountBtn.innerHTML;
+        
+        try {
+            // Step 1: Start auth listener and get the OAuth URL
+            elAddGDriveAccountBtn.innerHTML = `
+                <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-color: currentColor; border-top-color: transparent;"></div>
+                <span>Starting authorization...</span>
+            `;
+            
+            const startResp = await fetch("/api/gdrive/start_auth", { method: "POST" });
+            const startData = await startResp.json();
+            
+            if (!startData.success) {
+                alert(startData.error || "Failed to start authorization.");
+                return;
+            }
+            
+            // Step 2: Open the auth URL in a new tab (user's default browser = Chrome)
+            window.open(startData.auth_url, "_blank");
+            
+            elAddGDriveAccountBtn.innerHTML = `
+                <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-color: currentColor; border-top-color: transparent;"></div>
+                <span>Waiting for Google authorization...</span>
+            `;
+            
+            // Step 3: Poll for the result every 2 seconds (up to 3 minutes)
+            let result = null;
+            for (let i = 0; i < 90; i++) {
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                    const pollResp = await fetch("/api/gdrive/poll_auth", { method: "POST" });
+                    const pollData = await pollResp.json();
+                    
+                    if (pollData.status === "done") {
+                        result = pollData;
+                        break;
+                    } else if (pollData.status === "error") {
+                        alert(pollData.error || "Authorization failed.");
+                        return;
+                    }
+                    // status === "waiting" → continue polling
+                } catch (pollErr) {
+                    // Network error during poll, continue
+                }
+            }
+            
+            if (result && result.success) {
+                alert(`Google Account linked successfully: ${result.email}`);
+                loadGDriveAccounts();
+            } else if (!result) {
+                alert("Authorization timed out. Please try again.");
+            }
+        } catch (e) {
+            alert("Error: " + e.message);
+        } finally {
+            elAddGDriveAccountBtn.disabled = false;
+            elAddGDriveAccountBtn.innerHTML = originalText;
+        }
+    });
+}
+
+
+if (elGDriveCleanupBtn) {
+    elGDriveCleanupBtn.addEventListener("click", async () => {
+        if (confirm("Are you sure you want to delete all files in the current download queue from your Google Drive? This will free up your Drive space.")) {
+            elGDriveCleanupBtn.disabled = true;
+            try {
+                const response = await fetch("/api/gdrive/cleanup", { method: "POST" });
+                const data = await response.json();
+                if (data.success) {
+                    alert("Google Drive cleanup started in the background. Check logs below for progress.");
+                } else {
+                    alert(data.error || "Failed to trigger cleanup.");
+                }
+            } catch (e) {
+                alert("Error: " + e.message);
+            } finally {
+                elGDriveCleanupBtn.disabled = false;
+            }
+        }
+    });
+}
+
+// Google Drive accounts API helpers
+async function loadGDriveAccounts() {
+    try {
+        const response = await fetch("/api/gdrive/list_accounts");
+        const data = await response.json();
+        if (data.success) {
+            renderGDriveAccounts(data.accounts, data.active_account);
+            
+            const elClientId = document.getElementById("txt-gdrive-client-id");
+            const elClientSecret = document.getElementById("txt-gdrive-client-secret");
+            if (elClientId) elClientId.value = data.custom_client_id || "";
+            if (elClientSecret) elClientSecret.value = data.custom_client_secret || "";
+        }
+    } catch (e) {
+        console.error("Failed to load Google Drive accounts:", e);
+    }
+}
+
+function getSubscriptionTier(limitBytes) {
+    if (!limitBytes || limitBytes <= 0) return "15 GB Free";
+    const GB = 1024 * 1024 * 1024;
+    const limitGB = limitBytes / GB;
+    
+    if (limitGB <= 17) return "15 GB Free";
+    if (limitGB <= 110) return "100 GB Plan";
+    if (limitGB <= 220) return "200 GB Plan";
+    if (limitGB <= 2200) return "2 TB Plan";
+    if (limitGB <= 5500) return "5 TB Plan";
+    if (limitGB <= 11000) return "10 TB Plan";
+    if (limitGB <= 22000) return "20 TB Plan";
+    if (limitGB <= 33000) return "30 TB Plan";
+    
+    if (limitBytes >= 1024 * GB) {
+        return `${(limitBytes / (1024 * GB)).toFixed(0)} TB Plan`;
+    }
+    return `${limitGB.toFixed(0)} GB Plan`;
+}
+
+function getGooglePlanInfo(limitBytes) {
+    const GB = 1024 * 1024 * 1024;
+    const limitGB = limitBytes / GB;
+    
+    let planName = "Free Account";
+    let badgeHtml = "";
+    let sizeText = "15 GB";
+    
+    if (!limitBytes || limitBytes <= 0) {
+        return { planName: "Google One", badgeHtml: "", sizeText: "15 GB" };
+    }
+    
+    const sparkleSvg = `<svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="display: inline-block; margin-right: 3px; vertical-align: middle;"><path d="M12 2l2.4 7.6 7.6 2.4-7.6 2.4-2.4 7.6-2.4-7.6-7.6-2.4 7.6-2.4z"/></svg>`;
+    
+    if (limitGB <= 17) {
+        planName = "Free Account";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 600; color: #e0e0e0; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.15); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center;">Free</span>`;
+        sizeText = "15 GB";
+    } else if (limitGB <= 110) {
+        planName = "Basic";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 600; color: #4285f4; background: rgba(66, 133, 244, 0.1); border: 1px solid rgba(66, 133, 244, 0.25); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center;">Basic</span>`;
+        sizeText = "100 GB";
+    } else if (limitGB <= 220) {
+        planName = "Standard";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 600; color: #34a853; background: rgba(52, 168, 83, 0.1); border: 1px solid rgba(52, 168, 83, 0.25); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center;">Standard</span>`;
+        sizeText = "200 GB";
+    } else if (limitGB <= 440) {
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 600; color: #ba68c8; background: rgba(171, 71, 188, 0.15); border: 1px solid rgba(171, 71, 188, 0.3); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center; box-shadow: 0 0 8px rgba(171, 71, 188, 0.25);">Plus</span>`;
+        sizeText = "400 GB";
+    } else if (limitGB <= 2200) {
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 600; color: #ba68c8; background: rgba(171, 71, 188, 0.15); border: 1px solid rgba(171, 71, 188, 0.3); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center; box-shadow: 0 0 8px rgba(171, 71, 188, 0.25);">Plus</span>`;
+        sizeText = "2 TB";
+    } else if (limitGB <= 5500) {
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 700; color: #ffffff; background: linear-gradient(135deg, #1a73e8, #4285f4, #0052d4, #1a73e8); background-size: 300% 300%; animation: blue-haze 4s ease infinite; padding: 2px 10px; border-radius: 14px; display: inline-flex; align-items: center; gap: 2px; box-shadow: 0 0 10px rgba(66,133,244,0.55); border: 1px solid rgba(255,255,255,0.15);">${sparkleSvg}Pro</span>`;
+        sizeText = "5 TB";
+    } else if (limitGB <= 11000) {
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 700; color: #ffffff; background: linear-gradient(135deg, #1a73e8, #4285f4, #0052d4, #1a73e8); background-size: 300% 300%; animation: blue-haze 4s ease infinite; padding: 2px 10px; border-radius: 14px; display: inline-flex; align-items: center; gap: 2px; box-shadow: 0 0 10px rgba(66,133,244,0.55); border: 1px solid rgba(255,255,255,0.15);">${sparkleSvg}Pro</span>`;
+        sizeText = "10 TB";
+    } else if (limitGB <= 22000) {
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 700; color: #ffffff; background: linear-gradient(135deg, #ea4335, #f12711, #f5af19, #ea4335); background-size: 300% 300%; animation: blue-haze 4s ease infinite; padding: 2px 10px; border-radius: 14px; display: inline-flex; align-items: center; gap: 2px; box-shadow: 0 0 10px rgba(234,67,53,0.55); border: 1px solid rgba(255,255,255,0.15);">${sparkleSvg}Ultra</span>`;
+        sizeText = "20 TB";
+    } else if (limitGB <= 33000) {
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 700; color: #ffffff; background: linear-gradient(135deg, #ea4335, #f12711, #f5af19, #ea4335); background-size: 300% 300%; animation: blue-haze 4s ease infinite; padding: 2px 10px; border-radius: 14px; display: inline-flex; align-items: center; gap: 2px; box-shadow: 0 0 10px rgba(234,67,53,0.55); border: 1px solid rgba(255,255,255,0.15);">${sparkleSvg}Ultra</span>`;
+        sizeText = "30 TB";
+    } else {
+        const tbLimit = (limitGB / 1024).toFixed(0);
+        planName = "Google AI";
+        badgeHtml = `<span style="font-size: 0.65rem; font-weight: 700; color: #ffffff; background: linear-gradient(135deg, #ea4335, #f12711, #f5af19, #ea4335); background-size: 300% 300%; animation: blue-haze 4s ease infinite; padding: 2px 10px; border-radius: 14px; display: inline-flex; align-items: center; gap: 2px; box-shadow: 0 0 10px rgba(234,67,53,0.55); border: 1px solid rgba(255,255,255,0.15);">${sparkleSvg}Ultra</span>`;
+        sizeText = `${tbLimit} TB`;
+    }
+    
+    return { planName, badgeHtml, sizeText };
+}
+
+function getAvatarColor(email) {
+    if (!email || email === "Unknown Account") return "#9b59b6"; // default purple
+    const colors = [
+        "#1abc9c", "#2ecc71", "#3498db", "#9b59b6", "#34495e",
+        "#16a085", "#27ae60", "#2980b9", "#8e44ad", "#2c3e50",
+        "#e67e22", "#e74c3c", "#d35400", "#c0392b"
+    ];
+    let hash = 0;
+    for (let i = 0; i < email.length; i++) {
+        hash = email.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const index = Math.abs(hash) % colors.length;
+    return colors[index];
+}
+
+function renderGDriveAccounts(accounts, activeAccount) {
+    if (!elGDriveAccountsList) return;
+    
+    if (accounts.length === 0) {
+        elGDriveAccountsList.innerHTML = `
+            <div style="font-size: 0.8rem; color: var(--text-muted); text-align: center; padding: 10px; background: rgba(255,255,255,0.02); border-radius: 6px; border: 1px dashed rgba(255,255,255,0.1);">
+                No Google Accounts linked.
+            </div>
+        `;
+        return;
+    }
+    
+    elGDriveAccountsList.innerHTML = "";
+    accounts.forEach(acc => {
+        const email = acc.email;
+        const isActive = email === activeAccount;
+        
+        const planInfo = getGooglePlanInfo(acc.limit);
+        let storageInfoText = "";
+        let pct = 0;
+        
+        if (acc.limit > 0) {
+            pct = Math.min(100, Math.round((acc.usage / acc.limit) * 100));
+            const formatStorage = (bytes) => {
+                const GB = 1024 * 1024 * 1024;
+                const TB = 1024 * GB;
+                if (bytes >= TB) return `${(bytes / TB).toFixed(1)} TB`;
+                return `${(bytes / GB).toFixed(1)} GB`;
+            };
+            storageInfoText = `${formatStorage(acc.usage)} / ${formatStorage(acc.limit)} used (${pct}%)`;
+        } else {
+            storageInfoText = "Storage info unavailable";
+        }
+        
+        const card = document.createElement("div");
+        card.className = "gdrive-account-card";
+        card.style.display = "flex";
+        card.style.flexDirection = "column";
+        card.style.gap = "14px";
+        card.style.background = "rgba(255,255,255,0.035)";
+        card.style.padding = "18px";
+        card.style.borderRadius = "16px";
+        card.style.border = isActive ? "1.5px solid var(--color-accent)" : "1px solid rgba(255,255,255,0.08)";
+        card.style.boxShadow = isActive ? "0 0 14px var(--color-accent-glow)" : "none";
+        card.style.transition = "all 0.25s ease";
+        card.style.marginBottom = "10px";
+        
+        const isFree = acc.limit <= 17 * 1024 * 1024 * 1024; // 17 GB or less is Free
+        const tierClass = isFree ? "free-tier" : "premium-tier";
+        
+        card.innerHTML = `
+            <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                <div style="display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1;">
+                    <input type="radio" name="active_gdrive" class="radio-active-gdrive" ${isActive ? "checked" : ""} data-email="${email}" style="cursor: pointer; width: 20px; height: 20px; accent-color: var(--color-accent); flex-shrink: 0;">
+                    
+                    <div class="gdrive-avatar-container ${tierClass}" style="width: 48px; height: 48px; flex-shrink: 0;">
+                        ${acc.photo 
+                            ? `<img class="gdrive-avatar-img" src="${acc.photo}" referrerpolicy="no-referrer">` 
+                            : `<div class="gdrive-avatar-fallback" style="background-color: ${getAvatarColor(email)}">${email[0].toUpperCase()}</div>`
+                        }
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: column; line-height: 1.35; min-width: 0; flex: 1;">
+                        <span style="font-size: 1.05rem; color: var(--text-white); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${acc.name || 'Unknown Name'}</span>
+                        <span style="font-size: 0.85rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${email}</span>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap;">
+                            <span style="font-size: 0.82rem; color: #a1a1b5; font-weight: 500;">${planInfo.planName}</span>
+                            ${planInfo.badgeHtml ? planInfo.badgeHtml : ""}
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">
+                    <span style="font-size: 0.82rem; padding: 4px 10px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-white); font-weight: 600;">${planInfo.sizeText}</span>
+                    <button class="btn-delete-gdrive" data-email="${email}" style="background: none; border: none; color: #ff5555; cursor: pointer; font-size: 1.55rem; padding: 0 4px; line-height: 1; transition: color 0.15s ease;" title="Remove Account">&times;</button>
+                </div>
+            </div>
+            <div style="display: flex; flex-direction: column; width: 100%; margin-top: 4px;">
+                <div style="display: flex; justify-content: space-between; font-size: 0.82rem; color: var(--text-muted);">
+                    <span>Storage Space</span>
+                    <span>${storageInfoText}</span>
+                </div>
+                <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; margin-top: 6px; overflow: hidden;">
+                    <div style="width: ${pct}%; height: 100%; background: ${pct > 90 ? '#e74c3c' : 'var(--color-accent)'}; border-radius: 4px; box-shadow: 0 0 8px ${pct > 90 ? 'rgba(231,76,60,0.5)' : 'var(--color-accent-glow)'};"></div>
+                </div>
+            </div>
+        `;
+        
+        card.querySelector("input[type='radio']").addEventListener("change", async (e) => {
+            if (e.target.checked) {
+                try {
+                    const res = await fetch("/api/gdrive/select_account", {
+                        method: "POST",
+                        body: JSON.stringify({ email })
+                    });
+                    const resData = await res.json();
+                    if (resData.success) {
+                        loadGDriveAccounts();
+                    } else {
+                        alert(resData.error || "Failed to select account.");
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+        });
+        
+        card.querySelector(".btn-delete-gdrive").addEventListener("click", async () => {
+            if (confirm(`Are you sure you want to remove Google account ${email}?`)) {
+                try {
+                    const res = await fetch("/api/gdrive/remove_account", {
+                        method: "POST",
+                        body: JSON.stringify({ email })
+                    });
+                    const resData = await res.json();
+                    if (resData.success) {
+                        loadGDriveAccounts();
+                    } else {
+                        alert(resData.error || "Failed to remove account.");
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+        });
+        
+        elGDriveAccountsList.appendChild(card);
+    });
+}
 
 // Quick site switcher behavior
 function switchProvider(newProvider) {
@@ -2038,6 +2462,7 @@ function initSettings() {
     activeProvider = localStorage.getItem("activeProvider") || "fitgirl";
     const showLogs = localStorage.getItem("showLogs") === "true"; // False by default
     const rainbowBg = localStorage.getItem("rainbowBg") === "true";
+    const gofileProxy = localStorage.getItem("gofileProxy") === "true";
     
     if (elProviderSelect) {
         elProviderSelect.value = activeProvider;
@@ -2045,6 +2470,9 @@ function initSettings() {
     elChkShowLogs.checked = showLogs;
     if (elChkRainbowBg) {
         elChkRainbowBg.checked = rainbowBg;
+    }
+    if (elChkGofileProxy) {
+        elChkGofileProxy.checked = gofileProxy;
     }
     document.body.classList.toggle("rainbow-active", rainbowBg);
     
@@ -2109,6 +2537,28 @@ if (elScreenshotModal) {
     elScreenshotModal.addEventListener("click", (e) => {
         if (e.target === elScreenshotModal) {
             elScreenshotModal.style.display = "none";
+        }
+    });
+}
+
+if (elWarpSkipBtn) {
+    elWarpSkipBtn.addEventListener("click", async () => {
+        try {
+            await fetch("/api/skip_warp");
+            fetchState();
+        } catch (e) {
+            console.error("Failed to skip WARP installer check:", e);
+        }
+    });
+}
+
+if (elWarpRetryBtn) {
+    elWarpRetryBtn.addEventListener("click", async () => {
+        try {
+            await fetch("/api/retry_warp");
+            fetchState();
+        } catch (e) {
+            console.error("Failed to retry WARP installer process:", e);
         }
     });
 }

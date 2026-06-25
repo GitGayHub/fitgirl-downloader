@@ -48,10 +48,22 @@ except ImportError:
 
 import requests  # Standard requests for downloading
 
+class SafeList(list):
+    def __getitem__(self, index):
+        try:
+            return super().__getitem__(index)
+        except IndexError:
+            class DummyDict(dict):
+                def __setitem__(self, key, value):
+                    pass
+                def get(self, key, default=None):
+                    return super().get(key, default)
+            return DummyDict()
+
 # Global State
 state = {
     "game_title": "",
-    "files": [],
+    "files": SafeList(),
     "download_dir": "",
     "base_download_dir": "",
     "default_download_dir": "D:\\Downloads",
@@ -68,11 +80,20 @@ state = {
     "is_extracting": False,
     "extraction_progress": 0,
     "average_download_speed": 5000000.0,
-    "active_mirror": ""
+    "active_mirror": "",
+    "warp_status": "checking",
+    "warp_error_message": "",
+    "gofile_proxy": False,
+    "gdrive_accounts": [],
+    "active_gdrive_account": "",
+    "gdrive_session_cookies": {},
+    "gdrive_client_id": "",
+    "gdrive_client_secret": ""
 }
 
 state_lock = threading.RLock()
 extraction_lock = threading.Lock()
+gdrive_oauth_lock = threading.Lock()
 
 # Cache mechanism for file sizes
 cache_path = os.path.join(os.path.dirname(__file__), "sizes_cache.json")
@@ -85,6 +106,42 @@ if os.path.exists(cache_path):
         pass
 
 state["average_download_speed"] = float(sizes_cache.get("__average_download_speed__", 5000000.0))
+
+gdrive_accounts_path = os.path.join(os.path.dirname(__file__), "gdrive_accounts.json")
+def load_gdrive_accounts():
+    if os.path.exists(gdrive_accounts_path):
+        try:
+            with open(gdrive_accounts_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                state["gdrive_accounts"] = data.get("accounts", [])
+                state["active_gdrive_account"] = data.get("active_account", "")
+                state["gdrive_session_cookies"] = data.get("session_cookies", {})
+                state["gdrive_client_id"] = data.get("custom_client_id", "")
+                state["gdrive_client_secret"] = data.get("custom_client_secret", "")
+        except Exception:
+            pass
+load_gdrive_accounts()
+
+def save_gdrive_accounts():
+    try:
+        with open(gdrive_accounts_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "accounts": state["gdrive_accounts"],
+                "active_account": state["active_gdrive_account"],
+                "session_cookies": state["gdrive_session_cookies"],
+                "custom_client_id": state.get("gdrive_client_id", ""),
+                "custom_client_secret": state.get("gdrive_client_secret", "")
+            }, f, indent=4)
+    except Exception:
+        pass
+
+def get_gdrive_credentials():
+    with state_lock:
+        cid = state.get("gdrive_client_id", "").strip()
+        csec = state.get("gdrive_client_secret", "").strip()
+    if cid and csec:
+        return cid, csec
+    return RCLONE_CLIENT_ID, RCLONE_CLIENT_SECRET
 
 def save_size_to_cache(filename, size):
     sizes_cache[filename] = size
@@ -143,6 +200,603 @@ def rotate_warp_ip():
     except Exception as e:
         add_log(f"WARP: Failed to rotate IP: {e}")
         return False
+
+def check_and_install_warp():
+    """Checks if Cloudflare WARP is installed, and if not, attempts to download and install it silently."""
+    add_log("Checking Cloudflare WARP status...")
+    import shutil
+    warp_cli = shutil.which("warp-cli")
+    if not warp_cli:
+        std_path = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
+        if os.path.exists(std_path):
+            warp_cli = std_path
+            
+    if warp_cli:
+        with state_lock:
+            state["warp_status"] = "installed"
+        add_log("Cloudflare WARP is installed and ready.")
+        return True
+
+    # If missing, try downloading and running silent install
+    add_log("Cloudflare WARP not detected. Initializing silent installation...")
+    with state_lock:
+        state["warp_status"] = "installing"
+        
+    try:
+        msi_url = "https://1111-releases.cloudflareclient.com/windows/Cloudflare_WARP_Release-x64.msi"
+        temp_dir = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "fg_warp")
+        os.makedirs(temp_dir, exist_ok=True)
+        msi_path = os.path.join(temp_dir, "warp.msi")
+        
+        add_log(f"Downloading WARP installer from {msi_url}...")
+        r = requests.get(msi_url, stream=True, timeout=60, verify=False)
+        r.raise_for_status()
+        with open(msi_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=256*1024):
+                if chunk:
+                    f.write(chunk)
+        add_log("Download complete. Triggering silent installation with administrator UAC privileges...")
+        
+        try:
+            import ctypes
+            # runas verb triggers UAC prompt in interactive sessions
+            res_execute = ctypes.windll.shell32.ShellExecuteW(None, "runas", "msiexec", f'/i "{msi_path}" /qn /norestart', None, 1)
+            add_log(f"UAC elevation request returned code: {res_execute}")
+        except Exception as shell_err:
+            add_log(f"ShellExecuteW elevation request failed: {shell_err}")
+            res_execute = 0
+            
+        if res_execute > 32:
+            add_log("UAC dialog triggered. Please approve the prompt if visible to allow installation.")
+            # Wait up to 30 seconds, checking for warp-cli existence periodically
+            installed_ok = False
+            for check_sec in range(30):
+                time.sleep(1)
+                warp_cli = shutil.which("warp-cli")
+                if not warp_cli and os.path.exists(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"):
+                    warp_cli = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
+                if warp_cli:
+                    installed_ok = True
+                    break
+        else:
+            add_log("UAC elevation request denied or canceled by user.")
+            installed_ok = False
+            
+        if installed_ok:
+            with state_lock:
+                state["warp_status"] = "installed"
+            add_log("Cloudflare WARP silently installed successfully.")
+            return True
+        else:
+            if res_execute <= 32:
+                err_msg = "Cloudflare WARP not installed. Silent installation requires Administrator privileges (UAC prompt was denied or cancelled). You can click 'Skip & Continue' to run the app without automatic IP rotation."
+            else:
+                err_msg = "Silent installation failed. Please verify that you have Administrator privileges, approve the UAC prompt, or manually install Cloudflare WARP from: https://1111-releases.cloudflareclient.com/windows/Cloudflare_WARP_Release-x64.msi"
+                
+            add_log("Silent installation failed: WARP could not be installed.")
+            with state_lock:
+                state["warp_status"] = "error"
+                state["warp_error_message"] = err_msg
+            return False
+            
+    except Exception as e:
+        err_msg = f"Failed to download or silently install WARP: {str(e)}"
+        add_log(err_msg)
+        with state_lock:
+            state["warp_status"] = "error"
+            state["warp_error_message"] = err_msg
+        return False
+
+def clear_pixeldrain_cookies():
+    """Clears python requests default cookies and browser sqlite cookie databases to bypass session tracking."""
+    add_log("Clearing Pixeldrain cookies and browser profile session state...")
+    try:
+        requests.cookies.clear()
+    except Exception as e:
+        add_log(f"Error clearing requests cookies: {e}")
+        
+    try:
+        cf_requests.cookies.clear()
+    except Exception:
+        pass
+        
+    try:
+        profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "scratch", "chrome_profile"))
+        if os.path.exists(profile_dir):
+            cookies_cleared = False
+            for root, dirs, files in os.walk(profile_dir):
+                for file in files:
+                    if file.lower() in ["cookies", "cookies-journal", "cookies.sqlite"]:
+                        try:
+                            os.remove(os.path.join(root, file))
+                            cookies_cleared = True
+                        except Exception:
+                            pass
+            if cookies_cleared:
+                add_log("Playwright browser cookies database files deleted successfully.")
+    except Exception as e:
+        add_log(f"Error clearing browser cookie database: {e}")
+
+RCLONE_CLIENT_ID = "202264815644.apps.googleusercontent.com"
+RCLONE_CLIENT_SECRET = "X4Z3ca8xfWDb1Voo-F9a7ZxJ"
+
+class OAuthRedirectHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+    def do_GET(self):
+        url_parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(url_parsed.query)
+        code = query.get("code", [""])[0]
+        self.server.captured_code = code
+        
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Authorized</title>
+            <style>
+                body { 
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+                    background: #040409; 
+                    color: #fff; 
+                    text-align: center; 
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .card {
+                    background: rgba(18, 18, 32, 0.45);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    padding: 30px;
+                    border-radius: 16px;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+                    backdrop-filter: blur(20px);
+                }
+                h1 { color: #2ecc71; margin-top: 0; font-size: 1.5rem; }
+                p { color: #8c8ca0; font-size: 0.9rem; margin-bottom: 0; }
+            </style>
+            <script>
+                window.onload = function() {
+                    window.close();
+                    // Fallback if window.close is blocked by browser security rules
+                    setTimeout(function() {
+                        var statusEl = document.getElementById("status");
+                        if (statusEl) {
+                            statusEl.innerText = "Authorized. You can close this tab now.";
+                        }
+                    }, 500);
+                }
+            </script>
+        </head>
+        <body>
+            <div class="card">
+                <h1 id="status">Authorized Successfully</h1>
+                <p>This tab can be closed.</p>
+            </div>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode('utf-8'))
+
+def start_auth_code_listener(timeout=60):
+    """Starts a temporary HTTP server on 127.0.0.1:53683 to capture the Google OAuth code."""
+    from http.server import HTTPServer
+    server_address = ('127.0.0.1', 53683)
+    httpd = HTTPServer(server_address, OAuthRedirectHandler)
+    httpd.captured_code = ""
+    
+    # We want to serve only 1 request, then close
+    def run_server():
+        try:
+            httpd.handle_request()
+        except Exception:
+            pass
+            
+    t = threading.Thread(target=run_server, daemon=True)
+    t.start()
+    
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if httpd.captured_code:
+            break
+        time.sleep(0.5)
+        
+    captured = httpd.captured_code
+    httpd.server_close()
+    return captured
+
+# Global auth state (NOT in state dict to avoid JSON serialization issues)
+_gdrive_pending_auth_httpd = None
+_gdrive_pending_auth_code = ""
+
+def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
+    """
+    Captures Google authorization code.
+    
+    Two strategies:
+    - force_visible=True (Add Account): Opens the user's DEFAULT browser (Firefox/Chrome).
+      User is already logged in → just clicks "Allow" → code captured via localhost redirect.
+      Google trusts the system browser, no "unsafe browser" warnings.
+    - force_visible=False (downloads): Uses headless Playwright with persistent profile.
+      If Google session exists, auto-redirects silently. Otherwise returns None.
+    """
+    from http.server import HTTPServer
+    
+    if force_visible:
+        # === ADD ACCOUNT: Open in user's default browser ===
+        add_log("GDrive: Opening Google authorization in your default browser...")
+        
+        httpd = None
+        for bind_attempt in range(3):
+            try:
+                httpd = HTTPServer(('127.0.0.1', 53683), OAuthRedirectHandler)
+                break
+            except OSError as e:
+                add_log(f"GDrive: Port 53683 busy (attempt {bind_attempt+1}): {e}")
+                time.sleep(1.5)
+        
+        if not httpd:
+            add_log("GDrive: Cannot bind port 53683.")
+            return None
+        
+        httpd.captured_code = ""
+        httpd.timeout = 180  # 3 minutes for user to log in
+        
+        # Start listener in background
+        listener_thread = threading.Thread(
+            target=lambda h=httpd: _safe_handle_request(h), daemon=True
+        )
+        listener_thread.start()
+        
+        # Open URL in user's default browser (Firefox/Chrome — where they're already logged in)
+        import webbrowser
+        webbrowser.open(auth_url)
+        add_log("GDrive: Browser tab opened. Please authorize access to Google Drive.")
+        
+        # Wait for redirect to our listener
+        start_time = time.time()
+        while time.time() - start_time < 180:
+            if httpd.captured_code:
+                break
+            time.sleep(0.5)
+        
+        captured = httpd.captured_code
+        try:
+            httpd.server_close()
+        except Exception:
+            pass
+        
+        if captured:
+            add_log("GDrive: Authorization successful! Account linked.")
+            return captured
+        else:
+            add_log("GDrive: Authorization timed out. Please try again.")
+            return None
+    
+    else:
+        # === DOWNLOADS: Try headless first, then system browser auto-redirect ===
+        from http.server import HTTPServer
+        
+        httpd = None
+        for bind_attempt in range(3):
+            try:
+                httpd = HTTPServer(('127.0.0.1', 53683), OAuthRedirectHandler)
+                break
+            except OSError as e:
+                add_log(f"GDrive: Port 53683 busy (attempt {bind_attempt+1}): {e}")
+                time.sleep(1.5)
+        
+        if not httpd:
+            add_log("GDrive: Cannot bind port 53683.")
+            return None
+        
+        httpd.captured_code = ""
+        httpd.timeout = 25
+        
+        listener_thread = threading.Thread(
+            target=lambda h=httpd: _safe_handle_request(h), daemon=True
+        )
+        listener_thread.start()
+        
+        # Attempt 1: Headless Playwright (truly silent, zero windows)
+        add_log("GDrive: Attempting silent background authorization...")
+        try:
+            from playwright.sync_api import sync_playwright
+            profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "gdrive_chrome_profile"))
+            os.makedirs(profile_dir, exist_ok=True)
+            
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    profile_dir,
+                    headless=True,
+                    args=["--disable-gpu", "--no-sandbox"]
+                )
+                try:
+                    page = context.new_page()
+                    page.goto(auth_url, timeout=15000)
+                    
+                    start_time = time.time()
+                    while time.time() - start_time < 12:
+                        if httpd.captured_code:
+                            break
+                        time.sleep(0.3)
+                finally:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            add_log(f"GDrive: Playwright error: {e}")
+        
+        if httpd.captured_code:
+            captured = httpd.captured_code
+            try:
+                httpd.server_close()
+            except:
+                pass
+            add_log("GDrive: Silent authorization successful!")
+            return captured
+        
+        # Attempt 2: Open in system browser (auto-redirect since consent already given)
+        # User already gave consent during Add Account, so Google will auto-redirect
+        # to 127.0.0.1:53683 without any interaction needed. Tab opens briefly and closes.
+        add_log("GDrive: Silent auth failed. Trying system browser auto-redirect...")
+        try:
+            os.startfile(auth_url)
+        except Exception:
+            try:
+                import subprocess
+                subprocess.Popen(['cmd', '/c', 'start', '', auth_url], 
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception as e2:
+                add_log(f"GDrive: Cannot open system browser: {e2}")
+        
+        # Wait for auto-redirect (should be instant since consent was already given)
+        start_time = time.time()
+        while time.time() - start_time < 20:
+            if httpd.captured_code:
+                break
+            time.sleep(0.3)
+        
+        captured = httpd.captured_code
+        try:
+            httpd.server_close()
+        except:
+            pass
+        
+        if captured:
+            add_log("GDrive: Authorization via system browser successful!")
+            return captured
+        
+        add_log("GDrive: All auth attempts failed. Please re-add your Google account in Settings.")
+        return None
+
+def _safe_handle_request(httpd):
+    """Helper to safely handle one HTTP request on the OAuth listener."""
+    try:
+        httpd.handle_request()
+    except Exception:
+        pass
+
+def get_gdrive_account_details(access_token, existing_limit=16106127360, existing_usage=0, existing_name="Unknown Name", existing_email="Unknown Account", existing_photo=""):
+    """Fetches user details and storage quota from Google APIs with robust fallback."""
+    email = existing_email
+    name = existing_name
+    photo = existing_photo
+    limit = existing_limit
+    usage = existing_usage
+    
+    userinfo_success = False
+    quota_success = False
+    
+    headers = {"Authorization": f"Bearer {access_token}"}
+    
+    # 1. Try Userinfo API for name, email, photo (independent quota, high rate limits)
+    try:
+        r_user = requests.get("https://www.googleapis.com/oauth2/v2/userinfo", headers=headers, timeout=10, verify=False)
+        if r_user.status_code == 200:
+            data = r_user.json()
+            email = data.get("email", email)
+            name = data.get("name", name)
+            photo = data.get("picture", photo)
+            userinfo_success = True
+        else:
+            add_log(f"GDrive: Userinfo API returned status {r_user.status_code}")
+    except Exception as e:
+        add_log(f"GDrive: Userinfo API exception: {e}")
+        
+    # 2. Try Drive About API for storage limits (often 403 rate-limited on public Client ID)
+    try:
+        if userinfo_success:
+            # We already have user info, just get quota to minimize scope/fields payload size
+            url = "https://www.googleapis.com/drive/v3/about"
+            params = {"fields": "storageQuota(limit,usage)"}
+            r_about = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+        else:
+            url = "https://www.googleapis.com/drive/v3/about"
+            params = {"fields": "user(displayName,emailAddress,photoLink),storageQuota(limit,usage)"}
+            r_about = requests.get(url, headers=headers, params=params, timeout=10, verify=False)
+            
+        if r_about.status_code == 200:
+            data = r_about.json()
+            if not userinfo_success:
+                user_info = data.get("user", {})
+                email = user_info.get("emailAddress", email)
+                name = user_info.get("displayName", name)
+                photo = user_info.get("photoLink", photo)
+                userinfo_success = True
+            
+            quota = data.get("storageQuota", {})
+            limit = int(quota.get("limit", limit))
+            usage = int(quota.get("usage", usage))
+            quota_success = True
+        else:
+            add_log(f"GDrive: Drive About API returned status {r_about.status_code} (likely rate limit). Using fallback limits.")
+    except Exception as e:
+        add_log(f"GDrive: Drive About API exception: {e}. Using fallback limits.")
+        
+    return {
+        "success": userinfo_success or quota_success,
+        "email": email,
+        "name": name,
+        "photo": photo,
+        "limit": limit,
+        "usage": usage
+    }
+
+def exchange_gdrive_code(auth_code):
+    """Exchanges authorization code for Google Drive refresh token using Rclone credentials."""
+    url = "https://oauth2.googleapis.com/token"
+    client_id, client_secret = get_gdrive_credentials()
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "code": auth_code,
+        "redirect_uri": "http://127.0.0.1:53683/",
+        "grant_type": "authorization_code"
+    }
+    try:
+        r = requests.post(url, data=payload, timeout=15, verify=False)
+        r.raise_for_status()
+        data = r.json()
+        refresh_token = data.get("refresh_token")
+        access_token = data.get("access_token")
+        
+        details = {"email": "Unknown Account", "name": "Unknown Name", "photo": "", "limit": 0, "usage": 0}
+        if access_token:
+            det_res = get_gdrive_account_details(access_token)
+            if det_res.get("success", False):
+                details = det_res
+                
+        return {
+            "success": True,
+            "email": details["email"],
+            "name": details["name"],
+            "photo": details["photo"],
+            "limit": details["limit"],
+            "usage": details["usage"],
+            "refresh_token": refresh_token
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def get_gdrive_access_token(refresh_token):
+    """Refreshes and returns a temporary access token for Google Drive API."""
+    url = "https://oauth2.googleapis.com/token"
+    client_id, client_secret = get_gdrive_credentials()
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }
+    try:
+        r = requests.post(url, data=payload, timeout=15, verify=False)
+        r.raise_for_status()
+        return r.json().get("access_token")
+    except Exception as e:
+        add_log(f"GDrive: Failed to refresh access token: {e}")
+        return None
+
+def find_gdrive_file(filename, access_token):
+    """Queries user's Google Drive for a file with the given name."""
+    url = "https://www.googleapis.com/drive/v3/files"
+    escaped_filename = filename.replace("'", "\\'")
+    params = {
+        "q": f"name = '{escaped_filename}' and trashed = false",
+        "fields": "files(id, name, size)"
+    }
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=15, verify=False)
+        r.raise_for_status()
+        files = r.json().get("files", [])
+        if files:
+            return files[0]
+        return None
+    except Exception as e:
+        add_log(f"GDrive: Failed to search file {filename}: {e}")
+        return None
+
+def delete_gdrive_file(file_id, access_token):
+    """Deletes a file by ID from the user's Google Drive."""
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        r = requests.delete(url, headers=headers, timeout=15, verify=False)
+        if r.status_code in [200, 204]:
+            add_log(f"GDrive: Successfully deleted file {file_id} from Google Drive.")
+            return True
+        else:
+            add_log(f"GDrive: Delete returned status code {r.status_code}")
+            return False
+    except Exception as e:
+        add_log(f"GDrive: Failed to delete file {file_id}: {e}")
+        return False
+
+_cached_working_proxy = None
+
+def get_working_gofile_proxy():
+    """Scrapes sslproxies.org and returns the first tested SSL proxy that successfully talks to the Gofile API."""
+    global _cached_working_proxy
+    if _cached_working_proxy:
+        # Quick check if it is still alive
+        test_proxies = {
+            "http": f"http://{_cached_working_proxy}",
+            "https": f"http://{_cached_working_proxy}"
+        }
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            test_r = requests.post("https://api.gofile.io/accounts", headers=headers, proxies=test_proxies, timeout=4, verify=False)
+            if test_r.status_code == 200:
+                return _cached_working_proxy
+        except Exception:
+            _cached_working_proxy = None
+
+    add_log("Searching for a working free SSL proxy for Gofile...")
+    try:
+        from bs4 import BeautifulSoup
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        r = requests.get("https://www.sslproxies.org/", headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        proxies = []
+        table = soup.find('table', class_='table') or soup.find('table')
+        if table:
+            for row in table.find_all('tr')[1:]:
+                cols = row.find_all('td')
+                if len(cols) >= 2:
+                    ip = cols[0].text.strip()
+                    port = cols[1].text.strip()
+                    if ip.count('.') == 3 and port.isdigit():
+                        proxies.append(f"{ip}:{port}")
+                        
+        add_log(f"Found {len(proxies)} SSL proxies. Testing against Gofile API...")
+        for proxy in proxies[:15]:
+            test_proxies = {
+                "http": f"http://{proxy}",
+                "https": f"http://{proxy}"
+            }
+            try:
+                test_r = requests.post("https://api.gofile.io/accounts", headers=headers, proxies=test_proxies, timeout=4, verify=False)
+                if test_r.status_code == 200:
+                    add_log(f"Proxy {proxy} successfully bypassed Gofile block!")
+                    _cached_working_proxy = proxy
+                    return proxy
+            except Exception:
+                pass
+        add_log("No working free SSL proxy found for Gofile.")
+        return None
+    except Exception as e:
+        add_log(f"Failed to scrape/test free proxies: {e}")
+        return None
 
 def extract_direct_link(page_url):
     """Bypasses Cloudflare using curl_cffi to get the direct dl.fuckingfast.co link."""
@@ -306,21 +960,33 @@ def extract_fileditch_link(page_url):
         return None
 
 def extract_gofile_link(page_url):
+    # Check if we should use a proxy
+    proxy_server = None
+    if state.get("gofile_proxy", False):
+        proxy_server = get_working_gofile_proxy()
+        
     with extraction_lock:
         from playwright.sync_api import sync_playwright
         import os
-        add_log(f"Extracting Gofile direct link for: {page_url}")
+        if proxy_server:
+            add_log(f"Extracting Gofile direct link for: {page_url} via proxy {proxy_server}")
+        else:
+            add_log(f"Extracting Gofile direct link for: {page_url}")
         try:
             profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "scratch", "chrome_profile"))
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=profile_dir,
-                    headless=False,
-                    args=[
+                launch_args = {
+                    "user_data_dir": profile_dir,
+                    "headless": False,
+                    "args": [
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox"
                     ]
-                )
+                }
+                if proxy_server:
+                    launch_args["proxy"] = {"server": f"http://{proxy_server}"}
+                    
+                context = p.chromium.launch_persistent_context(**launch_args)
                 page = context.new_page()
                 
                 gofile_links = []
@@ -634,7 +1300,7 @@ def download_worker():
                     
                 target_idx = -1
                 for idx, f in enumerate(state["files"]):
-                    if f["status"] in ["waiting", "failed"]:
+                    if f["status"] == "waiting":
                         target_idx = idx
                         f["status"] = "connecting"
                         break
@@ -669,9 +1335,18 @@ def download_file(index, file_info):
     page_url = file_info["url"]
     file_path = os.path.join(state["download_dir"], filename)
     
+    file_id = None
+    access_token = None
+    account = None
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     with state_lock:
-        state["files"][index]["status"] = "connecting"
-        state["files"][index]["error"] = ""
+        if index < len(state["files"]):
+            state["files"][index]["status"] = "connecting"
+            state["files"][index]["error"] = ""
         
     add_log(f"Starting download for {filename}...")
     
@@ -680,66 +1355,260 @@ def download_file(index, file_info):
         direct_link = extract_direct_link(page_url)
         if not direct_link:
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Could not bypass Cloudflare for FuckingFast."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Could not bypass Cloudflare for FuckingFast."
             return False
     elif "datanodes.to" in page_url:
         direct_link = extract_datanodes_link(page_url)
         if not direct_link:
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Could not extract direct link for DataNodes."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Could not extract direct link for DataNodes."
             return False
     elif "fileditchfiles.me" in page_url or "fileditch.com" in page_url:
         direct_link = extract_fileditch_link(page_url)
         if not direct_link:
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Could not extract direct link for FileDitch."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Could not extract direct link for FileDitch."
             return False
     elif "gofile.io" in page_url:
         direct_link = extract_gofile_link(page_url)
         if not direct_link:
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Could not extract direct link for Gofile."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Could not extract direct link for Gofile."
             return False
         elif direct_link == "ERROR_NOT_PREMIUM":
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Gofile: Free accounts cannot download this folder. Premium account required."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Gofile: Free accounts cannot download this folder. Premium account required."
             return False
         elif direct_link == "ERROR_NOT_FOUND":
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Gofile: File not found (404)."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Gofile: File not found (404)."
             return False
         elif direct_link == "ERROR_BLOCKED":
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Gofile: Connection timed out. Gofile may be blocked on your network (e.g. university firewall). Try enabling a VPN."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Gofile: Connection timed out. Gofile may be blocked on your network (e.g. university firewall). Try enabling a VPN."
             return False
     elif "rootz.so" in page_url or "rootz.cc" in page_url:
         direct_link = extract_rootz_link(page_url)
         if direct_link == "ERROR_NOT_FOUND" or not direct_link:
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Rootz: File not found (404)."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Rootz: File not found (404)."
             return False
     elif "vikingfile.com" in page_url or "vik1ngfile.site" in page_url:
         direct_link = extract_viking_link(page_url)
         if direct_link == "ERROR_CAPTCHA_REQUIRED" or not direct_link:
             with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "VikingFile: Captcha verification required."
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "VikingFile: Captcha verification required."
             return False
-    elif "pixeldrain.com/u/" in page_url:
-        direct_link = page_url.replace("pixeldrain.com/u/", "pixeldrain.com/api/file/")
-    elif "multiup.io" in page_url:
+    elif "drive.online-fix.me" in page_url and "/download/" in page_url:
         with state_lock:
-            state["files"][index]["status"] = "failed"
-            state["files"][index]["error"] = "Cloudflare Turnstile challenge blocked headless scraper. Please use DataNodes or FuckingFast mirrors."
-        return False
+            active_account = state.get("active_gdrive_account")
+            accounts = state.get("gdrive_accounts", [])
+            
+        if not active_account:
+            with state_lock:
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "No Google Drive account configured in settings."
+            return False
+            
+        account = next((a for a in accounts if a["email"] == active_account), None)
+        if not account:
+            with state_lock:
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = f"Active Google account '{active_account}' not found."
+            return False
+            
+        access_token = get_gdrive_access_token(account["refresh_token"])
+        if not access_token:
+            with state_lock:
+                if index < len(state["files"]):
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Failed to refresh Google Drive access token."
+            return False
+            
+        file_metadata = find_gdrive_file(filename, access_token)
+        if file_metadata:
+            file_id = file_metadata["id"]
+            add_log(f"Found existing copy on Google Drive: {filename} (ID: {file_id})")
+        else:
+            post_headers = {
+                "Referer": "https://online-fix.me/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            
+            copied = False
+            active_email = account["email"]
+            
+            # Step A: Attempt to copy using cached cookies for active account
+            with state_lock:
+                cookies_dict = state.get("gdrive_session_cookies", {})
+                if not isinstance(cookies_dict, dict):
+                    cookies_dict = {}
+                session_cookies = dict(cookies_dict.get(active_email, {}))
+                
+            if session_cookies:
+                add_log(f"Attempting to copy {filename} using cached session cookies for {active_email}...")
+                try:
+                    res = requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, timeout=20, verify=False)
+                    if res.status_code == 200:
+                        res_data = res.json()
+                        if res_data.get("success", False):
+                            add_log(f"Online-Fix copy request successful using cached cookies: {res_data.get('message', '')}")
+                            with state_lock:
+                                if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
+                                    state["gdrive_session_cookies"] = {}
+                                if active_email not in state["gdrive_session_cookies"] or not isinstance(state["gdrive_session_cookies"][active_email], dict):
+                                    state["gdrive_session_cookies"][active_email] = {}
+                                state["gdrive_session_cookies"][active_email].update(res.cookies.get_dict())
+                            save_gdrive_accounts()
+                            copied = True
+                except Exception as e:
+                    add_log(f"Cache copy attempt failed for {filename}: {str(e)}")
+                    
+            if not copied:
+                # Step B: Lock OAuth flow so only 1 thread opens browser
+                with gdrive_oauth_lock:
+                    # Double-check if cookies were populated while we were waiting for the lock
+                    with state_lock:
+                        cookies_dict = state.get("gdrive_session_cookies", {})
+                        if not isinstance(cookies_dict, dict):
+                            cookies_dict = {}
+                        session_cookies = dict(cookies_dict.get(active_email, {}))
+                        
+                    if session_cookies:
+                        add_log(f"Attempting copy for {filename} with cookies updated by another worker...")
+                        try:
+                            res = requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, timeout=20, verify=False)
+                            if res.status_code == 200:
+                                res_data = res.json()
+                                if res_data.get("success", False):
+                                    add_log(f"Online-Fix copy request successful using newly cached cookies: {res_data.get('message', '')}")
+                                    with state_lock:
+                                        if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
+                                            state["gdrive_session_cookies"] = {}
+                                        if active_email not in state["gdrive_session_cookies"] or not isinstance(state["gdrive_session_cookies"][active_email], dict):
+                                            state["gdrive_session_cookies"][active_email] = {}
+                                        state["gdrive_session_cookies"][active_email].update(res.cookies.get_dict())
+                                    save_gdrive_accounts()
+                                    copied = True
+                        except Exception as e:
+                            add_log(f"Copy with newly cached cookies failed: {str(e)}")
+                            
+                    if not copied:
+                        add_log(f"Initiating copy flow to your Google Drive for {filename}...")
+                        
+                        client_id, _ = get_gdrive_credentials()
+                        redirect_uri = "http://127.0.0.1:53683/"
+                        # Wide scope exactly matches linking to prevent Consent Summary prompt!
+                        scope = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+                        auth_url = (
+                            f"https://accounts.google.com/o/oauth2/v2/auth?"
+                            f"client_id={client_id}&"
+                            f"redirect_uri={urllib.parse.quote(redirect_uri)}&"
+                            f"response_type=code&"
+                            f"scope={urllib.parse.quote(scope)}&"
+                            f"access_type=offline&"
+                            f"login_hint={urllib.parse.quote(account['email'])}"
+                        )
+                        
+                        add_log("GDrive: Requesting Google authorization code...")
+                        auth_code = get_gdrive_auth_code_playwright(auth_url, account["email"])
+                        if not auth_code:
+                            with state_lock:
+                                if index < len(state["files"]):
+                                    state["files"][index]["status"] = "failed"
+                                    state["files"][index]["error"] = "Google authorization timed out or cancelled by user."
+                            return False
+                            
+                        # Establish a fresh session cookie on drive.online-fix.me before authorizing it!
+                        add_log("Establishing session cookie on Online-Fix Drive server...")
+                        try:
+                            # A GET request to page_url establishes the online_fix_auth cookie in the response headers.
+                            res_get = requests.get(page_url, headers=post_headers, timeout=20, verify=False)
+                            fresh_cookies = res_get.cookies.get_dict()
+                        except Exception as e:
+                            add_log(f"Warning: Failed to establish fresh session cookie: {str(e)}")
+                            fresh_cookies = {}
+                            
+                        add_log("Sending authorization key to Online-Fix Drive server...")
+                        post_data = {
+                            "api_key": auth_code
+                        }
+                        try:
+                            res = requests.post(page_url, headers=post_headers, cookies=fresh_cookies, data=post_data, timeout=20, verify=False)
+                            if res.status_code != 200:
+                                with state_lock:
+                                    if index < len(state["files"]):
+                                        state["files"][index]["status"] = "failed"
+                                        state["files"][index]["error"] = f"Online-Fix copy request failed with status code {res.status_code}."
+                                return False
+                                
+                            res_data = res.json()
+                            if not res_data.get("success", False):
+                                msg = res_data.get("message", "Copy request rejected by Online-Fix.")
+                                with state_lock:
+                                    if index < len(state["files"]):
+                                        state["files"][index]["status"] = "failed"
+                                        state["files"][index]["error"] = f"Online-Fix error: {msg}"
+                                return False
+                                
+                            add_log(f"Online-Fix copy request successful: {res_data.get('message', '')}")
+                            
+                            # Cache the authorized cookies specifically for this active email account
+                            with state_lock:
+                                if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
+                                    state["gdrive_session_cookies"] = {}
+                                # Combine fresh_cookies and cookies returned in POST response
+                                final_cookies = dict(fresh_cookies)
+                                final_cookies.update(res.cookies.get_dict())
+                                state["gdrive_session_cookies"][active_email] = final_cookies
+                            save_gdrive_accounts()
+                                
+                        except Exception as e:
+                            with state_lock:
+                                if index < len(state["files"]):
+                                    state["files"][index]["status"] = "failed"
+                                    state["files"][index]["error"] = f"Failed to contact Online-Fix server: {str(e)}"
+                            return False
+                            
+            add_log("Waiting for the file to appear in your Google Drive (polling)...")
+            for attempt in range(15):
+                time.sleep(3)
+                file_metadata = find_gdrive_file(filename, access_token)
+                if file_metadata:
+                    file_id = file_metadata["id"]
+                    add_log(f"File discovered on Google Drive: {filename} (ID: {file_id})")
+                    break
+                    
+            if not file_id:
+                with state_lock:
+                    if index < len(state["files"]):
+                        state["files"][index]["status"] = "failed"
+                        state["files"][index]["error"] = "File copy timed out or could not be found on Google Drive."
+                return False
+                
+        direct_link = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+        headers["Authorization"] = f"Bearer {access_token}"
     else:
         direct_link = page_url
         
@@ -748,10 +1617,6 @@ def download_file(index, file_info):
         resume_byte = os.path.getsize(file_path)
         add_log(f"Local file found: {filename}. Size: {resume_byte} bytes.")
         
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
     total_size = 0
     try:
         r_head = requests.get(direct_link, headers=headers, stream=True, timeout=15)
@@ -771,153 +1636,184 @@ def download_file(index, file_info):
             state["files"][index]["size"] = total_size
         return True
         
-    if resume_byte > 0:
-        headers["Range"] = f"bytes={resume_byte}-"
-        add_log(f"Attempting resume from byte {resume_byte} for {filename}...")
+    downloaded = resume_byte
+    low_speed_seconds = 0
+    proxy_server = None
+    
+    # If using proxy for Gofile:
+    if "gofile.io" in page_url and state.get("gofile_proxy", False):
+        proxy_server = get_working_gofile_proxy()
         
-    max_retries = 3
-    response = None
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(direct_link, headers=headers, stream=True, timeout=30)
+    while True:
+        # Prepare headers & mode
+        if downloaded > 0:
+            headers["Range"] = f"bytes={downloaded}-"
+            mode = "ab"
+            add_log(f"Attempting resume/reconnect from byte {downloaded} for {filename}...")
+        else:
+            if "Range" in headers:
+                del headers["Range"]
+            mode = "wb"
+            add_log(f"Starting download from scratch for {filename}...")
             
-            # Check for Pixeldrain download limit reached (402 Payment Required or 429 Too Many Requests)
+        if "Authorization" in headers and "drive.online-fix.me" in page_url and account:
+            access_token = get_gdrive_access_token(account["refresh_token"])
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+            
+        proxies = None
+        if proxy_server:
+            proxies = {
+                "http": f"http://{proxy_server}",
+                "https": f"http://{proxy_server}"
+            }
+            
+        try:
+            response = requests.get(direct_link, headers=headers, stream=True, timeout=30, proxies=proxies)
+            
+            # Check for Pixeldrain download limit reached (402/429)
             if response.status_code in [402, 429] and "pixeldrain.com" in direct_link:
                 add_log("Pixeldrain download limit reached (402/429). Attempting automatic IP rotation...")
                 response.close()
+                clear_pixeldrain_cookies()
                 if rotate_warp_ip():
                     add_log("WARP IP rotated successfully. Retrying connection...")
+                    time.sleep(2)
                     continue
                 else:
-                    add_log("Pixeldrain: Download limit reached (402). Change VPN IP or install WARP to auto-rotate.")
+                    add_log("WARP IP rotation failed or unavailable.")
                     with state_lock:
                         state["files"][index]["status"] = "failed"
-                        state["files"][index]["error"] = "Pixeldrain download limit reached. Please change VPN server or install WARP."
+                        state["files"][index]["error"] = "Pixeldrain limit reached and WARP IP rotation failed."
                     return False
-            break
-        except Exception as conn_err:
-            if attempt == max_retries - 1:
-                add_log(f"Connection failed after {max_retries} attempts: {conn_err}")
+                    
+            if response.status_code not in [200, 206]:
+                if response.status_code == 416:
+                    add_log(f"File {filename} appears to be fully downloaded (HTTP 416).")
+                    break
+                response.close()
+                add_log(f"Download request failed with HTTP code: {response.status_code}")
                 with state_lock:
                     state["files"][index]["status"] = "failed"
-                    state["files"][index]["error"] = f"Connection failed: {str(conn_err)}"
+                    state["files"][index]["error"] = f"HTTP Error {response.status_code}"
                 return False
-            add_log(f"Connection attempt {attempt+1} failed: {conn_err}. Retrying...")
+                
+            # Check if we accidentally downloaded an HTML page instead of binary data
+            content_type = response.headers.get('content-type', '').lower()
+            if 'text/html' in content_type:
+                response.close()
+                add_log(f"Error: Server returned HTML page instead of binary stream for {filename}.")
+                with state_lock:
+                    state["files"][index]["status"] = "failed"
+                    state["files"][index]["error"] = "Bypass failed: server returned HTML page."
+                return False
+                
+            if response.status_code == 200:
+                if downloaded > 0:
+                    add_log(f"Server did not support range resume for {filename}. Restarting from scratch.")
+                    downloaded = 0
+                    mode = "wb"
+                    
+            with state_lock:
+                state["files"][index]["status"] = "downloading"
+                if total_size <= 0:
+                    try:
+                        sz = int(response.headers.get('content-length', 0))
+                        if sz > 0:
+                            total_size = sz + downloaded
+                            state["files"][index]["size"] = total_size
+                            save_size_to_cache(filename, total_size)
+                    except Exception:
+                        pass
+                else:
+                    state["files"][index]["size"] = total_size
+                    
+            chunk_size = 256 * 1024
+            last_time = time.time()
+            bytes_in_sec = 0
+            throttled_trigger = False
+            
+            with open(file_path, mode) as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    with state_lock:
+                        if state["should_stop"]:
+                            response.close()
+                            add_log(f"Download of {filename} paused by user.")
+                            state["files"][index]["status"] = "waiting"
+                            state["files"][index]["speed"] = 0
+                            state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
+                            return False
+                            
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        bytes_in_sec += len(chunk)
+                        
+                        curr_time = time.time()
+                        elapsed = curr_time - last_time
+                        if elapsed >= 1.0:
+                            speed = bytes_in_sec / elapsed
+                            progress = int((downloaded / total_size) * 100) if total_size > 0 else 0
+                            time_left = int((total_size - downloaded) / speed) if speed > 0 else -1
+                            
+                            with state_lock:
+                                state["files"][index]["downloaded"] = downloaded
+                                state["files"][index]["progress"] = progress
+                                state["files"][index]["speed"] = speed
+                                state["files"][index]["time_left"] = time_left
+                                state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
+                                if speed > 100000:
+                                    state["average_download_speed"] = state["average_download_speed"] * 0.95 + speed * 0.05
+                                    save_size_to_cache("__average_download_speed__", state["average_download_speed"])
+                                    
+                            recalculate_total_progress()
+                            
+                            # Speed drop monitoring for Pixeldrain
+                            if "pixeldrain.com" in direct_link:
+                                if speed < 150 * 1024:
+                                    low_speed_seconds += int(elapsed)
+                                    if low_speed_seconds >= 8:
+                                        add_log(f"Pixeldrain: Throttling detected (speed: {speed/1024:.1f} KB/s for {low_speed_seconds}s). Triggering IP auto-rotation...")
+                                        throttled_trigger = True
+                                        break
+                                else:
+                                    low_speed_seconds = 0
+                                    
+                            bytes_in_sec = 0
+                            last_time = curr_time
+                            
+            response.close()
+            
+            if throttled_trigger:
+                clear_pixeldrain_cookies()
+                if rotate_warp_ip():
+                    add_log("WARP IP rotated. Reconnecting download...")
+                    time.sleep(2)
+                    low_speed_seconds = 0
+                    continue
+                else:
+                    add_log("WARP IP rotation failed during active throttling. Continuing at throttled speed...")
+                    low_speed_seconds = 0
+                    
+            break
+            
+        except Exception as e:
+            add_log(f"Download connection error for {filename}: {e}. Retrying in 2 seconds...")
             time.sleep(2)
             
-    if not response:
-        return False
-        
-    try:
-        # Check if we accidentally downloaded an HTML page instead of binary data
-        content_type = response.headers.get('content-type', '').lower()
-        if 'text/html' in content_type:
-            add_log(f"Error: Server returned HTML page instead of binary stream for {filename}.")
-            with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Bypass failed: server returned HTML page instead of file data."
-            return False
-            
-        if response.status_code == 206:
-            mode = "ab"
-            downloaded = resume_byte
-            total_size = int(response.headers.get('content-length', 0)) + resume_byte
-            add_log(f"Resuming download from byte {resume_byte} for {filename}...")
-            if total_size > 0:
-                save_size_to_cache(filename, total_size)
-        elif response.status_code == 200:
-            mode = "wb"
-            downloaded = 0
-            total_size = int(response.headers.get('content-length', 0))
-            if resume_byte > 0:
-                add_log(f"Server did not support resume for {filename}. Starting from scratch.")
-            if total_size > 0:
-                save_size_to_cache(filename, total_size)
-        elif response.status_code == 416:
-            add_log(f"File {filename} appears to be fully downloaded already.")
-            with state_lock:
-                state["files"][index]["status"] = "finished"
-                state["files"][index]["progress"] = 100
-                state["files"][index]["downloaded"] = resume_byte
-                state["files"][index]["size"] = resume_byte
-            return True
-        else:
-            add_log(f"Download request failed with HTTP status code: {response.status_code}")
-            with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = f"HTTP Error {response.status_code}"
-            return False
-            
-        with state_lock:
-            state["files"][index]["status"] = "downloading"
-            state["files"][index]["size"] = total_size
-            
-        chunk_size = 256 * 1024
-        last_time = time.time()
-        bytes_in_sec = 0
-        
-        with open(file_path, mode) as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                with state_lock:
-                    if state["should_stop"]:
-                        add_log(f"Download of {filename} paused by user.")
-                        state["files"][index]["status"] = "waiting"
-                        state["files"][index]["speed"] = 0
-                        state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
-                        return False
-                        
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    bytes_in_sec += len(chunk)
-                    
-                    curr_time = time.time()
-                    elapsed = curr_time - last_time
-                    if elapsed >= 1.0:
-                        speed = bytes_in_sec / elapsed
-                        progress = int((downloaded / total_size) * 100) if total_size > 0 else 0
-                        time_left = int((total_size - downloaded) / speed) if speed > 0 else -1
-                        
-                        with state_lock:
-                            state["files"][index]["downloaded"] = downloaded
-                            state["files"][index]["progress"] = progress
-                            state["files"][index]["speed"] = speed
-                            state["files"][index]["time_left"] = time_left
-                            state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
-                            if speed > 100000:
-                                state["average_download_speed"] = state["average_download_speed"] * 0.95 + speed * 0.05
-                                save_size_to_cache("__average_download_speed__", state["average_download_speed"])
-                            
-                        recalculate_total_progress()
-                        bytes_in_sec = 0
-                        last_time = curr_time
-                        
-        if downloaded == 0:
-            add_log(f"Error: Downloaded 0 bytes for {filename}.")
-            with state_lock:
-                state["files"][index]["status"] = "failed"
-                state["files"][index]["error"] = "Downloaded 0 bytes. Direct link might have expired."
-            return False
-            
-        with state_lock:
-            state["files"][index]["status"] = "finished"
-            state["files"][index]["progress"] = 100
-            state["files"][index]["downloaded"] = total_size
-            state["files"][index]["speed"] = 0
-            state["files"][index]["time_left"] = 0
-            state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
-        recalculate_total_progress()
-        add_log(f"Successfully downloaded {filename}.")
-        return True
-        
-    except Exception as e:
-        add_log(f"Exception during download of {filename}: {str(e)}")
+    if downloaded == 0:
+        add_log(f"Error: Downloaded 0 bytes for {filename}.")
         with state_lock:
             state["files"][index]["status"] = "failed"
-            state["files"][index]["error"] = str(e)
-            state["files"][index]["speed"] = 0
-            state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
+            state["files"][index]["error"] = "Downloaded 0 bytes. Connection failed or direct link expired."
         return False
+        
+    if file_id and "drive.online-fix.me" in page_url and access_token:
+        add_log(f"GDrive: Automatically deleting temporary copy {filename} from Google Drive...")
+        delete_gdrive_file(file_id, access_token)
+        
+    add_log(f"Successfully downloaded {filename}.")
+    return True
 
 def recalculate_total_progress():
     """Calculates overall progress across all selected files."""
@@ -1101,25 +1997,54 @@ def parse_online_fix_page(html, base_url):
     articles = soup.find_all(class_=['article', 'article-short'])
     results = []
     for art in articles:
-        title_a = art.find('a', class_=['news-title', 'title', 'post-title'])
+        title_a = None
+        
+        # 1. Look for headers like h2 class="title" or news-title
+        title_header = art.find(['h1', 'h2', 'h3', 'h4'], class_=['title', 'news-title', 'post-title'])
+        if title_header:
+            if title_header.parent and title_header.parent.name == 'a':
+                title_a = title_header.parent
+            else:
+                title_a = title_header.find('a') or title_header
+                
+        # 2. Look for specific classes on link
         if not title_a:
-            for h in art.find_all(['h1', 'h2', 'h3']):
-                a = h.find('a')
-                if a:
-                    title_a = a
-                    break
+            title_a = art.find('a', class_=['news-title', 'title', 'post-title'])
+            
+        # 3. Fallback to links with text and games/programs/guides in href
         if not title_a:
             for a in art.find_all('a'):
-                if '/games/' in a.get('href', ''):
+                href = a.get('href', '')
+                if ('/games/' in href or '/programs/' in href or '/guides/' in href) and a.text.strip():
                     title_a = a
                     break
+                    
         if not title_a:
             continue
             
         title_text = title_a.text.strip()
         title_text = title_text.split('\n')[0].strip()
-        href = title_a.get('href', '')
-        if '/games/' not in href:
+        
+        # Extract link
+        href = ""
+        if hasattr(title_a, 'get'):
+            href = title_a.get('href', '')
+            
+        # If the element itself is a header (no link wrapped), check parents or children for link
+        if not href and title_a.name in ['h1', 'h2', 'h3', 'h4']:
+            parent_a = title_a.find_parent('a')
+            if parent_a:
+                href = parent_a.get('href', '')
+            else:
+                child_a = title_a.find('a')
+                if child_a:
+                    href = child_a.get('href', '')
+                    
+        if href:
+            href = urllib.parse.urljoin(base_url, href)
+            
+        # Filter: check if URL contains games, programs, or guides
+        if not any(token in href for token in ['/games/', '/programs/', '/guides/']):
             continue
             
         img = art.find('img')
@@ -1237,6 +2162,81 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     # Look for standard setup .bin files or output to check if extracted
                     state["is_extracted"] = any(f.endswith(".bin") for f in os.listdir(state["download_dir"]))
                 self.wfile.write(json.dumps(state).encode())
+            return
+            
+        elif path == "/api/gdrive/list_accounts":
+            updated_accounts = []
+            with state_lock:
+                accounts = list(state.get("gdrive_accounts", []))
+                active = state.get("active_gdrive_account", "")
+                
+            for acc in accounts:
+                old_email = acc.get("email", "Unknown Account")
+                token = get_gdrive_access_token(acc["refresh_token"])
+                if token:
+                    det = get_gdrive_account_details(
+                        token,
+                        existing_limit=acc.get("limit", 16106127360),
+                        existing_usage=acc.get("usage", 0),
+                        existing_name=acc.get("name", "Unknown Name"),
+                        existing_email=acc.get("email", "Unknown Account"),
+                        existing_photo=acc.get("photo", "")
+                    )
+                    if det.get("success", False):
+                        acc["name"] = det["name"]
+                        acc["photo"] = det["photo"]
+                        acc["limit"] = det["limit"]
+                        acc["usage"] = det["usage"]
+                        acc["email"] = det["email"]
+                        
+                        # Sync active account email if it was matching old_email
+                        if active == old_email and det["email"] != old_email:
+                            active = det["email"]
+                updated_accounts.append(acc)
+                
+            with state_lock:
+                state["gdrive_accounts"] = updated_accounts
+                state["active_gdrive_account"] = active
+                save_gdrive_accounts()
+                
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "success": True, 
+                "accounts": [{
+                    "email": a["email"],
+                    "name": a.get("name", "Unknown Name"),
+                    "photo": a.get("photo", ""),
+                    "limit": a.get("limit", 0),
+                    "usage": a.get("usage", 0)
+                } for a in updated_accounts], 
+                "active_account": active,
+                "custom_client_id": state.get("gdrive_client_id", ""),
+                "custom_client_secret": state.get("gdrive_client_secret", "")
+            }).encode())
+            return
+            
+        elif path == "/api/skip_warp":
+            with state_lock:
+                state["warp_status"] = "skipped"
+            add_log("User skipped Cloudflare WARP installer check.")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode())
+            return
+            
+        elif path == "/api/retry_warp":
+            with state_lock:
+                state["warp_status"] = "checking"
+                state["warp_error_message"] = ""
+            add_log("Retrying Cloudflare WARP install process...")
+            threading.Thread(target=check_and_install_warp, daemon=True).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode())
             return
             
         elif path == "/api/proxy_image":
@@ -1477,6 +2477,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Error reading file: {str(e)}")
 
     def do_POST(self):
+        global _gdrive_pending_auth_httpd, _gdrive_pending_auth_code
         url_parsed = urllib.parse.urlparse(self.path)
         path = url_parsed.path
         
@@ -1494,6 +2495,272 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode())
+            
+        elif path == "/api/retry":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                idx = int(data.get("index", -1))
+                with state_lock:
+                    if 0 <= idx < len(state["files"]):
+                        state["files"][idx]["status"] = "waiting"
+                        state["files"][idx]["error"] = ""
+                    if not state["is_running"]:
+                        state["is_running"] = True
+                        state["should_stop"] = False
+                        workers_to_start = state["max_workers"]
+                        for _ in range(workers_to_start):
+                            threading.Thread(target=download_worker, daemon=True).start()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode())
+                return
+            except Exception as e:
+                self.send_error(500, f"Error retrying: {str(e)}")
+                return
+
+        elif path == "/api/gdrive/set_credentials":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                client_id = data.get("client_id", "").strip()
+                client_secret = data.get("client_secret", "").strip()
+                with state_lock:
+                    state["gdrive_client_id"] = client_id
+                    state["gdrive_client_secret"] = client_secret
+                    save_gdrive_accounts()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode())
+                return
+            except Exception as e:
+                self.send_error(500, f"Error saving credentials: {str(e)}")
+                return
+            
+        elif path == "/api/gdrive/start_auth":
+            # Step 1: Generate auth URL and start HTTP listener to capture redirect
+            client_id, _ = get_gdrive_credentials()
+            redirect_uri = "http://127.0.0.1:53683/"
+            scope = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+            auth_url = (
+                f"https://accounts.google.com/o/oauth2/v2/auth?"
+                f"client_id={client_id}&"
+                f"redirect_uri={urllib.parse.quote(redirect_uri)}&"
+                f"response_type=code&"
+                f"scope={urllib.parse.quote(scope)}&"
+                f"access_type=offline&"
+                f"prompt=consent"
+            )
+            
+            add_log("Settings: Starting Google Account authorization...")
+            
+            # Start HTTP listener in background to capture the OAuth redirect
+            from http.server import HTTPServer
+            
+            
+            # Close any existing listener
+            if _gdrive_pending_auth_httpd:
+                try:
+                    _gdrive_pending_auth_httpd.server_close()
+                except:
+                    pass
+            
+            httpd = None
+            for bind_attempt in range(3):
+                try:
+                    httpd = HTTPServer(('127.0.0.1', 53683), OAuthRedirectHandler)
+                    break
+                except OSError as e:
+                    add_log(f"GDrive: Port 53683 busy (attempt {bind_attempt+1}): {e}")
+                    time.sleep(1.5)
+            
+            if not httpd:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "Cannot bind port 53683. Try again."}).encode())
+                return
+            
+            httpd.captured_code = ""
+            httpd.timeout = 300  # 5 minutes
+            
+            # Store reference for polling
+            _gdrive_pending_auth_httpd = httpd
+            _gdrive_pending_auth_code = ""
+            
+            # Handle request in background thread
+            def _auth_listener(h):
+                global _gdrive_pending_auth_code
+                try:
+                    h.handle_request()
+                    if h.captured_code:
+                        _gdrive_pending_auth_code = h.captured_code
+                except Exception:
+                    pass
+            
+            threading.Thread(target=_auth_listener, args=(httpd,), daemon=True).start()
+            
+            # Return the auth URL — frontend will open it via window.open()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "auth_url": auth_url}).encode())
+            return
+            
+        elif path == "/api/gdrive/poll_auth":
+            # Step 2: Check if auth code was captured, exchange for tokens
+            code = _gdrive_pending_auth_code
+            
+            if not code:
+                # Still waiting
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "waiting"}).encode())
+                return
+            
+            # Code captured! Exchange for tokens
+            add_log("Settings: Authorization code received, exchanging for tokens...")
+            _gdrive_pending_auth_code = ""  # Reset
+            
+            # Clean up listener
+            try:
+                if _gdrive_pending_auth_httpd:
+                    _gdrive_pending_auth_httpd.server_close()
+                    _gdrive_pending_auth_httpd = None
+            except:
+                pass
+            
+            res = exchange_gdrive_code(code)
+            if not res.get("success", False):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "error": res.get("error", "Token exchange failed.")}).encode())
+                return
+                
+            email = res["email"]
+            refresh_token = res["refresh_token"]
+            
+            with state_lock:
+                state["gdrive_accounts"] = [a for a in state["gdrive_accounts"] if a["email"] != email]
+                state["gdrive_accounts"].append({
+                    "email": email,
+                    "refresh_token": refresh_token,
+                    "name": res.get("name", "Unknown Name"),
+                    "photo": res.get("photo", ""),
+                    "limit": res.get("limit", 0),
+                    "usage": res.get("usage", 0)
+                })
+                state["active_gdrive_account"] = email
+                save_gdrive_accounts()
+                
+            add_log(f"Google Account linked successfully: {email}")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "done", "success": True, "email": email}).encode())
+            return
+            
+        elif path == "/api/gdrive/remove_account":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                email_to_remove = data.get("email")
+                if email_to_remove:
+                    with state_lock:
+                        state["gdrive_accounts"] = [a for a in state["gdrive_accounts"] if a["email"] != email_to_remove]
+                        if state["active_gdrive_account"] == email_to_remove:
+                            if state["gdrive_accounts"]:
+                                state["active_gdrive_account"] = state["gdrive_accounts"][0]["email"]
+                            else:
+                                state["active_gdrive_account"] = ""
+                        save_gdrive_accounts()
+                    add_log(f"Linked Google account removed: {email_to_remove}")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True}).encode())
+                    return
+            except Exception as e:
+                pass
+            self.send_error(400, "Bad Request")
+            
+        elif path == "/api/gdrive/select_account":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                email = data.get("email")
+                if email:
+                    with state_lock:
+                        if any(a["email"] == email for a in state["gdrive_accounts"]):
+                            state["active_gdrive_account"] = email
+                            save_gdrive_accounts()
+                            add_log(f"Active Google account changed to: {email}")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"success": True}).encode())
+                            return
+            except Exception as e:
+                pass
+            self.send_error(400, "Bad Request")
+            
+        elif path == "/api/gdrive/cleanup":
+            with state_lock:
+                active_account = state.get("active_gdrive_account")
+                accounts = state.get("gdrive_accounts", [])
+                files = list(state.get("files", []))
+                
+            if not active_account:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "No active Google Drive account."}).encode())
+                return
+                
+            account = next((a for a in accounts if a["email"] == active_account), None)
+            if not account:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": f"Account '{active_account}' not found."}).encode())
+                return
+                
+            access_token = get_gdrive_access_token(account["refresh_token"])
+            if not access_token:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "Failed to refresh access token."}).encode())
+                return
+                
+            def run_cleanup():
+                deleted_count = 0
+                add_log("GDrive: Starting manual cleanup of temporary repack files...")
+                for f in files:
+                    filename = f["filename"]
+                    meta = find_gdrive_file(filename, access_token)
+                    if meta:
+                        file_id = meta["id"]
+                        add_log(f"GDrive: Deleting {filename} (ID: {file_id}) from Drive...")
+                        if delete_gdrive_file(file_id, access_token):
+                            deleted_count += 1
+                add_log(f"GDrive: Manual cleanup finished. Deleted {deleted_count} files.")
+                
+            threading.Thread(target=run_cleanup, daemon=True).start()
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode())
+            return
             
         elif path == "/api/pause":
             with state_lock:
@@ -1879,6 +3146,69 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch FitGirl page. HTTP Status: {response.status_code}"}).encode())
                         return
 
+                # drive.online-fix.me direct folder URL
+                elif "drive.online-fix.me" in url and "/download/" not in url:
+                    add_log(f"Scraping drive.online-fix.me folder: {url}")
+                    h_headers = {
+                        "Referer": "https://online-fix.me/",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    }
+                    response = requests.get(url, headers=h_headers, timeout=20, verify=False)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.text, 'html.parser')
+                        title_el = soup.find('title') or soup.find(class_='card-header')
+                        raw_title = title_el.text.strip() if title_el else "Online-Fix Drive Game"
+                        title = raw_title.replace("Online-Fix Drive |", "").strip()
+                        title, version = clean_and_parse_title(title)
+                        
+                        files = []
+                        for a in soup.find_all('a', onclick=True):
+                            onclick = a.get('onclick', '')
+                            match = re.search(r"openDownloadModal\s*\(\s*event\s*,\s*'([^']+)'\s*\)", onclick)
+                            if match:
+                                download_url = match.group(1)
+                                filename = a.text.strip()
+                                
+                                file_type = "game_part"
+                                filename_lower = filename.lower()
+                                if "setup" in filename_lower or filename_lower.endswith(".exe"):
+                                    file_type = "installer"
+                                elif "optional" in filename_lower or "selective" in filename_lower or "language" in filename_lower or "lang" in filename_lower or any(lang in filename_lower for lang in ["russian", "english", "french", "german", "spanish", "chinese", "brazilian", "japanese", "korean", "polish", "mexican", "italian", "greek", "portuguese"]):
+                                    file_type = "lang_part"
+                                    
+                                cached_size = sizes_cache.get(filename, 0)
+                                files.append({
+                                    "filename": filename,
+                                    "url": download_url,
+                                    "type": file_type,
+                                    "status": "waiting",
+                                    "progress": 0,
+                                    "downloaded": 0,
+                                    "size": cached_size,
+                                    "speed": 0,
+                                    "time_left": -1,
+                                    "error": ""
+                                })
+                                
+                        prefill_part_sizes(files)
+                        
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "success": True,
+                            "type": "files",
+                            "title": title,
+                            "files": files
+                        }).encode())
+                        return
+                    else:
+                        self.send_response(500)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch drive page. HTTP Status: {response.status_code}"}).encode())
+                        return
+
                 # online-fix.me page URL (not the hoster URL)
                 elif "online-fix.me" in url and "hosters.online-fix.me" not in url:
                     add_log(f"Scraping online-fix.me game page: {url}")
@@ -1909,52 +3239,49 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         if img_el:
                             cover_image = clean_cover_url(urllib.parse.urljoin(url, img_el.get('src', '')))
                             
-                        # Find hoster URL
+                        # Find hoster URL and direct Google Drive URL
                         hoster_url = None
+                        gdrive_url = None
                         for a in soup.find_all('a', href=True):
                             href = a['href']
                             if "hosters.online-fix.me" in href:
                                 hoster_url = href
-                                break
+                            elif "drive.online-fix.me" in href:
+                                gdrive_url = href
                                 
-                        if not hoster_url:
+                        if not hoster_url and not gdrive_url:
                             self.send_response(400)
                             self.send_header("Content-Type", "application/json")
                             self.end_headers()
-                            self.wfile.write(json.dumps({"success": False, "error": "Hoster link (hosters.online-fix.me) not found on the page."}).encode())
-                            return
-                            
-                        # Fetch hoster page to parse mirrors
-                        add_log(f"Fetching hosters page: {hoster_url}")
-                        h_headers = {
-                            "Referer": url
-                        }
-                        h_response = cf_requests.get(hoster_url, headers=h_headers, impersonate="chrome120", timeout=20, verify=False)
-                        if h_response.status_code != 200:
-                            self.send_response(500)
-                            self.send_header("Content-Type", "application/json")
-                            self.end_headers()
-                            self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch hoster page. Status: {h_response.status_code}"}).encode())
-                            return
-                            
-                        h_soup = BeautifulSoup(h_response.text, 'html.parser')
-                        options_container = h_soup.find(id='optionsContainer') or h_soup.find(class_='options-container')
-                        if not options_container:
-                            self.send_response(500)
-                            self.send_header("Content-Type", "application/json")
-                            self.end_headers()
-                            self.wfile.write(json.dumps({"success": False, "error": "No mirrors options container found on hosters page."}).encode())
+                            self.wfile.write(json.dumps({"success": False, "error": "No download links (hosters or drive) found on this page."}).encode())
                             return
                             
                         mirrors = []
-                        options = options_container.find_all(class_='option')
-                        for opt in options:
-                            name = opt.text.strip()
-                            encoded_url = f"online-fix-hoster:{hoster_url}?mirror={urllib.parse.quote(name)}&referer={urllib.parse.quote(url)}"
+                        if gdrive_url:
                             mirrors.append({
-                                "name": name,
-                                "url": encoded_url
+                                "name": "Use Own Google Disk",
+                                "url": gdrive_url
                             })
+                            
+                        if hoster_url:
+                            # Fetch hoster page to parse mirrors
+                            add_log(f"Fetching hosters page: {hoster_url}")
+                            h_headers = {
+                                "Referer": url
+                            }
+                            h_response = cf_requests.get(hoster_url, headers=h_headers, impersonate="chrome120", timeout=20, verify=False)
+                            if h_response.status_code == 200:
+                                h_soup = BeautifulSoup(h_response.text, 'html.parser')
+                                options_container = h_soup.find(id='optionsContainer') or h_soup.find(class_='options-container')
+                                if options_container:
+                                    options = options_container.find_all(class_='option')
+                                    for opt in options:
+                                        name = opt.text.strip()
+                                        encoded_url = f"online-fix-hoster:{hoster_url}?mirror={urllib.parse.quote(name)}&referer={urllib.parse.quote(url)}"
+                                        mirrors.append({
+                                            "name": name,
+                                            "url": encoded_url
+                                        })
                             
                         # Scrape gameplay videos/trailers
                         videos = []
@@ -2200,7 +3527,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     state["game_title"] = game_title
                     state["base_download_dir"] = os.path.abspath(base_download_dir)
                     state["download_dir"] = os.path.abspath(computed_dir)
-                    state["files"] = files
+                    state["files"] = SafeList(files)
                     state["active_mirror"] = active_mirror
                     state["is_configured"] = True
                     state["is_running"] = False
@@ -2210,6 +3537,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     state["is_extracted"] = False
                     state["is_extracting"] = False
                     state["extraction_progress"] = 0
+                    state["gofile_proxy"] = data.get("gofile_proxy", False)
                     
                 initialize_queue_on_disk()
                 
@@ -2232,7 +3560,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/reset":
             with state_lock:
                 state["game_title"] = ""
-                state["files"] = []
+                state["files"] = SafeList()
                 state["download_dir"] = ""
                 state["base_download_dir"] = ""
                 state["is_configured"] = False
@@ -2313,7 +3641,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             if new_info.get("size", 0) > 0:
                                 f["size"] = new_info["size"]
                         updated_files.append(f)
-                    state["files"] = updated_files
+                    state["files"] = SafeList(updated_files)
                     
                     os.makedirs(new_download_dir, exist_ok=True)
                     state["should_stop"] = False
@@ -2343,9 +3671,12 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 return
 
 def start_server():
-    server_address = ('127.0.0.1', 8000)
+    port = 8000
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
+    server_address = ('127.0.0.1', port)
     httpd = ThreadingHTTPServer(server_address, APIRequestHandler)
-    print("Web server running at http://localhost:8000")
+    print(f"Web server running at http://localhost:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -2360,4 +3691,5 @@ if __name__ == "__main__":
         os.makedirs(os.path.join(os.getcwd(), "cover_cache"), exist_ok=True)
     except Exception:
         pass
+    threading.Thread(target=check_and_install_warp, daemon=True).start()
     start_server()
