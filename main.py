@@ -7,7 +7,7 @@ import time
 import urllib.parse
 import webbrowser
 import subprocess
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer, HTTPServer
 
 # Monkey patch requests to globally disable SSL verification (bypasses VPN/proxy SSL conflicts)
 import requests
@@ -327,7 +327,67 @@ class OAuthRedirectHandler(BaseHTTPRequestHandler):
         url_parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(url_parsed.query)
         code = query.get("code", [""])[0]
+        error = query.get("error", [""])[0]
+        error_desc = query.get("error_description", [""])[0]
+        
+        if error:
+            error_msg = f"Google OAuth Error: {error}"
+            if error_desc:
+                error_msg += f" - {error_desc}"
+            self.server.captured_code = ""
+            self.server.captured_error = error_msg
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            
+            html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Authorization Failed</title>
+                <style>
+                    body {{ 
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+                        background: #040409; 
+                        color: #fff; 
+                        text-align: center; 
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        height: 100vh;
+                        margin: 0;
+                    }}
+                    .card {{
+                        background: rgba(18, 18, 32, 0.45);
+                        border: 1px solid rgba(255, 55, 55, 0.2);
+                        padding: 30px;
+                        border-radius: 16px;
+                        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+                        backdrop-filter: blur(20px);
+                    }}
+                    h1 {{ color: #ff5555; margin-top: 0; font-size: 1.5rem; }}
+                    p {{ color: #8c8ca0; font-size: 0.9rem; margin-bottom: 0; }}
+                </style>
+                <script>
+                    window.onload = function() {{
+                        setTimeout(function() {{ window.close(); }}, 2500);
+                    }}
+                </script>
+            </head>
+            <body>
+                <div class="card">
+                    <h1>Authorization Failed</h1>
+                    <p>{error_msg}</p>
+                </div>
+            </body>
+            </html>
+            """
+            self.wfile.write(html.encode('utf-8'))
+            return
+            
         self.server.captured_code = code
+        self.server.captured_error = ""
         
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -386,7 +446,6 @@ class OAuthRedirectHandler(BaseHTTPRequestHandler):
 
 def start_auth_code_listener(timeout=60):
     """Starts a temporary HTTP server on 127.0.0.1:53683 to capture the Google OAuth code."""
-    from http.server import HTTPServer
     server_address = ('127.0.0.1', 53683)
     httpd = HTTPServer(server_address, OAuthRedirectHandler)
     httpd.captured_code = ""
@@ -414,6 +473,8 @@ def start_auth_code_listener(timeout=60):
 # Global auth state (NOT in state dict to avoid JSON serialization issues)
 _gdrive_pending_auth_httpd = None
 _gdrive_pending_auth_code = ""
+_gdrive_pending_auth_error = ""
+_gdrive_copy_auth_httpd = None
 
 def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
     """
@@ -426,7 +487,7 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
     - force_visible=False (downloads): Uses headless Playwright with persistent profile.
       If Google session exists, auto-redirects silently. Otherwise returns None.
     """
-    from http.server import HTTPServer
+
     
     if force_visible:
         # === ADD ACCOUNT: Open in user's default browser ===
@@ -481,8 +542,6 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
     
     else:
         # === DOWNLOADS: Try headless first, then system browser auto-redirect ===
-        from http.server import HTTPServer
-        
         httpd = None
         for bind_attempt in range(3):
             try:
@@ -496,72 +555,51 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
             add_log("GDrive: Cannot bind port 53683.")
             return None
         
+        global _gdrive_copy_auth_httpd
+        _gdrive_copy_auth_httpd = httpd
+        
         httpd.captured_code = ""
-        httpd.timeout = 25
+        httpd.timeout = 305
         
         listener_thread = threading.Thread(
             target=lambda h=httpd: _safe_handle_request(h), daemon=True
         )
         listener_thread.start()
         
-        # Attempt 1: Headless Playwright (truly silent, zero windows)
-        add_log("GDrive: Attempting silent background authorization...")
-        try:
-            from playwright.sync_api import sync_playwright
-            profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "gdrive_chrome_profile"))
-            os.makedirs(profile_dir, exist_ok=True)
-            
-            with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    profile_dir,
-                    headless=True,
-                    args=["--disable-gpu", "--no-sandbox"]
-                )
-                try:
-                    page = context.new_page()
-                    page.goto(auth_url, timeout=15000)
-                    
-                    start_time = time.time()
-                    while time.time() - start_time < 12:
-                        if httpd.captured_code:
-                            break
-                        time.sleep(0.3)
-                finally:
-                    try:
-                        context.close()
-                    except Exception:
-                        pass
-        except Exception as e:
-            add_log(f"GDrive: Playwright error: {e}")
-        
-        if httpd.captured_code:
-            captured = httpd.captured_code
-            try:
-                httpd.server_close()
-            except:
-                pass
-            add_log("GDrive: Silent authorization successful!")
-            return captured
+        # Skip headless Playwright because Google blocks sign-in on headless browsers.
+        # We go straight to system browser auto-redirect which will run silently and instantly
+        # since the user already gave consent in settings.
+        pass
         
         # Attempt 2: Open in system browser (auto-redirect since consent already given)
         # User already gave consent during Add Account, so Google will auto-redirect
         # to 127.0.0.1:53683 without any interaction needed. Tab opens briefly and closes.
         add_log("GDrive: Silent auth failed. Trying system browser auto-redirect...")
         try:
-            os.startfile(auth_url)
-        except Exception:
-            try:
-                import subprocess
-                subprocess.Popen(['cmd', '/c', 'start', '', auth_url], 
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-            except Exception as e2:
-                add_log(f"GDrive: Cannot open system browser: {e2}")
+            import subprocess
+            import os
+            chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            if os.path.exists(chrome_path):
+                subprocess.Popen([chrome_path, auth_url])
+                add_log("GDrive: Opened Chrome directly for auto-redirect.")
+            else:
+                import webbrowser
+                webbrowser.open(auth_url)
+                add_log("GDrive: Opened system default browser for auto-redirect.")
+        except Exception as e2:
+            add_log(f"GDrive: Cannot open system browser: {e2}")
         
-        # Wait for auto-redirect (should be instant since consent was already given)
+        # Wait for auto-redirect (should be 300 seconds now)
         start_time = time.time()
-        while time.time() - start_time < 20:
+        while time.time() - start_time < 300:
             if httpd.captured_code:
                 break
+            # Check if active account was deleted or changed to prevent intercepting new account logins
+            with state_lock:
+                active = state.get("active_gdrive_account")
+                if not active or not any(a["email"] == active for a in state.get("gdrive_accounts", [])):
+                    add_log("GDrive: Active account was removed during authorization. Cancelling copy flow listener.")
+                    break
             time.sleep(0.3)
         
         captured = httpd.captured_code
@@ -569,6 +607,8 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
             httpd.server_close()
         except:
             pass
+        
+        _gdrive_copy_auth_httpd = None
         
         if captured:
             add_log("GDrive: Authorization via system browser successful!")
@@ -973,11 +1013,9 @@ def extract_gofile_link(page_url):
         else:
             add_log(f"Extracting Gofile direct link for: {page_url}")
         try:
-            profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "scratch", "chrome_profile"))
             with sync_playwright() as p:
                 launch_args = {
-                    "user_data_dir": profile_dir,
-                    "headless": False,
+                    "headless": True,
                     "args": [
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox"
@@ -986,7 +1024,8 @@ def extract_gofile_link(page_url):
                 if proxy_server:
                     launch_args["proxy"] = {"server": f"http://{proxy_server}"}
                     
-                context = p.chromium.launch_persistent_context(**launch_args)
+                browser = p.chromium.launch(**launch_args)
+                context = browser.new_context()
                 page = context.new_page()
                 
                 gofile_links = []
@@ -1022,7 +1061,7 @@ def extract_gofile_link(page_url):
                         break
                     page.wait_for_timeout(1000)
                 
-                context.close()
+                browser.close()
                 
                 if gofile_links:
                     add_log("Successfully extracted Gofile direct link!")
@@ -1101,16 +1140,15 @@ def extract_viking_link(page_url):
         import os
         add_log(f"Extracting VikingFile direct link for: {page_url}")
         try:
-            profile_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "scratch", "chrome_profile"))
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=profile_dir,
-                    headless=False,
+                browser = p.chromium.launch(
+                    headless=True,
                     args=[
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox"
                     ]
                 )
+                context = browser.new_context()
                 page = context.new_page()
                 
                 direct_link = [None]
@@ -1145,7 +1183,7 @@ def extract_viking_link(page_url):
                         if href and ("vikingfile" in href or "cloudflarestorage" in href):
                             direct_link[0] = href
                 
-                context.close()
+                browser.close()
                 
                 if direct_link[0]:
                     add_log("Successfully extracted VikingFile direct link!")
@@ -1266,6 +1304,9 @@ def safe_folder_name(name):
         return ""
     return re.sub(r'[:\/\\\*\?"<>\|]', '', name).strip()
 
+def natural_sort_key(s):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
+
 def initialize_queue_on_disk():
     with state_lock:
         if not state["download_dir"]:
@@ -1277,7 +1318,7 @@ def initialize_queue_on_disk():
                 size_on_disk = os.path.getsize(file_path)
                 expected_size = f["size"] if f["size"] > 0 else get_expected_size(f["filename"], f["type"])
                 f["downloaded"] = size_on_disk
-                f["progress"] = int((size_on_disk / expected_size) * 100) if expected_size > 0 else 0
+                f["progress"] = min(100, int((size_on_disk / expected_size) * 100)) if expected_size > 0 else 0
                 if size_on_disk >= expected_size:
                     f["status"] = "finished"
                     f["size"] = size_on_disk
@@ -1329,6 +1370,15 @@ def download_worker():
                 state["is_running"] = False
                 state["total_speed"] = 0
                 state["should_stop"] = False
+
+def extract_gdrive_id(text):
+    if not text:
+        return None
+    # Matches id=FILE_ID or d/FILE_ID or /d/FILE_ID
+    match = re.search(r'(?:id=|/d/|d/)([A-Za-z0-9_-]{25,})', text)
+    if match:
+        return match.group(1)
+    return None
 
 def download_file(index, file_info):
     filename = file_info["filename"]
@@ -1445,6 +1495,7 @@ def download_file(index, file_info):
                     state["files"][index]["error"] = "Failed to refresh Google Drive access token."
             return False
             
+        # Try to find file first, but ignore rate limits if it fails
         file_metadata = find_gdrive_file(filename, access_token)
         if file_metadata:
             file_id = file_metadata["id"]
@@ -1469,11 +1520,18 @@ def download_file(index, file_info):
             if session_cookies:
                 add_log(f"Attempting to copy {filename} using cached session cookies for {active_email}...")
                 try:
-                    res = requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, timeout=20, verify=False)
+                    res = cf_requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, impersonate="chrome120", timeout=20, verify=False)
                     if res.status_code == 200:
                         res_data = res.json()
                         if res_data.get("success", False):
                             add_log(f"Online-Fix copy request successful using cached cookies: {res_data.get('message', '')}")
+                            # Extract file ID directly from message / response keys to bypass Search API limits
+                            file_id = res_data.get("id", "")
+                            if not file_id:
+                                file_id = extract_gdrive_id(res_data.get("message", ""))
+                            if not file_id and res_data.get("url"):
+                                file_id = extract_gdrive_id(res_data["url"])
+                            
                             with state_lock:
                                 if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
                                     state["gdrive_session_cookies"] = {}
@@ -1498,11 +1556,18 @@ def download_file(index, file_info):
                     if session_cookies:
                         add_log(f"Attempting copy for {filename} with cookies updated by another worker...")
                         try:
-                            res = requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, timeout=20, verify=False)
+                            res = cf_requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, impersonate="chrome120", timeout=20, verify=False)
                             if res.status_code == 200:
                                 res_data = res.json()
                                 if res_data.get("success", False):
                                     add_log(f"Online-Fix copy request successful using newly cached cookies: {res_data.get('message', '')}")
+                                    # Extract file ID directly from message / response keys
+                                    file_id = res_data.get("id", "")
+                                    if not file_id:
+                                        file_id = extract_gdrive_id(res_data.get("message", ""))
+                                    if not file_id and res_data.get("url"):
+                                        file_id = extract_gdrive_id(res_data["url"])
+                                    
                                     with state_lock:
                                         if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
                                             state["gdrive_session_cookies"] = {}
@@ -1517,10 +1582,10 @@ def download_file(index, file_info):
                     if not copied:
                         add_log(f"Initiating copy flow to your Google Drive for {filename}...")
                         
-                        client_id, _ = get_gdrive_credentials()
+                        client_id = RCLONE_CLIENT_ID
                         redirect_uri = "http://127.0.0.1:53683/"
-                        # Wide scope exactly matches linking to prevent Consent Summary prompt!
-                        scope = "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+                        # Only request the drive scope as required by Rclone and Online-Fix
+                        scope = "https://www.googleapis.com/auth/drive"
                         auth_url = (
                             f"https://accounts.google.com/o/oauth2/v2/auth?"
                             f"client_id={client_id}&"
@@ -1544,7 +1609,7 @@ def download_file(index, file_info):
                         add_log("Establishing session cookie on Online-Fix Drive server...")
                         try:
                             # A GET request to page_url establishes the online_fix_auth cookie in the response headers.
-                            res_get = requests.get(page_url, headers=post_headers, timeout=20, verify=False)
+                            res_get = cf_requests.get(page_url, headers=post_headers, impersonate="chrome120", timeout=20, verify=False)
                             fresh_cookies = res_get.cookies.get_dict()
                         except Exception as e:
                             add_log(f"Warning: Failed to establish fresh session cookie: {str(e)}")
@@ -1555,7 +1620,7 @@ def download_file(index, file_info):
                             "api_key": auth_code
                         }
                         try:
-                            res = requests.post(page_url, headers=post_headers, cookies=fresh_cookies, data=post_data, timeout=20, verify=False)
+                            res = cf_requests.post(page_url, headers=post_headers, cookies=fresh_cookies, data=post_data, impersonate="chrome120", timeout=20, verify=False)
                             if res.status_code != 200:
                                 with state_lock:
                                     if index < len(state["files"]):
@@ -1574,6 +1639,13 @@ def download_file(index, file_info):
                                 
                             add_log(f"Online-Fix copy request successful: {res_data.get('message', '')}")
                             
+                            # Extract file ID directly from message / response keys
+                            file_id = res_data.get("id", "")
+                            if not file_id:
+                                file_id = extract_gdrive_id(res_data.get("message", ""))
+                            if not file_id and res_data.get("url"):
+                                file_id = extract_gdrive_id(res_data["url"])
+                            
                             # Cache the authorized cookies specifically for this active email account
                             with state_lock:
                                 if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
@@ -1591,14 +1663,15 @@ def download_file(index, file_info):
                                     state["files"][index]["error"] = f"Failed to contact Online-Fix server: {str(e)}"
                             return False
                             
-            add_log("Waiting for the file to appear in your Google Drive (polling)...")
-            for attempt in range(15):
-                time.sleep(3)
-                file_metadata = find_gdrive_file(filename, access_token)
-                if file_metadata:
-                    file_id = file_metadata["id"]
-                    add_log(f"File discovered on Google Drive: {filename} (ID: {file_id})")
-                    break
+            if not file_id:
+                add_log("Waiting for the file to appear in your Google Drive (polling)...")
+                for attempt in range(15):
+                    time.sleep(3)
+                    file_metadata = find_gdrive_file(filename, access_token)
+                    if file_metadata:
+                        file_id = file_metadata["id"]
+                        add_log(f"File discovered on Google Drive: {filename} (ID: {file_id})")
+                        break
                     
             if not file_id:
                 with state_lock:
@@ -1753,7 +1826,7 @@ def download_file(index, file_info):
                         elapsed = curr_time - last_time
                         if elapsed >= 1.0:
                             speed = bytes_in_sec / elapsed
-                            progress = int((downloaded / total_size) * 100) if total_size > 0 else 0
+                            progress = min(100, int((downloaded / total_size) * 100)) if total_size > 0 else 0
                             time_left = int((total_size - downloaded) / speed) if speed > 0 else -1
                             
                             with state_lock:
@@ -2112,6 +2185,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         pass
         
     def do_GET(self):
+        global _gdrive_pending_auth_error, _gdrive_pending_auth_code, _gdrive_pending_auth_httpd, _gdrive_copy_auth_httpd
         url_parsed = urllib.parse.urlparse(self.path)
         path = url_parsed.path
         
@@ -2209,7 +2283,12 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     "name": a.get("name", "Unknown Name"),
                     "photo": a.get("photo", ""),
                     "limit": a.get("limit", 0),
-                    "usage": a.get("usage", 0)
+                    "usage": a.get("usage", 0),
+                    "fully_configured": (
+                        isinstance(state.get("gdrive_session_cookies"), dict) and
+                        isinstance(state["gdrive_session_cookies"].get(a["email"]), dict) and
+                        "online_fix_auth" in state["gdrive_session_cookies"][a["email"]]
+                    )
                 } for a in updated_accounts], 
                 "active_account": active,
                 "custom_client_id": state.get("gdrive_client_id", ""),
@@ -2477,7 +2556,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Error reading file: {str(e)}")
 
     def do_POST(self):
-        global _gdrive_pending_auth_httpd, _gdrive_pending_auth_code
+        global _gdrive_pending_auth_httpd, _gdrive_pending_auth_code, _gdrive_pending_auth_error, _gdrive_copy_auth_httpd
         url_parsed = urllib.parse.urlparse(self.path)
         path = url_parsed.path
         
@@ -2558,11 +2637,18 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             
             add_log("Settings: Starting Google Account authorization...")
             
-            # Start HTTP listener in background to capture the OAuth redirect
-            from http.server import HTTPServer
+            # Close any active copy flow listener first to release port 53683
             
-            
-            # Close any existing listener
+            # Close any active copy flow listener first to release port 53683
+            if _gdrive_copy_auth_httpd:
+                add_log("Settings: Closing active GDrive copy flow auth listener to release port 53683...")
+                try:
+                    _gdrive_copy_auth_httpd.server_close()
+                except Exception:
+                    pass
+                _gdrive_copy_auth_httpd = None
+
+            # Close any existing settings pending listener
             if _gdrive_pending_auth_httpd:
                 try:
                     _gdrive_pending_auth_httpd.server_close()
@@ -2586,19 +2672,23 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 return
             
             httpd.captured_code = ""
+            httpd.captured_error = ""
             httpd.timeout = 300  # 5 minutes
             
             # Store reference for polling
             _gdrive_pending_auth_httpd = httpd
             _gdrive_pending_auth_code = ""
+            _gdrive_pending_auth_error = ""
             
             # Handle request in background thread
             def _auth_listener(h):
-                global _gdrive_pending_auth_code
+                global _gdrive_pending_auth_code, _gdrive_pending_auth_error
                 try:
                     h.handle_request()
-                    if h.captured_code:
+                    if getattr(h, "captured_code", ""):
                         _gdrive_pending_auth_code = h.captured_code
+                    if getattr(h, "captured_error", ""):
+                        _gdrive_pending_auth_error = h.captured_error
                 except Exception:
                     pass
             
@@ -2613,8 +2703,24 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             
         elif path == "/api/gdrive/poll_auth":
             # Step 2: Check if auth code was captured, exchange for tokens
+            error = _gdrive_pending_auth_error
             code = _gdrive_pending_auth_code
             
+            if error:
+                _gdrive_pending_auth_error = ""
+                # Clean up listener
+                try:
+                    if _gdrive_pending_auth_httpd:
+                        _gdrive_pending_auth_httpd.server_close()
+                        _gdrive_pending_auth_httpd = None
+                except:
+                    pass
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "error": error}).encode())
+                return
+                
             if not code:
                 # Still waiting
                 self.send_response(200)
@@ -2664,6 +2770,224 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "done", "success": True, "email": email}).encode())
+            return
+            
+        elif path == "/api/gdrive/start_copy_auth":
+            # Phase 2: Start Rclone redirect listener and return auth URL
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                email = data.get("email", "").strip()
+            except:
+                email = ""
+                
+            redirect_uri = "http://127.0.0.1:53683/"
+            scope = "https://www.googleapis.com/auth/drive"
+            auth_url = (
+                f"https://accounts.google.com/o/oauth2/v2/auth?"
+                f"client_id={RCLONE_CLIENT_ID}&"
+                f"redirect_uri={urllib.parse.quote(redirect_uri)}&"
+                f"response_type=code&"
+                f"scope={urllib.parse.quote(scope)}&"
+                f"access_type=offline&"
+                f"prompt=consent"
+            )
+            if email:
+                auth_url += f"&login_hint={urllib.parse.quote(email)}"
+                
+            add_log("Settings: Starting GDrive copy flow (Rclone) authorization...")
+            
+            # Close any active listeners first
+            try:
+                if _gdrive_pending_auth_httpd:
+                    _gdrive_pending_auth_httpd.server_close()
+                    _gdrive_pending_auth_httpd = None
+            except:
+                pass
+            try:
+                if _gdrive_copy_auth_httpd:
+                    _gdrive_copy_auth_httpd.server_close()
+                    _gdrive_copy_auth_httpd = None
+            except:
+                pass
+                
+            # Start listener on port 53683
+            httpd = None
+            for bind_attempt in range(3):
+                try:
+                    httpd = HTTPServer(('127.0.0.1', 53683), OAuthRedirectHandler)
+                    break
+                except OSError as e:
+                    add_log(f"GDrive: Port 53683 busy (attempt {bind_attempt+1}): {e}")
+                    time.sleep(1.5)
+                    
+            if not httpd:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "Cannot bind port 53683. Try again."}).encode())
+                return
+                
+            httpd.captured_code = ""
+            httpd.captured_error = ""
+            httpd.timeout = 300
+            
+            _gdrive_pending_auth_httpd = httpd
+            _gdrive_pending_auth_code = ""
+            _gdrive_pending_auth_error = ""
+            
+            def _auth_listener(h):
+                global _gdrive_pending_auth_code, _gdrive_pending_auth_error
+                try:
+                    h.handle_request()
+                    if getattr(h, "captured_code", ""):
+                        _gdrive_pending_auth_code = h.captured_code
+                    if getattr(h, "captured_error", ""):
+                        _gdrive_pending_auth_error = h.captured_error
+                except:
+                    pass
+                    
+            threading.Thread(target=_auth_listener, args=(httpd,), daemon=True).start()
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "auth_url": auth_url}).encode())
+            return
+            
+        elif path == "/api/gdrive/poll_copy_auth":
+            # Phase 2: Poll for Rclone auth code and exchange for Online-Fix cookies
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data)
+                email = data.get("email", "").strip()
+            except:
+                email = ""
+                
+            if not email:
+                with state_lock:
+                    email = state.get("active_gdrive_account", "")
+                    
+            error = _gdrive_pending_auth_error
+            code = _gdrive_pending_auth_code
+            
+            if error:
+                _gdrive_pending_auth_error = ""
+                try:
+                    if _gdrive_pending_auth_httpd:
+                        _gdrive_pending_auth_httpd.server_close()
+                        _gdrive_pending_auth_httpd = None
+                except:
+                    pass
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "error": error}).encode())
+                return
+                
+            if not code:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "waiting"}).encode())
+                return
+                
+            # Code captured! Exchange for Online-Fix cookies
+            add_log("Settings: GDrive copy flow authorization code received. Establishing cookies on Online-Fix...")
+            _gdrive_pending_auth_code = ""
+            
+            try:
+                if _gdrive_pending_auth_httpd:
+                    _gdrive_pending_auth_httpd.server_close()
+                    _gdrive_pending_auth_httpd = None
+            except:
+                pass
+                
+            # Establish cookies using curl_cffi Session and a fresh download URL
+            success = False
+            err_msg = ""
+            try:
+                with state_lock:
+                    game_title = state.get("game_title") or "Forza Horizon 6"
+                folder_name = urllib.parse.quote(game_title)
+                folder_url = f"https://drive.online-fix.me:2053/{folder_name}"
+                
+                add_log(f"Establishing session on Online-Fix folder page: {folder_url}")
+                
+                # Use cf_requests Session to automatically handle cookies
+                session = cf_requests.Session()
+                
+                h = {
+                    "Referer": "https://online-fix.me/",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
+                
+                # 1. GET folder page to set guest session cookies
+                r = session.get(folder_url, headers=h, impersonate="chrome120", timeout=20, verify=False)
+                if r.status_code != 200:
+                    raise Exception(f"Failed to access folder page. Status code: {r.status_code}")
+                
+                # Parse folder page for fresh download URLs
+                soup = BeautifulSoup(r.text, 'html.parser')
+                links = []
+                for a in soup.find_all('a', onclick=True):
+                    onclick = a.get('onclick', '')
+                    match = re.search(r"openDownloadModal\s*\(\s*event\s*,\s*'([^']+)'\s*\)", onclick)
+                    if match:
+                        links.append(match.group(1))
+                
+                if not links:
+                    raise Exception("No download links found in folder page HTML.")
+                    
+                page_url = links[0]
+                add_log(f"Scraped fresh download URL: {page_url[:80]}...")
+                
+                # 2. GET download URL (with folder referer)
+                h["Referer"] = folder_url
+                r_get = session.get(page_url, headers=h, impersonate="chrome120", timeout=20, verify=False)
+                # GET download URL will return 405 Method Not Allowed, which is fine since it sets more cookies
+                
+                # 3. POST authorization key to download URL
+                add_log("Sending copy flow authorization key to Online-Fix...")
+                res = session.post(page_url, headers=h, data={"api_key": code}, impersonate="chrome120", timeout=20, verify=False)
+                
+                if res.status_code == 200:
+                    try:
+                        res_data = res.json()
+                    except Exception:
+                        err_msg = f"Online-Fix returned non-JSON response (status {res.status_code})."
+                        res_data = {}
+                        
+                    if res_data.get("success", False):
+                        # Save cookies
+                        final_cookies = session.cookies.get_dict()
+                        with state_lock:
+                            if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
+                                state["gdrive_session_cookies"] = {}
+                            state["gdrive_session_cookies"][email] = final_cookies
+                            save_gdrive_accounts()
+                        success = True
+                    elif not err_msg:
+                        err_msg = res_data.get("message", "Copy request rejected by Online-Fix.")
+                else:
+                    err_msg = f"Online-Fix server returned status code {res.status_code}."
+            except Exception as e:
+                err_msg = str(e)
+                
+            if success:
+                add_log(f"GDrive copy flow configured successfully for {email}")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "done", "success": True}).encode())
+            else:
+                add_log(f"Settings GDrive copy flow setup failed: {err_msg}")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "error", "error": f"Failed to configure copy flow: {err_msg}"}).encode())
             return
             
         elif path == "/api/gdrive/remove_account":
@@ -3189,7 +3513,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     "time_left": -1,
                                     "error": ""
                                 })
-                                
+                        
+                        files.sort(key=lambda x: natural_sort_key(x["filename"]))
                         prefill_part_sizes(files)
                         
                         self.send_response(200)
@@ -3501,6 +3826,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 game_title = data.get("game_title", "Custom Game").strip()
                 base_download_dir = data.get("base_download_dir", data.get("download_dir", "")).strip()
                 files = data.get("files", [])
+                if files:
+                    files.sort(key=lambda x: natural_sort_key(x["filename"]))
                 active_mirror = data.get("active_mirror", "").strip()
                 
                 if not base_download_dir:

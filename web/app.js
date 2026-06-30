@@ -547,7 +547,141 @@ function updateUI(newState) {
                     </div>
                 `;
             } else {
-                newState.files.forEach((file, index) => {
+            // Group files by Part base name to collapse them
+            const groupCounts = {};
+            newState.files.forEach(f => {
+                const info = getPartGroupInfo(f.filename);
+                if (info) {
+                    groupCounts[info.base] = (groupCounts[info.base] || 0) + 1;
+                }
+            });
+
+            const renderedGroups = new Set();
+            const getGroupFiles = (baseName) => {
+                return newState.files
+                    .map((file, idx) => ({ file, idx }))
+                    .filter(item => {
+                        const info = getPartGroupInfo(item.file.filename);
+                        return info && info.base === baseName;
+                    });
+            };
+
+            newState.files.forEach((file, index) => {
+                const info = getPartGroupInfo(file.filename);
+                if (info && groupCounts[info.base] > 1) {
+                    const baseName = info.base;
+                    if (renderedGroups.has(baseName)) return; // Already rendered this group
+                    renderedGroups.add(baseName);
+                    
+                    const groupItems = getGroupFiles(baseName);
+                    
+                    // Render collapsible group details
+                    const details = document.createElement("details");
+                    details.className = "queue-group-collapsible";
+                    details.open = false; // Collapsed by default (прикрыто по умолчанию)
+                    
+                    // Calculate group aggregates
+                    const totalSize = groupItems.reduce((sum, item) => sum + (item.file.size || 0), 0);
+                    const totalDownloaded = groupItems.reduce((sum, item) => sum + (item.file.downloaded || 0), 0);
+                    const groupProgress = totalSize > 0 ? Math.min(100, Math.floor((totalDownloaded / totalSize) * 100)) : 0;
+                    const groupSpeed = groupItems.reduce((sum, item) => sum + (item.file.speed || 0), 0);
+                    
+                    // Determine overall status
+                    let overallStatus = "waiting";
+                    const statuses = groupItems.map(item => item.file.status);
+                    if (statuses.includes("downloading")) overallStatus = "downloading";
+                    else if (statuses.includes("copying")) overallStatus = "copying";
+                    else if (statuses.includes("connecting")) overallStatus = "connecting";
+                    else if (statuses.every(s => s === "finished")) overallStatus = "finished";
+                    else if (statuses.every(s => s === "failed" || s === "finished")) {
+                        if (statuses.includes("failed")) overallStatus = "failed";
+                        else overallStatus = "finished";
+                    }
+                    
+                    let activeClass = (overallStatus === "downloading" || overallStatus === "connecting" || overallStatus === "copying") ? "active" : "";
+                    const sizeText = totalSize > 0 ? formatBytes(totalSize) : "Pending...";
+                    const speedText = overallStatus === "downloading" ? formatSpeed(groupSpeed) : "";
+                    
+                    details.innerHTML = `
+                        <summary class="queue-group-summary ${activeClass}">
+                            <div class="summary-header">
+                                <span class="summary-toggle-icon">⏵</span>
+                                <div class="file-name" title="${baseName}">${baseName} (${groupItems.length} Parts)</div>
+                                <div class="file-badge game_part">Part Files</div>
+                                <div class="file-progress-container">
+                                    <div class="progress-bar-bg">
+                                        <div class="progress-bar-fill" style="width: ${groupProgress}%"></div>
+                                    </div>
+                                    <div class="file-progress-text">
+                                        <span>${groupProgress}% (${formatBytes(totalDownloaded)} of ${sizeText})</span>
+                                        <span class="file-speed">${speedText}</span>
+                                    </div>
+                                </div>
+                                <div class="file-status ${overallStatus}">${overallStatus}</div>
+                                <div class="file-actions">
+                                    ${statuses.includes("failed") ? `<button class="btn btn-accent btn-retry-group">Retry Failed</button>` : ""}
+                                </div>
+                            </div>
+                        </summary>
+                        <div class="queue-group-list"></div>
+                    `;
+                    
+                    // Render children
+                    const listDiv = details.querySelector(".queue-group-list");
+                    groupItems.sort((a, b) => {
+                        const infoA = getPartGroupInfo(a.file.filename);
+                        const infoB = getPartGroupInfo(b.file.filename);
+                        return (infoA ? infoA.partNum : 0) - (infoB ? infoB.partNum : 0);
+                    });
+                    
+                    groupItems.forEach(item => {
+                        const childFile = item.file;
+                        const childIndex = item.idx;
+                        const childItem = document.createElement("div");
+                        childItem.className = "queue-item child-item";
+                        if (childFile.status === "downloading" || childFile.status === "connecting") {
+                            childItem.classList.add("active");
+                        }
+                        
+                        const childSizeText = childFile.size > 0 ? formatBytes(childFile.size) : "Pending...";
+                        const childSpeedText = childFile.status === "downloading" ? formatSpeed(childFile.speed) : "";
+                        
+                        childItem.innerHTML = `
+                            <div class="file-name" title="${childFile.filename}">${cleanFilename(childFile.filename)}</div>
+                            <div class="file-progress-container">
+                                <div class="progress-bar-bg">
+                                    <div class="progress-bar-fill" style="width: ${childFile.progress}%"></div>
+                                </div>
+                                <div class="file-progress-text">
+                                    <span>${childFile.progress}% (${formatBytes(childFile.downloaded)} of ${childSizeText})</span>
+                                    <span class="file-speed">${childSpeedText}</span>
+                                </div>
+                            </div>
+                            <div class="file-status ${childFile.status}">${childFile.status}</div>
+                            <div class="file-actions">
+                                ${childFile.status === "failed" ? `<button class="btn btn-accent btn-retry" onclick="triggerRetry(${childIndex})">Retry</button>` : ""}
+                            </div>
+                        `;
+                        listDiv.appendChild(childItem);
+                    });
+                    
+                    // Bind retry group button
+                    const retryGroupBtn = details.querySelector(".btn-retry-group");
+                    if (retryGroupBtn) {
+                        retryGroupBtn.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            groupItems.forEach(item => {
+                                if (item.file.status === "failed") {
+                                    triggerRetry(item.idx);
+                                }
+                            });
+                        });
+                    }
+                    
+                    elQueueContainer.appendChild(details);
+                } else {
+                    // Render single file
                     const item = document.createElement("div");
                     item.className = "queue-item";
                     if (file.status === "downloading" || file.status === "connecting") {
@@ -579,7 +713,8 @@ function updateUI(newState) {
                         </div>
                     `;
                     elQueueContainer.appendChild(item);
-                });
+                }
+            });
             }
         }
     } else {
@@ -1992,10 +2127,10 @@ elSaveSettingsBtn.addEventListener("click", async () => {
 if (elAddGDriveAccountBtn) {
     elAddGDriveAccountBtn.addEventListener("click", async () => {
         elAddGDriveAccountBtn.disabled = true;
-        const originalText = elAddGDriveAccountBtn.innerHTML;
+        const originalText = `<span>+ Add Google Account</span>`;
         
         try {
-            // Step 1: Start auth listener and get the OAuth URL
+            // === PHASE 1: Private API Authorization ===
             elAddGDriveAccountBtn.innerHTML = `
                 <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-color: currentColor; border-top-color: transparent;"></div>
                 <span>Starting authorization...</span>
@@ -2005,19 +2140,16 @@ if (elAddGDriveAccountBtn) {
             const startData = await startResp.json();
             
             if (!startData.success) {
-                alert(startData.error || "Failed to start authorization.");
-                return;
+                throw new Error(startData.error || "Failed to start authorization.");
             }
             
-            // Step 2: Open the auth URL in a new tab (user's default browser = Chrome)
             window.open(startData.auth_url, "_blank");
             
             elAddGDriveAccountBtn.innerHTML = `
                 <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-color: currentColor; border-top-color: transparent;"></div>
-                <span>Waiting for Google authorization...</span>
+                <span>Step 1: Waiting for Private API...</span>
             `;
             
-            // Step 3: Poll for the result every 2 seconds (up to 3 minutes)
             let result = null;
             for (let i = 0; i < 90; i++) {
                 await new Promise(r => setTimeout(r, 2000));
@@ -2029,23 +2161,117 @@ if (elAddGDriveAccountBtn) {
                         result = pollData;
                         break;
                     } else if (pollData.status === "error") {
-                        alert(pollData.error || "Authorization failed.");
-                        return;
+                        throw new Error(pollData.error || "Authorization failed.");
                     }
-                    // status === "waiting" → continue polling
                 } catch (pollErr) {
-                    // Network error during poll, continue
+                    if (pollErr.message && pollErr.message !== "Failed to fetch") throw pollErr;
                 }
             }
             
-            if (result && result.success) {
-                alert(`Google Account linked successfully: ${result.email}`);
+            if (!result || !result.success) {
+                throw new Error("Authorization timed out. Please try again.");
+            }
+            
+            const linkedEmail = result.email;
+            loadGDriveAccounts();
+            
+            // === PHASE 2: Copy Flow Authorization via SweetAlert2 user gesture ===
+            // Show Swal with confirm button. Clicking it is a USER GESTURE so Chrome won't block window.open
+            const swalRes = await Swal.fire({
+                icon: 'success',
+                title: 'Step 1 Complete!',
+                html: `Private API linked for <b>${linkedEmail}</b>.<br><br>Click below to complete setup (Step 2: Copy Flow).`,
+                confirmButtonText: '🔑 Authorize Copy Flow (Step 2)',
+                showCancelButton: true,
+                cancelButtonText: 'Skip (configure later)',
+                background: '#121220',
+                color: '#e2e2ec',
+                confirmButtonColor: '#9b59b6',
+                cancelButtonColor: '#555',
+                allowOutsideClick: false
+            });
+            
+            if (!swalRes.isConfirmed) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Partial Setup',
+                    text: 'Account linked. Copy Flow will be configured when you start downloading.',
+                    background: '#121220',
+                    color: '#e2e2ec',
+                    confirmButtonColor: '#9b59b6'
+                });
+                return;
+            }
+            
+            // User clicked confirm — this is a direct user gesture, so window.open works!
+            elAddGDriveAccountBtn.innerHTML = `
+                <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-color: currentColor; border-top-color: transparent;"></div>
+                <span>Step 2: Configuring copy flow...</span>
+            `;
+            
+            const copyResp = await fetch("/api/gdrive/start_copy_auth", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ email: linkedEmail })
+            });
+            const copyData = await copyResp.json();
+            
+            if (!copyData.success) {
+                throw new Error(copyData.error || "Failed to start copy flow.");
+            }
+            
+            // Open Phase 2 tab — allowed because we're inside a Swal confirm click handler
+            window.open(copyData.auth_url, "_blank");
+            
+            elAddGDriveAccountBtn.innerHTML = `
+                <div class="spinner" style="width: 12px; height: 12px; border-width: 1.5px; border-color: currentColor; border-top-color: transparent;"></div>
+                <span>Step 2: Waiting for Copy Flow permission...</span>
+            `;
+            
+            let copyResult = null;
+            for (let i = 0; i < 90; i++) {
+                await new Promise(r => setTimeout(r, 2000));
+                try {
+                    const pollCopyResp = await fetch("/api/gdrive/poll_copy_auth", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ email: linkedEmail })
+                    });
+                    const pollCopyData = await pollCopyResp.json();
+                    
+                    if (pollCopyData.status === "done") {
+                        copyResult = pollCopyData;
+                        break;
+                    } else if (pollCopyData.status === "error") {
+                        throw new Error(pollCopyData.error || "Copy flow authorization failed.");
+                    }
+                } catch (pollErr) {
+                    if (pollErr.message && pollErr.message !== "Failed to fetch") throw pollErr;
+                }
+            }
+            
+            if (copyResult && copyResult.success) {
+                Swal.fire({
+                    icon: 'success',
+                    title: '✅ Setup Complete!',
+                    html: `Account <b>${linkedEmail}</b> is fully configured.<br>Downloads will now run silently in the background.`,
+                    background: '#121220',
+                    color: '#e2e2ec',
+                    confirmButtonColor: '#9b59b6'
+                });
                 loadGDriveAccounts();
-            } else if (!result) {
-                alert("Authorization timed out. Please try again.");
+            } else {
+                throw new Error("Copy flow configuration timed out.");
             }
         } catch (e) {
-            alert("Error: " + e.message);
+            Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: e.message,
+                background: '#121220',
+                color: '#e2e2ec',
+                confirmButtonColor: '#e74c3c'
+            });
         } finally {
             elAddGDriveAccountBtn.disabled = false;
             elAddGDriveAccountBtn.innerHTML = originalText;
@@ -2081,7 +2307,7 @@ async function loadGDriveAccounts() {
         const response = await fetch("/api/gdrive/list_accounts");
         const data = await response.json();
         if (data.success) {
-            renderGDriveAccounts(data.accounts, data.active_account);
+            renderGDriveAccounts(data.accounts, data.active_account, data.custom_client_id);
             
             const elClientId = document.getElementById("txt-gdrive-client-id");
             const elClientSecret = document.getElementById("txt-gdrive-client-secret");
@@ -2188,7 +2414,7 @@ function getAvatarColor(email) {
     return colors[index];
 }
 
-function renderGDriveAccounts(accounts, activeAccount) {
+function renderGDriveAccounts(accounts, activeAccount, customClientId) {
     if (!elGDriveAccountsList) return;
     
     if (accounts.length === 0) {
@@ -2199,6 +2425,11 @@ function renderGDriveAccounts(accounts, activeAccount) {
         `;
         return;
     }
+    
+    const hasCustom = customClientId && customClientId.trim() !== "";
+    const apiBadgeHtml = hasCustom
+        ? `<span style="font-size: 0.72rem; padding: 2px 6px; border-radius: 6px; background: rgba(46, 204, 113, 0.12); border: 1px solid rgba(46, 204, 113, 0.25); color: #2ecc71; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; width: max-content;">Private API</span>`
+        : `<span style="font-size: 0.72rem; padding: 2px 6px; border-radius: 6px; background: rgba(231, 76, 60, 0.12); border: 1px solid rgba(231, 76, 60, 0.25); color: #e74c3c; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; width: max-content;">Shared API</span>`;
     
     elGDriveAccountsList.innerHTML = "";
     accounts.forEach(acc => {
@@ -2256,11 +2487,18 @@ function renderGDriveAccounts(accounts, activeAccount) {
                         <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap;">
                             <span style="font-size: 0.82rem; color: #a1a1b5; font-weight: 500;">${planInfo.planName}</span>
                             ${planInfo.badgeHtml ? planInfo.badgeHtml : ""}
+                            ${acc.fully_configured 
+                                ? `<span style="font-size: 0.65rem; font-weight: 700; color: #2ecc71; background: rgba(46, 204, 113, 0.12); border: 1px solid rgba(46, 204, 113, 0.25); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center; gap: 3px;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="vertical-align: middle;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg> Fully Configured</span>`
+                                : `<span style="font-size: 0.65rem; font-weight: 700; color: #e74c3c; background: rgba(231, 76, 60, 0.12); border: 1px solid rgba(231, 76, 60, 0.25); padding: 2px 8px; border-radius: 12px; display: inline-flex; align-items: center; gap: 3px;"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="vertical-align: middle;"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> Not Configured</span>`
+                            }
                         </div>
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">
-                    <span style="font-size: 0.82rem; padding: 4px 10px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-white); font-weight: 600;">${planInfo.sizeText}</span>
+                    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+                        <span style="font-size: 0.82rem; padding: 4px 10px; border-radius: 12px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-white); font-weight: 600;">${planInfo.sizeText}</span>
+                        ${apiBadgeHtml}
+                    </div>
                     <button class="btn-delete-gdrive" data-email="${email}" style="background: none; border: none; color: #ff5555; cursor: pointer; font-size: 1.55rem; padding: 0 4px; line-height: 1; transition: color 0.15s ease;" title="Remove Account">&times;</button>
                 </div>
             </div>
