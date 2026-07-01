@@ -36,12 +36,15 @@ const elProviderSelect = document.getElementById("provider-select");
 const elChkShowLogs = document.getElementById("chk-show-logs");
 const elChkRainbowBg = document.getElementById("chk-rainbow-bg");
 const elChkGofileProxy = document.getElementById("chk-gofile-proxy");
+const elChkHideGDrive = document.getElementById("chk-hide-gdrive");
 
 // Google Drive Elements
 const elGDriveCleanupBtn = document.getElementById("btn-gdrive-cleanup");
 const elAddGDriveAccountBtn = document.getElementById("btn-add-gdrive-account");
 
 const elGDriveAccountsList = document.getElementById("gdrive-accounts-list");
+
+let isShowingPixeldrainLimitAlert = false;
 
 // WARP Modal Elements
 const elWarpModal = document.getElementById("warp-modal");
@@ -384,18 +387,28 @@ function handleWarpState(newState) {
 // Update UI based on loaded state
 function updateUI(newState) {
     handleWarpState(newState);
+    
+    // Pixeldrain limit warning modal trigger
+    if (newState.pixeldrain_limit_reached && !isShowingPixeldrainLimitAlert) {
+        isShowingPixeldrainLimitAlert = true;
+        Swal.fire({
+            title: 'Pixeldrain Limit Reached',
+            text: "You have reached Pixeldrain's daily free bandwidth limit (6 GB). Speed is throttled to 1 MB/s total. Please enable a VPN or Cloudflare WARP, then Pause and Resume the download in this app to reconnect at high speed.",
+            icon: 'warning',
+            confirmButtonText: 'OK',
+            confirmButtonColor: '#9b59b6',
+            background: '#040409',
+            color: '#e2e2ec'
+        }).then(() => {
+            fetch("/api/clear_pixeldrain_limit");
+            isShowingPixeldrainLimitAlert = false;
+        });
+    }
+
     // 1. Manage setup vs download views
+    syncViewState();
+    
     if (newState.is_configured) {
-        document.querySelector(".app-container").classList.add("has-sidebar");
-        document.querySelector(".sidebar").style.display = "flex";
-        
-        elSetupView.style.display = "none";
-        elDownloadView.style.display = "flex";
-        
-        elSidebarSetupInfo.style.display = "none";
-        elSidebarStatusSummary.style.display = "flex";
-        elSidebarActionsContainer.style.display = "flex";
-        
         // Populate display info
         elActiveGameTitle.innerText = newState.game_title || "Custom Repack";
         elActiveGameSubtitle.innerText = `Save directory: ${newState.download_dir}`;
@@ -734,6 +747,8 @@ function updateUI(newState) {
         });
         elConsoleBox.scrollTop = elConsoleBox.scrollHeight;
     }
+    
+    updateMiniBadge(newState);
     appState = newState;
 }
 
@@ -838,6 +853,8 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         if (videoUrl.startsWith("//")) {
                             videoUrl = "https:" + videoUrl;
                         }
+                        // Add autoplay & mute parameters to autoplay trailer seamlessly
+                        videoUrl += (videoUrl.includes("?") ? "&" : "?") + "autoplay=1&mute=1&enablejsapi=1";
                         elVideoIframe.src = videoUrl;
                         elVideoContainer.style.display = "block";
                     } else {
@@ -878,12 +895,20 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 // Store mirrors list for provider switching
                 scrapedMirrors = data.mirrors || [];
                 
-                // Show mirrors selection
-                if (data.mirrors && data.mirrors.length > 0) {
+                const hideGDrive = localStorage.getItem("hideGDrive") !== "false";
+                const filteredMirrors = (data.mirrors || []).filter(m => {
+                    if (hideGDrive) {
+                        const name = m.name.toLowerCase();
+                        return !(name.includes("google") || name.includes("gdrive") || name.includes("drive") || name.includes("disk") || name.includes("диск") || name.includes("гугл"));
+                    }
+                    return true;
+                });
+
+                if (filteredMirrors.length > 0) {
                     elMirrorSelectSection.style.display = "block";
                     elMirrorsContainer.innerHTML = "";
                     
-                    data.mirrors.forEach((m, idx) => {
+                    filteredMirrors.forEach((m, idx) => {
                         const pill = document.createElement("button");
                         pill.className = "mirror-pill";
                         pill.innerText = m.name;
@@ -932,14 +957,28 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     if (elGameScreenshotsContainer) elGameScreenshotsContainer.innerHTML = "";
                 }
 
+                // Toggle media column visibility and columns
+                const elMediaColumnCard = document.getElementById("media-column-card");
+                const hasMedia = (data.videos && data.videos.length > 0) || (data.screenshots && data.screenshots.length > 0);
+                if (elMediaColumnCard) {
+                    elMediaColumnCard.style.display = hasMedia ? "flex" : "none";
+                }
+                
                 if (elGameInfoCard) {
-                    if (data.description || (data.screenshots && data.screenshots.length > 0)) {
+                    if (data.description) {
                         elGameInfoCard.style.display = "block";
-                        if (elSetupDashboard) elSetupDashboard.classList.remove("no-info-card");
                     } else {
                         elGameInfoCard.style.display = "none";
-                        if (elSetupDashboard) elSetupDashboard.classList.add("no-info-card");
                     }
+                }
+                
+                if (elSetupDashboard) {
+                    if (hasMedia) {
+                        elSetupDashboard.style.setProperty("--details-grid-columns", "260px 1.15fr 0.85fr");
+                    } else {
+                        elSetupDashboard.style.setProperty("--details-grid-columns", "260px 1fr");
+                    }
+                    elSetupDashboard.classList.toggle("no-info-card", !data.description);
                 }
                 
                 elSetupDashboard.style.display = "grid";
@@ -951,12 +990,24 @@ elAnalyzeBtn.addEventListener("click", async () => {
         } else {
             elAnalyzeError.style.display = "block";
             elAnalyzeError.innerText = data.error || "Failed to analyze link. Check logs.";
+            if (viewState === "details") {
+                alert("Failed to load game details: " + (data.error || "Check logs."));
+                setViewState("catalog");
+            }
         }
     } catch (e) {
         console.error("Error analyzing:", e);
         elAnalyzeError.style.display = "block";
         elAnalyzeError.innerText = "Connection error. Make sure Python server is running.";
+        if (viewState === "details") {
+            alert("Connection error while loading game details.");
+            setViewState("catalog");
+        }
     } finally {
+        const elDetailsLoader = document.getElementById("details-page-loader");
+        if (elDetailsLoader) elDetailsLoader.style.display = "none";
+        elSetupDashboard.style.display = "grid";
+        
         elAnalyzeSpinner.style.display = "none";
         elAnalyzeBtnText.innerText = "Analyze Link";
         elAnalyzeBtn.removeAttribute("disabled");
@@ -1064,8 +1115,13 @@ function displayConfigCard(title, files, url = "") {
     elSetupCoverPlaceholder.style.display = "flex";
     clearDynamicBackground();
     
+    const elMediaColumnCard = document.getElementById("media-column-card");
+    if (elMediaColumnCard) elMediaColumnCard.style.display = "none";
     if (elGameInfoCard) elGameInfoCard.style.display = "none";
-    if (elSetupDashboard) elSetupDashboard.classList.add("no-info-card");
+    if (elSetupDashboard) {
+        elSetupDashboard.style.setProperty("--details-grid-columns", "260px 1fr");
+        elSetupDashboard.classList.add("no-info-card");
+    }
     
     rawFilesList = files;
     initCheckedFiles(files);
@@ -1628,6 +1684,33 @@ if (elChangeProviderBtn) {
     });
 }
 
+function updateMiniBadge(newState) {
+    const elMiniBadge = document.getElementById("floating-download-badge");
+    if (!elMiniBadge) return;
+    
+    if (newState.is_configured && viewState !== "downloading") {
+        elMiniBadge.style.display = "flex";
+        
+        const elMiniTitle = document.getElementById("mini-game-title");
+        const elMiniStatus = document.getElementById("mini-game-status");
+        const elMiniProgressBar = document.getElementById("mini-progress-bar");
+        
+        if (elMiniTitle) elMiniTitle.innerText = newState.game_title || "Downloading";
+        
+        // speed and progress
+        const isDownloading = newState.files && newState.files.some(f => f.status === "downloading");
+        const speedText = isDownloading ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed) : "0.0 MB/s";
+        if (elMiniStatus) elMiniStatus.innerText = `${speedText} · ${newState.total_progress}%`;
+        
+        if (elMiniProgressBar) {
+            const offset = 94 - (94 * newState.total_progress) / 100;
+            elMiniProgressBar.style.strokeDashoffset = offset;
+        }
+    } else {
+        elMiniBadge.style.display = "none";
+    }
+}
+
 // ViewState Router
 let viewState = "catalog"; // "catalog", "details", "downloading"
 
@@ -1638,21 +1721,25 @@ function setViewState(state) {
 
 function syncViewState() {
     if (appState.is_configured) {
-        viewState = "downloading";
-    } else if (viewState === "downloading") {
-        viewState = "catalog";
+        if (viewState !== "catalog" && viewState !== "details") {
+            viewState = "downloading";
+        }
+    } else {
+        if (viewState === "downloading") {
+            viewState = "catalog";
+        }
     }
 
+    const elMiniBadge = document.getElementById("floating-download-badge");
+
     if (viewState === "downloading") {
-        document.querySelector(".app-container").classList.add("has-sidebar");
-        document.querySelector(".sidebar").style.display = "flex";
+        document.querySelector(".app-container").classList.remove("has-sidebar");
+        document.querySelector(".sidebar").style.display = "none";
         
         elSetupView.style.display = "none";
         elDownloadView.style.display = "flex";
         
-        elSidebarSetupInfo.style.display = "none";
-        elSidebarStatusSummary.style.display = "flex";
-        elSidebarActionsContainer.style.display = "flex";
+        if (elMiniBadge) elMiniBadge.style.display = "none";
     } else {
         document.querySelector(".app-container").classList.remove("has-sidebar");
         document.querySelector(".sidebar").style.display = "none";
@@ -1660,9 +1747,12 @@ function syncViewState() {
         elSetupView.style.display = "flex";
         elDownloadView.style.display = "none";
         
-        elSidebarSetupInfo.style.display = "block";
-        elSidebarStatusSummary.style.display = "none";
-        elSidebarActionsContainer.style.display = "none";
+        if (elMiniBadge && appState.is_configured) {
+            elMiniBadge.style.display = "flex";
+            updateMiniBadge(appState);
+        } else if (elMiniBadge) {
+            elMiniBadge.style.display = "none";
+        }
 
         if (viewState === "catalog") {
             elCatalogContainer.classList.remove("hidden-view");
@@ -1772,6 +1862,135 @@ function clearDynamicBackground() {
         animateCSSColorVariables('#a83279', '#9b59b6', 1200);
         dynamicResetTimeout = null;
     }, 500);
+}
+
+// Canvas Dynamic Accent Extraction for individual game cards
+function applyCardDynamicAccent(imgElement, cardElement) {
+    try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 16;
+        canvas.height = 16;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(imgElement, 0, 0, 16, 16);
+        
+        const imageData = ctx.getImageData(0, 0, 16, 16);
+        const data = imageData.data;
+        
+        let rSum = 0, gSum = 0, bSum = 0, count = 0;
+        const topBuckets = {};
+        const botBuckets = {};
+        
+        for (let y = 0; y < 16; y++) {
+            for (let x = 0; x < 16; x++) {
+                const idx = (y * 16 + x) * 4;
+                const r = data[idx];
+                const g = data[idx+1];
+                const b = data[idx+2];
+                const a = data[idx+3];
+                if (a < 200) continue;
+                
+                rSum += r;
+                gSum += g;
+                bSum += b;
+                count++;
+                
+                // RGB to HSL
+                const rNorm = r / 255;
+                const gNorm = g / 255;
+                const bNorm = b / 255;
+                const max = Math.max(rNorm, gNorm, bNorm);
+                const min = Math.min(rNorm, gNorm, bNorm);
+                const d = max - min;
+                const l = (max + min) / 2;
+                const s = max === min ? 0 : (l > 0.5 ? d / (2 - max - min) : d / (max + min));
+                
+                // Ignore extremely dark or extremely white pixels
+                if (l < 0.12 || l > 0.88) continue;
+                if (s < 0.15) continue;
+                
+                // Quantize
+                const qr = Math.floor(r / 24) * 24;
+                const qg = Math.floor(g / 24) * 24;
+                const qb = Math.floor(b / 24) * 24;
+                const key = `${qr},${qg},${qb}`;
+                
+                const weight = 1 + s * 3.5;
+                if (y < 8) {
+                    topBuckets[key] = (topBuckets[key] || 0) + weight;
+                } else {
+                    botBuckets[key] = (botBuckets[key] || 0) + weight;
+                }
+            }
+        }
+        
+        const extractDominant = (buckets) => {
+            let dominant = null;
+            let maxWeight = -1;
+            for (const key in buckets) {
+                if (buckets[key] > maxWeight) {
+                    maxWeight = buckets[key];
+                    const parts = key.split(",").map(Number);
+                    dominant = { r: parts[0], g: parts[1], b: parts[2] };
+                }
+            }
+            return dominant;
+        };
+        
+        let topColor = extractDominant(topBuckets);
+        let botColor = extractDominant(botBuckets);
+        
+        const globalAvg = count > 0 ? {
+            r: Math.floor(rSum / count),
+            g: Math.floor(gSum / count),
+            b: Math.floor(bSum / count)
+        } : { r: 155, g: 89, b: 182 };
+        
+        if (!topColor) topColor = globalAvg;
+        if (!botColor) botColor = globalAvg;
+        
+        // Boost colors if they are too dark so they are always visible on dark backgrounds
+        const boostColor = (color) => {
+            let { r, g, b } = color;
+            const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+            if (luminance < 110) {
+                const boost = Math.floor((110 - luminance) * 0.8 + 35);
+                r = Math.min(255, r + boost);
+                g = Math.min(255, g + boost);
+                b = Math.min(255, b + boost);
+            }
+            return { r, g, b };
+        };
+        
+        topColor = boostColor(topColor);
+        botColor = boostColor(botColor);
+        
+        // If colors are too close, shift the bottom hue slightly to create a nice, smooth transition
+        const dist = Math.abs(topColor.r - botColor.r) + Math.abs(topColor.g - botColor.g) + Math.abs(topColor.b - botColor.b);
+        if (dist < 40) {
+            botColor.r = Math.min(255, Math.max(0, botColor.r + 25));
+            botColor.g = Math.min(255, Math.max(0, botColor.g - 15));
+            botColor.b = Math.min(255, Math.max(0, botColor.b + 35));
+        }
+        
+        // Rich colors but softer opacity so they don't look grey but aren't blinding (aesthetic, slightly visible)
+        const accentTop = `rgba(${topColor.r}, ${topColor.g}, ${topColor.b}, 0.52)`;
+        const accentTopHover = `rgba(${topColor.r}, ${topColor.g}, ${topColor.b}, 0.88)`;
+        
+        const accentBot = `rgba(${botColor.r}, ${botColor.g}, ${botColor.b}, 0.52)`;
+        const accentBotHover = `rgba(${botColor.r}, ${botColor.g}, ${botColor.b}, 0.88)`;
+        
+        const glow = `rgba(${botColor.r}, ${botColor.g}, ${botColor.b}, 0.18)`;
+        const glowHover = `rgba(${botColor.r}, ${botColor.g}, ${botColor.b}, 0.45)`;
+        
+        cardElement.style.setProperty("--card-accent-top", accentTop);
+        cardElement.style.setProperty("--card-accent-top-hover", accentTopHover);
+        cardElement.style.setProperty("--card-accent-bot", accentBot);
+        cardElement.style.setProperty("--card-accent-bot-hover", accentBotHover);
+        cardElement.style.setProperty("--card-glow-color", glow);
+        cardElement.style.setProperty("--card-glow-color-hover", glowHover);
+    } catch (e) {
+        // Silent catch for cross-origin or canvas read errors
+    }
 }
 
 // Canvas Dynamic Accent Extraction
@@ -1898,58 +2117,142 @@ const GAMEPAD_SVG = `
 </svg>
 `;
 
-function renderGamesList(results) {
+function createGameCard(game) {
+    const card = document.createElement("div");
+    card.className = activeProvider === "onlinefix" ? "game-card onlinefix-card" : "game-card";
+    
+    const coverUrl = game.cover_image 
+        ? `/api/proxy_image?url=${encodeURIComponent(game.cover_image)}`
+        : "";
+        
+    card.innerHTML = `
+        <div class="card-cover-area">
+            <div class="card-cover-placeholder">${GAMEPAD_SVG}</div>
+        </div>
+        <div class="card-info">
+            <h4 class="card-title" title="${game.title}">${game.title}</h4>
+            <div class="card-sizes" style="display: flex; align-items: center; width: 100%;">
+                ${game.repack_size !== "Unknown" ? `<span class="size-badge repack">Repack: ${game.repack_size}</span>` : ""}
+                ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
+            </div>
+        </div>
+    `;
+    
+    if (coverUrl) {
+        getCachedImageUrl(coverUrl).then(cachedUrl => {
+            const coverArea = card.querySelector(".card-cover-area");
+            if (coverArea) {
+                const img = document.createElement("img");
+                img.className = "card-cover";
+                img.src = cachedUrl;
+                img.alt = "Cover";
+                img.onload = () => {
+                    applyCardDynamicAccent(img, card);
+                };
+                if (img.complete) {
+                    applyCardDynamicAccent(img, card);
+                }
+                img.onerror = () => {
+                    coverArea.innerHTML = `<div class="card-cover-placeholder">${GAMEPAD_SVG}</div>`;
+                };
+                coverArea.innerHTML = "";
+                coverArea.appendChild(img);
+            }
+        });
+    }
+    
+    card.addEventListener("click", () => {
+        elUrlTextarea.value = game.url;
+        setViewState("details");
+        showDetailsLoadingState(game.title);
+        elAnalyzeBtn.click();
+    });
+    
+    return card;
+}
+
+function renderGamesList(results, popularList) {
     elGamesGridContainer.innerHTML = "";
     if (!results || results.length === 0) {
         elGamesGridContainer.innerHTML = `<div class="no-results-message">No repacks found.</div>`;
         return;
     }
     
-    results.forEach(game => {
-        const card = document.createElement("div");
-        card.className = "game-card";
-        
-        const coverUrl = game.cover_image 
-            ? `/api/proxy_image?url=${encodeURIComponent(game.cover_image)}`
-            : "";
-            
-        card.innerHTML = `
-            <div class="card-cover-area">
-                <div class="card-cover-placeholder">${GAMEPAD_SVG}</div>
-            </div>
-            <div class="card-info">
-                <h4 class="card-title" title="${game.title}">${game.title}</h4>
-                <div class="card-sizes" style="display: flex; align-items: center; width: 100%;">
-                    ${game.repack_size !== "Unknown" ? `<span class="size-badge repack">Repack: ${game.repack_size}</span>` : ""}
-                    ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
-                </div>
+    // If Online-Fix and we have a popularList, and we're not performing a search query
+    if (activeProvider === "onlinefix" && popularList && popularList.length > 0 && !searchQuery) {
+        const popSection = document.createElement("div");
+        popSection.className = "popular-section";
+        popSection.innerHTML = `
+            <h3 class="section-title">Popular</h3>
+            <div class="popular-slider-wrapper">
+                <div class="popular-slider-scroll"></div>
             </div>
         `;
         
-        if (coverUrl) {
-            getCachedImageUrl(coverUrl).then(cachedUrl => {
-                const coverArea = card.querySelector(".card-cover-area");
-                if (coverArea) {
-                    const img = document.createElement("img");
-                    img.className = "card-cover";
-                    img.src = cachedUrl;
-                    img.alt = "Cover";
-                    img.onerror = () => {
-                        coverArea.innerHTML = `<div class="card-cover-placeholder">${GAMEPAD_SVG}</div>`;
-                    };
-                    coverArea.innerHTML = "";
-                    coverArea.appendChild(img);
-                }
-            });
-        }
-        
-        card.addEventListener("click", () => {
-            elUrlTextarea.value = game.url;
-            elAnalyzeBtn.click();
+        const scrollTrack = popSection.querySelector(".popular-slider-scroll");
+        const doubleList = [...popularList, ...popularList];
+        doubleList.forEach(game => {
+            scrollTrack.appendChild(createGameCard(game));
         });
         
-        elGamesGridContainer.appendChild(card);
-    });
+        elGamesGridContainer.appendChild(popSection);
+        
+        const staticTitle = document.createElement("h3");
+        staticTitle.className = "section-title";
+        staticTitle.style.marginTop = "20px";
+        staticTitle.style.marginBottom = "15px";
+        staticTitle.innerText = "Latest Releases";
+        elGamesGridContainer.appendChild(staticTitle);
+        
+        const staticGrid = document.createElement("div");
+        staticGrid.className = "games-grid static-grid";
+        results.forEach(game => {
+            staticGrid.appendChild(createGameCard(game));
+        });
+        elGamesGridContainer.appendChild(staticGrid);
+    } else {
+        results.forEach(game => {
+            elGamesGridContainer.appendChild(createGameCard(game));
+        });
+    }
+}
+
+function showDetailsLoadingState(gameTitle) {
+    elDetailsGameTitle.innerText = gameTitle || "Loading Game...";
+    elDetailsVersionBadge.style.display = "none";
+    if (elBtnOpenBrowser) elBtnOpenBrowser.style.display = "none";
+    elMetadataOriginalSize.innerText = "--";
+    elMetadataRepackSize.innerText = "--";
+    
+    const elVideoContainer = document.getElementById("details-video-container");
+    const elVideoIframe = document.getElementById("video-iframe");
+    if (elVideoIframe) elVideoIframe.src = "";
+    if (elVideoContainer) elVideoContainer.style.display = "none";
+    
+    elSetupCover.src = "";
+    elSetupCover.style.display = "none";
+    elSetupCoverPlaceholder.style.display = "flex";
+    clearDynamicBackground();
+    
+    if (elGameDescription) elGameDescription.style.display = "none";
+    if (elGameScreenshotsSection) elGameScreenshotsSection.style.display = "none";
+    
+    elConfigCard.style.display = "none";
+    elMirrorSelectSection.style.display = "none";
+    
+    let elDetailsLoader = document.getElementById("details-page-loader");
+    if (!elDetailsLoader) {
+        elDetailsLoader = document.createElement("div");
+        elDetailsLoader.id = "details-page-loader";
+        elDetailsLoader.className = "section-loader";
+        elDetailsLoader.innerHTML = `
+            <div class="spinner"></div>
+            <p style="margin-top: 10px; font-weight: 500; color: var(--text-muted);">Fetching game mirrors & files...</p>
+        `;
+        elSetupDashboard.parentElement.appendChild(elDetailsLoader);
+    }
+    elDetailsLoader.style.display = "flex";
+    elSetupDashboard.style.display = "none";
 }
 
 async function loadCatalogGames() {
@@ -1960,7 +2263,7 @@ async function loadCatalogGames() {
     const cacheKey = getCatalogCacheKey(activeProvider, currentPage, searchQuery, activeTab);
     if (catalogPagesCache.has(cacheKey)) {
         const cached = catalogPagesCache.get(cacheKey);
-        renderGamesList(cached.results);
+        renderGamesList(cached.results, cached.popular);
         if (cached.has_next) {
             elBtnNextPage.removeAttribute("disabled");
         } else {
@@ -1968,7 +2271,7 @@ async function loadCatalogGames() {
         }
         elGamesLoader.style.display = "none";
         elBtnPrevPage.disabled = (currentPage === 1);
-        elPageIndicator.innerText = `Page ${currentPage}`;
+        elPageIndicator.innerText = currentPage;
         if (searchQuery) {
             elSearchResultsTitle.style.display = "block";
             elSearchResultsTitle.innerText = `Search results for: "${searchQuery}"`;
@@ -2000,9 +2303,10 @@ async function loadCatalogGames() {
         if (data.success) {
             catalogPagesCache.set(cacheKey, {
                 results: data.results,
+                popular: data.popular,
                 has_next: data.has_next
             });
-            renderGamesList(data.results);
+            renderGamesList(data.results, data.popular);
             
             // Toggle pagination next button based on has_next returned from server
             if (data.has_next) {
@@ -2021,7 +2325,7 @@ async function loadCatalogGames() {
         
         // Update pagination buttons state
         elBtnPrevPage.disabled = (currentPage === 1);
-        elPageIndicator.innerText = `Page ${currentPage}`;
+        elPageIndicator.innerText = currentPage;
     }
 }
 
@@ -2102,6 +2406,10 @@ elSaveSettingsBtn.addEventListener("click", async () => {
     
     if (elChkGofileProxy) {
         localStorage.setItem("gofileProxy", elChkGofileProxy.checked ? "true" : "false");
+    }
+    
+    if (elChkHideGDrive) {
+        localStorage.setItem("hideGDrive", elChkHideGDrive.checked ? "true" : "false");
     }
     
     const elClientId = document.getElementById("txt-gdrive-client-id");
@@ -2567,20 +2875,44 @@ function switchProvider(newProvider) {
     }
     
     // Sync header quick switch toggle
+    const elPillsContainer = document.querySelector(".browse-nav-pills");
     if (activeProvider === "onlinefix") {
         if (elSiteToggleTrigger) elSiteToggleTrigger.classList.add("onlinefix-active");
         if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.add("active");
         if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.remove("active");
-        
-        elPillPopularMonth.innerText = "Latest Fixes";
-        elPillPopularYear.style.display = "none";
+        if (elPillsContainer) elPillsContainer.style.display = "none";
     } else {
         if (elSiteToggleTrigger) elSiteToggleTrigger.classList.remove("onlinefix-active");
         if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.add("active");
         if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.remove("active");
-        
+        if (elPillsContainer) elPillsContainer.style.display = "flex";
         elPillPopularMonth.innerText = "Top 50 Month";
         elPillPopularYear.style.display = "inline-block";
+    }
+    
+    const elGoToSiteBtn = document.getElementById("btn-go-to-site");
+    const elGoToSiteText = document.getElementById("go-to-site-text");
+    const elCatalogGoToSiteBtn = document.getElementById("btn-catalog-go-to-site");
+    const elCatalogGoToSiteText = document.getElementById("catalog-go-to-site-text");
+    
+    if (activeProvider === "onlinefix") {
+        if (elGoToSiteBtn && elGoToSiteText) {
+            elGoToSiteBtn.href = "https://online-fix.me/";
+            elGoToSiteText.innerText = "Go to Online-Fix";
+        }
+        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+            elCatalogGoToSiteBtn.href = "https://online-fix.me/";
+            elCatalogGoToSiteText.innerText = "Go to Online-Fix";
+        }
+    } else {
+        if (elGoToSiteBtn && elGoToSiteText) {
+            elGoToSiteBtn.href = "https://fitgirl-repacks.site/";
+            elGoToSiteText.innerText = "Go to FitGirl";
+        }
+        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+            elCatalogGoToSiteBtn.href = "https://fitgirl-repacks.site/";
+            elCatalogGoToSiteText.innerText = "Go to FitGirl";
+        }
     }
     
     if (elChangeProviderBtn) {
@@ -2701,6 +3033,7 @@ function initSettings() {
     const showLogs = localStorage.getItem("showLogs") === "true"; // False by default
     const rainbowBg = localStorage.getItem("rainbowBg") === "true";
     const gofileProxy = localStorage.getItem("gofileProxy") === "true";
+    const hideGDrive = localStorage.getItem("hideGDrive") !== "false"; // True by default
     
     if (elProviderSelect) {
         elProviderSelect.value = activeProvider;
@@ -2712,22 +3045,32 @@ function initSettings() {
     if (elChkGofileProxy) {
         elChkGofileProxy.checked = gofileProxy;
     }
-    document.body.classList.toggle("rainbow-active", rainbowBg);
+    if (elChkHideGDrive) {
+        elChkHideGDrive.checked = hideGDrive;
+        elChkHideGDrive.addEventListener("change", () => {
+            document.querySelectorAll(".gdrive-ui-element").forEach(el => {
+                el.style.display = elChkHideGDrive.checked ? "none" : "";
+            });
+        });
+    }
+    document.querySelectorAll(".gdrive-ui-element").forEach(el => {
+        el.style.display = hideGDrive ? "none" : "";
+    });
     
+    document.body.classList.toggle("rainbow-active", rainbowBg);
     elConsoleBox.parentElement.classList.toggle("hidden", !showLogs);
     
+    const elPillsContainer = document.querySelector(".browse-nav-pills");
     if (activeProvider === "onlinefix") {
         if (elSiteToggleTrigger) elSiteToggleTrigger.classList.add("onlinefix-active");
         if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.add("active");
         if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.remove("active");
-        
-        elPillPopularMonth.innerText = "Latest Fixes";
-        elPillPopularYear.style.display = "none";
+        if (elPillsContainer) elPillsContainer.style.display = "none";
     } else {
         if (elSiteToggleTrigger) elSiteToggleTrigger.classList.remove("onlinefix-active");
         if (elLabelSiteFitGirl) elLabelSiteFitGirl.classList.add("active");
         if (elLabelSiteOnlineFix) elLabelSiteOnlineFix.classList.remove("active");
-        
+        if (elPillsContainer) elPillsContainer.style.display = "flex";
         elPillPopularMonth.innerText = "Top 50 Month";
         elPillPopularYear.style.display = "inline-block";
     }
@@ -2741,6 +3084,31 @@ function initSettings() {
     
     if (elSearchInput) {
         elSearchInput.placeholder = activeProvider === "onlinefix" ? "Search Online-Fix..." : "Search FitGirl repacks...";
+    }
+    
+    const elGoToSiteBtn = document.getElementById("btn-go-to-site");
+    const elGoToSiteText = document.getElementById("go-to-site-text");
+    const elCatalogGoToSiteBtn = document.getElementById("btn-catalog-go-to-site");
+    const elCatalogGoToSiteText = document.getElementById("catalog-go-to-site-text");
+    
+    if (activeProvider === "onlinefix") {
+        if (elGoToSiteBtn && elGoToSiteText) {
+            elGoToSiteBtn.href = "https://online-fix.me/";
+            elGoToSiteText.innerText = "Go to Online-Fix";
+        }
+        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+            elCatalogGoToSiteBtn.href = "https://online-fix.me/";
+            elCatalogGoToSiteText.innerText = "Go to Online-Fix";
+        }
+    } else {
+        if (elGoToSiteBtn && elGoToSiteText) {
+            elGoToSiteBtn.href = "https://fitgirl-repacks.site/";
+            elGoToSiteText.innerText = "Go to FitGirl";
+        }
+        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+            elCatalogGoToSiteBtn.href = "https://fitgirl-repacks.site/";
+            elCatalogGoToSiteText.innerText = "Go to FitGirl";
+        }
     }
 }
 
@@ -2798,6 +3166,22 @@ if (elWarpRetryBtn) {
         } catch (e) {
             console.error("Failed to retry WARP installer process:", e);
         }
+    });
+}
+
+// Bind browse catalog button inside dashboard
+const elBackToCatalogBtnDownload = document.getElementById("btn-back-to-catalog-download");
+if (elBackToCatalogBtnDownload) {
+    elBackToCatalogBtnDownload.addEventListener("click", () => {
+        setViewState("catalog");
+    });
+}
+
+// Bind floating mini download badge
+const elMiniBadge = document.getElementById("floating-download-badge");
+if (elMiniBadge) {
+    elMiniBadge.addEventListener("click", () => {
+        setViewState("downloading");
     });
 }
 

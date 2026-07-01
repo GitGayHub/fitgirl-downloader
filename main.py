@@ -83,6 +83,7 @@ state = {
     "active_mirror": "",
     "warp_status": "checking",
     "warp_error_message": "",
+    "pixeldrain_limit_reached": False,
     "gofile_proxy": False,
     "gdrive_accounts": [],
     "active_gdrive_account": "",
@@ -166,6 +167,23 @@ def add_log(message):
             print(formatted.encode(enc, errors='replace').decode(enc))
         except Exception:
             print(f"[{timestamp}] [Log encoding error] " + "".join(c if ord(c) < 128 else '?' for c in message))
+
+def is_warp_available():
+    import shutil
+    warp_cli = shutil.which("warp-cli")
+    if not warp_cli:
+        std_path = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
+        if os.path.exists(std_path):
+            warp_cli = std_path
+    return warp_cli is not None
+
+def get_effective_max_workers():
+    with state_lock:
+        if state.get("active_mirror") and "pixeldrain" in state["active_mirror"].lower():
+            return 1
+        if any("pixeldrain.com" in f.get("url", "") for f in state.get("files", [])):
+            return 1
+        return state.get("max_workers", 4)
 
 def rotate_warp_ip():
     add_log("Attempting to rotate IP using Cloudflare WARP...")
@@ -321,6 +339,7 @@ RCLONE_CLIENT_ID = "202264815644.apps.googleusercontent.com"
 RCLONE_CLIENT_SECRET = "X4Z3ca8xfWDb1Voo-F9a7ZxJ"
 
 class OAuthRedirectHandler(BaseHTTPRequestHandler):
+    timeout = 3.0  # Socket read timeout to prevent browser pre-connect hangs
     def log_message(self, format, *args):
         pass
     def do_GET(self):
@@ -371,7 +390,12 @@ class OAuthRedirectHandler(BaseHTTPRequestHandler):
                 </style>
                 <script>
                     window.onload = function() {{
-                        setTimeout(function() {{ window.close(); }}, 2500);
+                        setTimeout(function() {{
+                            try {{
+                                window.open('', '_self', '');
+                                window.close();
+                            }} catch(e) {{}}
+                        }}, 2500);
                     }}
                 </script>
             </head>
@@ -423,15 +447,18 @@ class OAuthRedirectHandler(BaseHTTPRequestHandler):
             </style>
             <script>
                 window.onload = function() {
+                try {
+                    window.open('', '_self', '');
                     window.close();
-                    // Fallback if window.close is blocked by browser security rules
-                    setTimeout(function() {
-                        var statusEl = document.getElementById("status");
-                        if (statusEl) {
-                            statusEl.innerText = "Authorized. You can close this tab now.";
-                        }
-                    }, 500);
-                }
+                } catch(e) {}
+                // Fallback if window.close is blocked
+                setTimeout(function() {
+                    var statusEl = document.getElementById("status");
+                    if (statusEl) {
+                        statusEl.innerText = "Authorized. You can close this tab now.";
+                    }
+                }, 500);
+            }
             </script>
         </head>
         <body>
@@ -492,6 +519,7 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
     if force_visible:
         # === ADD ACCOUNT: Open in user's default browser ===
         add_log("GDrive: Opening Google authorization in your default browser...")
+        add_log(f"GDrive: IF THE BROWSER DID NOT OPEN, MANUALLY OPEN THIS LINK: {auth_url}")
         
         httpd = None
         for bind_attempt in range(3):
@@ -507,7 +535,7 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
             return None
         
         httpd.captured_code = ""
-        httpd.timeout = 180  # 3 minutes for user to log in
+        httpd.timeout = 900  # 15 minutes for user to log in
         
         # Start listener in background
         listener_thread = threading.Thread(
@@ -559,7 +587,7 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
         _gdrive_copy_auth_httpd = httpd
         
         httpd.captured_code = ""
-        httpd.timeout = 305
+        httpd.timeout = 900
         
         listener_thread = threading.Thread(
             target=lambda h=httpd: _safe_handle_request(h), daemon=True
@@ -618,11 +646,17 @@ def get_gdrive_auth_code_playwright(auth_url, email=None, force_visible=False):
         return None
 
 def _safe_handle_request(httpd):
-    """Helper to safely handle one HTTP request on the OAuth listener."""
-    try:
-        httpd.handle_request()
-    except Exception:
-        pass
+    """Helper to safely handle HTTP requests on the OAuth listener in a loop to bypass browser pre-connect hangs."""
+    import time
+    httpd.timeout = 2.0
+    start_time = time.time()
+    while time.time() - start_time < 900:
+        if getattr(httpd, "captured_code", "") or getattr(httpd, "captured_error", ""):
+            break
+        try:
+            httpd.handle_request()
+        except Exception:
+            pass
 
 def get_gdrive_account_details(access_token, existing_limit=16106127360, existing_usage=0, existing_name="Unknown Name", existing_email="Unknown Account", existing_photo=""):
     """Fetches user details and storage quota from Google APIs with robust fallback."""
@@ -1336,7 +1370,7 @@ def download_worker():
     try:
         while True:
             with state_lock:
-                if state["should_stop"] or not state["is_running"] or state["active_workers_count"] > state["max_workers"]:
+                if state["should_stop"] or not state["is_running"] or state["active_workers_count"] > get_effective_max_workers():
                     break
                     
                 target_idx = -1
@@ -1508,6 +1542,7 @@ def download_file(index, file_info):
             }
             
             copied = False
+            quota_error = False
             active_email = account["email"]
             
             # Step A: Attempt to copy using cached cookies for active account
@@ -1520,7 +1555,7 @@ def download_file(index, file_info):
             if session_cookies:
                 add_log(f"Attempting to copy {filename} using cached session cookies for {active_email}...")
                 try:
-                    res = cf_requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, impersonate="chrome120", timeout=20, verify=False)
+                    res = requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, timeout=20, verify=False)
                     if res.status_code == 200:
                         res_data = res.json()
                         if res_data.get("success", False):
@@ -1540,10 +1575,19 @@ def download_file(index, file_info):
                                 state["gdrive_session_cookies"][active_email].update(res.cookies.get_dict())
                             save_gdrive_accounts()
                             copied = True
+                        else:
+                            msg = res_data.get("message", "")
+                            if any(x in msg.lower() for x in ["unknown error", "quota", "limit", "google drive"]):
+                                add_log(f"GDrive copy failed (non-auth error): {msg}")
+                                with state_lock:
+                                    if index < len(state["files"]):
+                                        state["files"][index]["status"] = "failed"
+                                        state["files"][index]["error"] = f"GDrive copy limit: {msg}"
+                                quota_error = True
                 except Exception as e:
                     add_log(f"Cache copy attempt failed for {filename}: {str(e)}")
                     
-            if not copied:
+            if not copied and not quota_error:
                 # Step B: Lock OAuth flow so only 1 thread opens browser
                 with gdrive_oauth_lock:
                     # Double-check if cookies were populated while we were waiting for the lock
@@ -1556,7 +1600,7 @@ def download_file(index, file_info):
                     if session_cookies:
                         add_log(f"Attempting copy for {filename} with cookies updated by another worker...")
                         try:
-                            res = cf_requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, impersonate="chrome120", timeout=20, verify=False)
+                            res = requests.post(page_url, headers=post_headers, cookies=session_cookies, data={"api_key": ""}, timeout=20, verify=False)
                             if res.status_code == 200:
                                 res_data = res.json()
                                 if res_data.get("success", False):
@@ -1574,12 +1618,21 @@ def download_file(index, file_info):
                                         if active_email not in state["gdrive_session_cookies"] or not isinstance(state["gdrive_session_cookies"][active_email], dict):
                                             state["gdrive_session_cookies"][active_email] = {}
                                         state["gdrive_session_cookies"][active_email].update(res.cookies.get_dict())
-                                    save_gdrive_accounts()
+                                        save_gdrive_accounts()
                                     copied = True
+                                else:
+                                    msg = res_data.get("message", "")
+                                    if any(x in msg.lower() for x in ["unknown error", "quota", "limit", "google drive"]):
+                                        add_log(f"GDrive copy failed (non-auth error inside lock): {msg}")
+                                        with state_lock:
+                                            if index < len(state["files"]):
+                                                state["files"][index]["status"] = "failed"
+                                                state["files"][index]["error"] = f"GDrive copy limit: {msg}"
+                                        quota_error = True
                         except Exception as e:
                             add_log(f"Copy with newly cached cookies failed: {str(e)}")
                             
-                    if not copied:
+                    if not copied and not quota_error:
                         add_log(f"Initiating copy flow to your Google Drive for {filename}...")
                         
                         client_id = RCLONE_CLIENT_ID
@@ -1597,6 +1650,7 @@ def download_file(index, file_info):
                         )
                         
                         add_log("GDrive: Requesting Google authorization code...")
+                        add_log(f"GDrive: IF THE BROWSER DID NOT OPEN, MANUALLY OPEN THIS LINK: {auth_url}")
                         auth_code = get_gdrive_auth_code_playwright(auth_url, account["email"])
                         if not auth_code:
                             with state_lock:
@@ -1605,12 +1659,21 @@ def download_file(index, file_info):
                                     state["files"][index]["error"] = "Google authorization timed out or cancelled by user."
                             return False
                             
-                        # Establish a fresh session cookie on drive.online-fix.me before authorizing it!
                         add_log("Establishing session cookie on Online-Fix Drive server...")
                         try:
-                            # A GET request to page_url establishes the online_fix_auth cookie in the response headers.
-                            res_get = cf_requests.get(page_url, headers=post_headers, impersonate="chrome120", timeout=20, verify=False)
+                            # A GET request to the public folder page establishes the online_fix_auth cookie
+                            with state_lock:
+                                game_title = state.get("game_title", "")
+                            folder_name = urllib.parse.quote(game_title)
+                            folder_url = f"https://drive.online-fix.me:2053/{folder_name}"
+                            res_get = requests.get(folder_url, headers=post_headers, timeout=20, verify=False)
                             fresh_cookies = res_get.cookies.get_dict()
+                            if fresh_cookies and "online_fix_auth" in fresh_cookies:
+                                with state_lock:
+                                    if "gdrive_session_cookies" not in state or not isinstance(state["gdrive_session_cookies"], dict):
+                                        state["gdrive_session_cookies"] = {}
+                                    state["gdrive_session_cookies"][active_email] = fresh_cookies
+                                    save_gdrive_accounts()
                         except Exception as e:
                             add_log(f"Warning: Failed to establish fresh session cookie: {str(e)}")
                             fresh_cookies = {}
@@ -1620,7 +1683,7 @@ def download_file(index, file_info):
                             "api_key": auth_code
                         }
                         try:
-                            res = cf_requests.post(page_url, headers=post_headers, cookies=fresh_cookies, data=post_data, impersonate="chrome120", timeout=20, verify=False)
+                            res = requests.post(page_url, headers=post_headers, cookies=fresh_cookies, data=post_data, timeout=20, verify=False)
                             if res.status_code != 200:
                                 with state_lock:
                                     if index < len(state["files"]):
@@ -1711,6 +1774,7 @@ def download_file(index, file_info):
         
     downloaded = resume_byte
     low_speed_seconds = 0
+    last_low_speed_warning_time = 0
     proxy_server = None
     
     # If using proxy for Gofile:
@@ -1744,9 +1808,34 @@ def download_file(index, file_info):
         try:
             response = requests.get(direct_link, headers=headers, stream=True, timeout=30, proxies=proxies)
             
-            # Check for Pixeldrain download limit reached (402/429)
-            if response.status_code in [402, 429] and "pixeldrain.com" in direct_link:
-                add_log("Pixeldrain download limit reached (402/429). Attempting automatic IP rotation...")
+            # Check for Pixeldrain download limit reached (402/429 or 403 with limit error)
+            is_limit = False
+            is_concurrent_limit = False
+            if "pixeldrain.com" in direct_link:
+                if response.status_code in [402, 429]:
+                    is_limit = True
+                elif response.status_code == 403:
+                    try:
+                        body_snippet = response.content[:500].decode("utf-8", errors="replace")
+                        body_snippet_lower = body_snippet.lower()
+                        if "max_concurrent_downloads" in body_snippet_lower or "open download connections" in body_snippet_lower:
+                            is_concurrent_limit = True
+                        elif any(x in body_snippet_lower for x in ["limit", "exceeded", "quota", "too many", "payment"]):
+                            is_limit = True
+                    except:
+                        pass
+                        
+            if is_concurrent_limit:
+                add_log(f"[INFO] Pixeldrain: Connection limit reached for {filename}. Waiting 5 seconds before retry...")
+                response.close()
+                time.sleep(5)
+                continue
+                
+            if is_limit:
+                add_log("[WARNING] Pixeldrain Daily Bandwidth Limit Reached (6 GB exceeded)!")
+                with state_lock:
+                    state["pixeldrain_limit_reached"] = True
+                add_log("Attempting automatic IP rotation via WARP...")
                 response.close()
                 clear_pixeldrain_cookies()
                 if rotate_warp_ip():
@@ -1756,8 +1845,9 @@ def download_file(index, file_info):
                 else:
                     add_log("WARP IP rotation failed or unavailable.")
                     with state_lock:
-                        state["files"][index]["status"] = "failed"
-                        state["files"][index]["error"] = "Pixeldrain limit reached and WARP IP rotation failed."
+                        if index < len(state["files"]):
+                            state["files"][index]["status"] = "failed"
+                            state["files"][index]["error"] = "Pixeldrain Daily Limit (6 GB) Reached. Please enable VPN / WARP or wait."
                     return False
                     
             if response.status_code not in [200, 206]:
@@ -1843,12 +1933,22 @@ def download_file(index, file_info):
                             
                             # Speed drop monitoring for Pixeldrain
                             if "pixeldrain.com" in direct_link:
-                                if speed < 150 * 1024:
+                                # We check if speed is under 1.15 MB/s (to catch the 1.05 MB/s throttle limit)
+                                if speed < 1150 * 1024:
                                     low_speed_seconds += int(elapsed)
-                                    if low_speed_seconds >= 8:
-                                        add_log(f"Pixeldrain: Throttling detected (speed: {speed/1024:.1f} KB/s for {low_speed_seconds}s). Triggering IP auto-rotation...")
-                                        throttled_trigger = True
-                                        break
+                                    if low_speed_seconds >= 15:
+                                        curr_time = time.time()
+                                        if curr_time - last_low_speed_warning_time > 300: # 5 minutes cooldown
+                                            last_low_speed_warning_time = curr_time
+                                            add_log(f"[WARNING] Pixeldrain: Low download speed detected ({speed/1024:.1f} KB/s). Daily limit may be reached (throttled to 1 MB/s).")
+                                            
+                                            with state_lock:
+                                                state["pixeldrain_limit_reached"] = True
+                                                    
+                                        if is_warp_available():
+                                            add_log("Triggering IP auto-rotation via Cloudflare WARP...")
+                                            throttled_trigger = True
+                                            break
                                 else:
                                     low_speed_seconds = 0
                                     
@@ -2053,6 +2153,10 @@ def clean_and_parse_title(raw_title):
             
     # Clean up trailing/leading dashes/commas from title
     title = re.sub(r'^[\s,–—\-]+|[\s,–—\-]+$', '', title).strip()
+    
+    # Strip suffixes like "+ Windows 7 Fix", "+ 6 GB VRAM Bypass", "+ Unlocker", "+ Bypass", "+ Fix"
+    title = re.sub(r'\+\s*(?:\d+\s*GB\s*)?(?:Windows\s*7\s*Fix|VRAM\s*Bypass|Bypass|Unlocker|Hotfix|Multiplayer|Fix|Patch|Crack|Offline|Update|Bonus\s*OST|OST|Soundtrack|Bonus|Content)\b.*', '', title, flags=re.IGNORECASE)
+    
     # Strip edition suffixes like Deluxe Edition, Gold Edition, Ultimate, etc.
     title = re.sub(r'[\s:–—\-]+(?:digital\s+)?(?:deluxe|ultimate|premium|standard|limited|gold|complete|special)\s+edition\b', '', title, flags=re.IGNORECASE)
     title = re.sub(r'[\s:–—\-]+(?:digital\s+)?(?:deluxe|ultimate|premium|standard|limited|gold|complete|special)\b', '', title, flags=re.IGNORECASE)
@@ -2061,7 +2165,7 @@ def clean_and_parse_title(raw_title):
     # Clean empty parenthesis/brackets
     title = re.sub(r'\(\s*\)', '', title)
     title = re.sub(r'\[\s*\]', '', title)
-    title = re.sub(r'^[\s,–—\-]+|[\s,–—\-]+$', '', title).strip()
+    title = re.sub(r'^[\s,\+\-–—]+|[\s,\+\-–—]+$', '', title).strip()
     title = re.sub(r'\s+', ' ', title)
     return title, version
 
@@ -2179,6 +2283,55 @@ def fetch_repack_details_helper(item):
     item['version'] = version
     return item
 
+def prefetch_covers_background(results):
+    if not results:
+        return
+    def download_worker():
+        for item in results:
+            img_url = item.get("cover_image")
+            if not img_url:
+                continue
+            try:
+                import hashlib
+                url_hash = hashlib.md5(img_url.encode('utf-8')).hexdigest()
+                ext = "jpg"
+                if "." in img_url.split('/')[-1]:
+                    parts = img_url.split('/')[-1].split('.')
+                    if len(parts) > 1 and len(parts[-1]) <= 4 and parts[-1].isalnum():
+                        ext = parts[-1]
+                cache_dir = os.path.join(os.getcwd(), "cover_cache")
+                cache_path = os.path.join(cache_dir, f"{url_hash}.{ext}")
+                
+                # If cached file exists, verify it is not an HTML redirect page
+                if os.path.exists(cache_path):
+                    with open(cache_path, "rb") as f:
+                        header = f.read(15)
+                    if header.startswith(b'<!DOCTYPE') or header.startswith(b'<html') or header.startswith(b'<'):
+                        try:
+                            os.remove(cache_path)
+                        except Exception:
+                            pass
+                    else:
+                        continue
+                
+                # Fetch and save cover using raw urllib
+                req = urllib.request.Request(
+                    img_url,
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                with urllib.request.urlopen(req, timeout=12) as response:
+                    if response.status == 200:
+                        content = response.read()
+                        if not (content.startswith(b'<!DOCTYPE') or content.startswith(b'<html') or content.startswith(b'<')):
+                            os.makedirs(cache_dir, exist_ok=True)
+                            with open(cache_path, "wb") as f:
+                                f.write(content)
+                import time
+                time.sleep(0.15)
+            except Exception:
+                pass
+    threading.Thread(target=download_worker, daemon=True).start()
+
 # HTTP Web Server
 class APIRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -2236,6 +2389,15 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     # Look for standard setup .bin files or output to check if extracted
                     state["is_extracted"] = any(f.endswith(".bin") for f in os.listdir(state["download_dir"]))
                 self.wfile.write(json.dumps(state).encode())
+            return
+            
+        elif path == "/api/clear_pixeldrain_limit":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            with state_lock:
+                state["pixeldrain_limit_reached"] = False
+            self.wfile.write(json.dumps({"success": True}).encode())
             return
             
         elif path == "/api/gdrive/list_accounts":
@@ -2299,6 +2461,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/skip_warp":
             with state_lock:
                 state["warp_status"] = "skipped"
+            try:
+                with open("warp_skipped.txt", "w") as f:
+                    f.write("1")
+            except:
+                pass
             add_log("User skipped Cloudflare WARP installer check.")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -2327,19 +2494,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     return
                 
-                # Check for fastpic and imageban and convert to thumbnails to bypass hotlinking protection
+                # Proxy original high-resolution cover directly (hotlinking is bypassed by backend request)
                 lower_url = img_url.lower()
-                if "fastpic.ru" in lower_url or "fastpic.org" in lower_url:
-                    thumb = img_url.replace("/big/", "/thumb/")
-                    thumb = thumb.split('?')[0]
-                    if thumb.endswith(".jpg"):
-                        thumb = thumb[:-4] + ".jpeg"
-                    elif thumb.endswith(".png"):
-                        thumb = thumb[:-4] + ".jpeg"
-                    thumb = thumb.replace(".ru/", ".org/")
-                    img_url = thumb
-                elif "imageban.ru" in lower_url or "imageban.net" in lower_url:
-                    img_url = img_url.replace("/out/", "/thumbs/")
                 
                 # Check cache first
                 import hashlib
@@ -2355,45 +2511,56 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 cache_path = os.path.join(cache_dir, f"{url_hash}.{ext}")
                 
                 if os.path.exists(cache_path):
-                    self.send_response(200)
-                    content_type = "image/jpeg"
-                    if ext.lower() == "png":
-                        content_type = "image/png"
-                    elif ext.lower() == "gif":
-                        content_type = "image/gif"
-                    elif ext.lower() == "webp":
-                        content_type = "image/webp"
-                    
-                    self.send_header("Content-Type", content_type)
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Cache-Control", "public, max-age=31536000")
-                    self.end_headers()
+                    # Verify it's not a broken HTML file
                     with open(cache_path, "rb") as f:
-                        self.wfile.write(f.read())
-                    return
+                        header = f.read(15)
+                    if header.startswith(b'<!DOCTYPE') or header.startswith(b'<html') or header.startswith(b'<'):
+                        try:
+                            os.remove(cache_path)
+                        except Exception:
+                            pass
+                    else:
+                        self.send_response(200)
+                        content_type = "image/jpeg"
+                        if ext.lower() == "png":
+                            content_type = "image/png"
+                        elif ext.lower() == "gif":
+                            content_type = "image/gif"
+                        elif ext.lower() == "webp":
+                            content_type = "image/webp"
+                        
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Cache-Control", "public, max-age=31536000")
+                        self.end_headers()
+                        with open(cache_path, "rb") as f:
+                            self.wfile.write(f.read())
+                        return
 
-                # Download and cache
+                # Download and cache using raw urllib.request
                 add_log(f"Proxying image: {img_url}")
-                session = cf_requests.Session()
-                response = session.get(img_url, impersonate="chrome120", timeout=15, verify=False)
-                
-                content_type = response.headers.get("Content-Type", "image/jpeg")
-                content = response.content
-                is_success = (response.status_code == 200)
-                
-                if is_success:
-                    with open(cache_path, "wb") as f:
-                        f.write(content)
+                req = urllib.request.Request(
+                    img_url,
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    content = response.read()
+                    content_type = response.headers.get("Content-Type", "image/jpeg")
+                    is_success = (response.status == 200) and not (content.startswith(b'<!DOCTYPE') or content.startswith(b'<html') or content.startswith(b'<'))
                     
-                    self.send_response(200)
-                    self.send_header("Content-Type", content_type)
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Cache-Control", "public, max-age=31536000")
-                    self.end_headers()
-                    self.wfile.write(content)
-                else:
-                    self.send_response(response.status_code)
-                    self.end_headers()
+                    if is_success:
+                        with open(cache_path, "wb") as f:
+                            f.write(content)
+                        
+                        self.send_response(200)
+                        self.send_header("Content-Type", content_type)
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Cache-Control", "public, max-age=31536000")
+                        self.end_headers()
+                        self.wfile.write(content)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
             except Exception as e:
                 add_log(f"Proxy image exception: {str(e)}")
                 self.send_response(500)
@@ -2409,18 +2576,60 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 results = []
                 has_next = False
                 if provider == "onlinefix":
-                    add_log(f"Fetching Online-Fix page {page}...")
-                    if page == 1:
-                        url = "https://online-fix.me/"
-                    else:
-                        url = f"https://online-fix.me/page/{page}/"
-                        
+                    add_log("Fetching popular Online-Fix games...")
+                    url = "https://online-fix.me/"
                     response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
                     if response.status_code == 200:
-                        results = parse_online_fix_page(response.text, url)
                         soup = BeautifulSoup(response.text, 'html.parser')
-                        next_page_str = f"/page/{page+1}/"
-                        has_next = any(next_page_str in (a.get('href') or '') for a in soup.find_all('a'))
+                        slider = soup.find('div', class_='horizontal-slider')
+                        popular_results = []
+                        if slider:
+                            items = slider.find_all('a')
+                            for a in items:
+                                href = a.get('href', '')
+                                title = a.get('title', '')
+                                img = a.find('img')
+                                if a and img and href and title:
+                                    img_src = img.get('src', '')
+                                    if img_src:
+                                        img_src = urllib.parse.urljoin(url, img_src)
+                                        img_src = clean_cover_url(img_src)
+                                    href = urllib.parse.urljoin(url, href)
+                                    clean_t, version = clean_and_parse_title(title)
+                                    popular_results.append({
+                                        "title": clean_t,
+                                        "version": version,
+                                        "url": href,
+                                        "cover_image": img_src,
+                                        "original_size": "Unknown",
+                                        "repack_size": "Unknown",
+                                        "summary": "Popular Online-Fix Game"
+                                    })
+                        
+                        # Parse standard homepage games
+                        all_homepage_games = parse_online_fix_page(response.text, url)
+                        standard_results = []
+                        pop_urls = {item["url"] for item in popular_results}
+                        for item in all_homepage_games:
+                            if item["url"] not in pop_urls:
+                                standard_results.append(item)
+                        
+                        # Limit standard results to first 12
+                        results = standard_results[:12]
+                        
+                        prefetch_covers_background(popular_results)
+                        prefetch_covers_background(results)
+                        
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "success": True, 
+                            "results": results, 
+                            "popular": popular_results, 
+                            "has_next": False
+                        }).encode())
+                        return
                     else:
                         raise Exception(f"HTTP status: {response.status_code}")
                 else: # fitgirl
@@ -2460,13 +2669,15 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         "summary": "Popular Repack"
                                     })
                         
-                        PAGE_SIZE = 24
+                        PAGE_SIZE = 27
                         start_idx = (page - 1) * PAGE_SIZE
                         end_idx = page * PAGE_SIZE
                         results = all_results[start_idx:end_idx]
                         has_next = end_idx < len(all_results)
                     else:
                         raise Exception(f"HTTP status: {response.status_code}")
+                
+                prefetch_covers_background(all_results)
                 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -2565,7 +2776,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 if not state["is_running"] and state["files"]:
                     state["is_running"] = True
                     state["should_stop"] = False
-                    workers_to_start = state["max_workers"]
+                    workers_to_start = get_effective_max_workers()
                     add_log(f"Download manager resumed/started with {workers_to_start} parallel workers.")
                     for _ in range(workers_to_start):
                         threading.Thread(target=download_worker, daemon=True).start()
@@ -2588,7 +2799,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     if not state["is_running"]:
                         state["is_running"] = True
                         state["should_stop"] = False
-                        workers_to_start = state["max_workers"]
+                        workers_to_start = get_effective_max_workers()
                         for _ in range(workers_to_start):
                             threading.Thread(target=download_worker, daemon=True).start()
                 self.send_response(200)
@@ -2673,7 +2884,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             
             httpd.captured_code = ""
             httpd.captured_error = ""
-            httpd.timeout = 300  # 5 minutes
+            httpd.timeout = 900  # 15 minutes
             
             # Store reference for polling
             _gdrive_pending_auth_httpd = httpd
@@ -2683,14 +2894,20 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             # Handle request in background thread
             def _auth_listener(h):
                 global _gdrive_pending_auth_code, _gdrive_pending_auth_error
-                try:
-                    h.handle_request()
-                    if getattr(h, "captured_code", ""):
-                        _gdrive_pending_auth_code = h.captured_code
-                    if getattr(h, "captured_error", ""):
-                        _gdrive_pending_auth_error = h.captured_error
-                except Exception:
-                    pass
+                import time
+                h.timeout = 2.0
+                start_time = time.time()
+                while time.time() - start_time < 900:
+                    if getattr(h, "captured_code", "") or getattr(h, "captured_error", ""):
+                        break
+                    try:
+                        h.handle_request()
+                    except Exception:
+                        pass
+                if getattr(h, "captured_code", ""):
+                    _gdrive_pending_auth_code = h.captured_code
+                if getattr(h, "captured_error", ""):
+                    _gdrive_pending_auth_error = h.captured_error
             
             threading.Thread(target=_auth_listener, args=(httpd,), daemon=True).start()
             
@@ -2831,7 +3048,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 
             httpd.captured_code = ""
             httpd.captured_error = ""
-            httpd.timeout = 300
+            httpd.timeout = 900
             
             _gdrive_pending_auth_httpd = httpd
             _gdrive_pending_auth_code = ""
@@ -2839,14 +3056,20 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             
             def _auth_listener(h):
                 global _gdrive_pending_auth_code, _gdrive_pending_auth_error
-                try:
-                    h.handle_request()
-                    if getattr(h, "captured_code", ""):
-                        _gdrive_pending_auth_code = h.captured_code
-                    if getattr(h, "captured_error", ""):
-                        _gdrive_pending_auth_error = h.captured_error
-                except:
-                    pass
+                import time
+                h.timeout = 2.0
+                start_time = time.time()
+                while time.time() - start_time < 900:
+                    if getattr(h, "captured_code", "") or getattr(h, "captured_error", ""):
+                        break
+                    try:
+                        h.handle_request()
+                    except Exception:
+                        pass
+                if getattr(h, "captured_code", ""):
+                    _gdrive_pending_auth_code = h.captured_code
+                if getattr(h, "captured_error", ""):
+                    _gdrive_pending_auth_error = h.captured_error
                     
             threading.Thread(target=_auth_listener, args=(httpd,), daemon=True).start()
             
@@ -2910,7 +3133,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             err_msg = ""
             try:
                 with state_lock:
-                    game_title = state.get("game_title") or "Forza Horizon 6"
+                    game_title = state.get("game_title") or "Among Us VR"
                 folder_name = urllib.parse.quote(game_title)
                 folder_url = f"https://drive.online-fix.me:2053/{folder_name}"
                 
@@ -3128,7 +3351,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         state["max_workers"] = workers
                         add_log(f"Max workers changed to: {workers}")
                         if state["is_running"]:
-                            needed = state["max_workers"] - state["active_workers_count"]
+                            needed = get_effective_max_workers() - state["active_workers_count"]
                             if needed > 0:
                                 add_log(f"Spawning {needed} additional worker threads.")
                                 for _ in range(needed):
@@ -3285,6 +3508,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         has_next = (soup.find('a', class_='next') is not None) or (soup.find('a', class_='next page-numbers') is not None)
                     else:
                         raise Exception(f"HTTP status: {response.status_code}")
+                
+                prefetch_covers_background(results)
                 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -3978,7 +4203,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 if was_running:
                     with state_lock:
                         state["is_running"] = True
-                        workers_to_start = state["max_workers"]
+                        workers_to_start = get_effective_max_workers()
                         add_log(f"Resuming download with new provider: {new_mirror}")
                         for _ in range(workers_to_start):
                             threading.Thread(target=download_worker, daemon=True).start()
@@ -4018,5 +4243,8 @@ if __name__ == "__main__":
         os.makedirs(os.path.join(os.getcwd(), "cover_cache"), exist_ok=True)
     except Exception:
         pass
-    threading.Thread(target=check_and_install_warp, daemon=True).start()
+    if os.path.exists("warp_skipped.txt"):
+        state["warp_status"] = "skipped"
+    else:
+        threading.Thread(target=check_and_install_warp, daemon=True).start()
     start_server()
