@@ -1125,7 +1125,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     elGameDescription.style.display = "none";
                 }
 
-                renderScreenshots(data.screenshots);
+                renderScreenshots(data.screenshots, data.videos);
 
                 // Toggle media column visibility and columns
                 const elMediaColumnCard = document.getElementById("media-column-card");
@@ -1218,12 +1218,20 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
     elChecklistLoadingSpinner.style.display = "flex";
     elActiveMirrorBadge.style.display = "none";
     
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+        controller.abort();
+    }, 20000); // 20s timeout
+    
     try {
         const response = await fetch("/api/analyze", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: mirrorUrl })
+            body: JSON.stringify({ url: mirrorUrl }),
+            signal: controller.signal
         });
+        
+        clearTimeout(timeoutId);
         
         const data = await response.json();
         if (response.ok && data.success) {
@@ -1244,8 +1252,13 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
             alert("Error loading mirror links: " + (data.error || "Unknown error"));
         }
     } catch (e) {
+        clearTimeout(timeoutId);
         console.error("Error loading mirror:", e);
-        alert("Failed to load mirror. Check internet connection.");
+        if (e.name === 'AbortError') {
+            alert("Timeout loading mirror links. Please try another mirror or check server status.");
+        } else {
+            alert("Failed to load mirror. Check internet connection.");
+        }
     } finally {
         elChecklistLoadingSpinner.style.display = "none";
     }
