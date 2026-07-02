@@ -3811,6 +3811,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             description = "\n\n".join(game_desc_paragraphs)
                             
                             for a in content_el.find_all('a'):
+                                # Skip links inside spoiler sections (download links, HV bypass info, etc.)
+                                if a.find_parent(class_='su-spoiler-content'):
+                                    continue
                                 href = a.get('href', '')
                                 img = a.find('img')
                                 img_src = img.get('src', '') if img else ''
