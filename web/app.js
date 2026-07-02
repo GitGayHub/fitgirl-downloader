@@ -518,6 +518,9 @@ function updateUI(newState) {
         const downloadsFinished = (newState.total_progress === 100 && newState.files.length > 0);
         
         if (!downloadsFinished) {
+            elExtractBtn.style.display = "none";
+            elInstallBtn.style.display = "none";
+            
             elExtractBtn.setAttribute("disabled", "true");
             elExtractBtn.classList.remove("btn-pulse-green");
             elExtractBtn.style.backgroundColor = "";
@@ -528,6 +531,9 @@ function updateUI(newState) {
             elInstallBtn.style.backgroundColor = "";
         } else {
             if (newState.is_extracted) {
+                elExtractBtn.style.display = "none";
+                elInstallBtn.style.display = "flex";
+                
                 elExtractBtn.setAttribute("disabled", "true");
                 elExtractBtn.classList.remove("btn-pulse-green");
                 elExtractBtn.style.backgroundColor = "#2c3e50";
@@ -537,6 +543,9 @@ function updateUI(newState) {
                 elInstallBtn.classList.add("btn-pulse-green");
                 elInstallBtn.style.backgroundColor = "#2ecc71";
             } else {
+                elExtractBtn.style.display = "flex";
+                elInstallBtn.style.display = "none";
+                
                 elInstallBtn.setAttribute("disabled", "true");
                 elInstallBtn.classList.remove("btn-pulse-green");
                 elInstallBtn.style.backgroundColor = "";
@@ -1970,7 +1979,8 @@ function syncViewState() {
         document.querySelector(".app-container").classList.remove("has-sidebar");
         document.querySelector(".sidebar").style.display = "none";
         
-        elSetupView.style.display = "none";
+        elSetupView.classList.add("hidden-view");
+        elDownloadView.classList.remove("hidden-view");
         elDownloadView.style.display = "flex";
         
         if (elMiniBadge) elMiniBadge.style.display = "none";
@@ -1978,8 +1988,8 @@ function syncViewState() {
         document.querySelector(".app-container").classList.remove("has-sidebar");
         document.querySelector(".sidebar").style.display = "none";
         
-        elSetupView.style.display = "flex";
-        elDownloadView.style.display = "none";
+        elSetupView.classList.remove("hidden-view");
+        elDownloadView.classList.add("hidden-view");
         
         if (elMiniBadge && appState.is_configured) {
             elMiniBadge.style.display = "flex";

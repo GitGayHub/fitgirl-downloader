@@ -2029,7 +2029,9 @@ body {
     z-index: 2;
 }
 
-.subview-container.hidden-view {
+.subview-container.hidden-view,
+.view-container.hidden-view {
+    display: none !important;
     opacity: 0;
     transform: translateY(20px);
     pointer-events: none;
@@ -2459,12 +2461,12 @@ details[open] .summary-toggle-icon {
     font-weight: 500;
 }
 
-/* Online-Fix specific horizontal aspect ratio cards */
+/* Online-Fix specific square cover cards */
 .onlinefix-card {
-    width: 250px !important;
+    width: 180px !important;
 }
 .onlinefix-card .card-cover-area {
-    height: 140px !important;
+    height: 180px !important;
 }
 
 /* Full-Screen Download Dashboard Styles */
