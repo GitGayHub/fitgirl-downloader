@@ -89,7 +89,8 @@ state = {
     "active_gdrive_account": "",
     "gdrive_session_cookies": {},
     "gdrive_client_id": "",
-    "gdrive_client_secret": ""
+    "gdrive_client_secret": "",
+    "original_size": ""
 }
 
 state_lock = threading.RLock()
@@ -2169,6 +2170,80 @@ def clean_and_parse_title(raw_title):
     title = re.sub(r'\s+', ' ', title)
     return title, version
 
+def fetch_steam_metadata(game_title):
+    import urllib.request, urllib.parse, json, re
+    # Clean the title slightly to improve search match
+    search_query = game_title
+    # Replace common unicode replacements and curly quotes
+    search_query = search_query.replace('\ufffd', "'").replace('’', "'").replace('‘', "'")
+    search_query = re.sub(r'[^a-zA-Z0-9\s\'\-\:]', '', search_query)
+    # Strip year from search query (e.g. "Game 2024" -> "Game") to improve search success
+    search_query = re.sub(r'\b\d{4}\b', '', search_query).strip()
+    
+    try:
+        with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
+            f_dbg.write(f"Steam API Search Query: '{search_query}' (original: '{game_title}')\n")
+        url = 'https://store.steampowered.com/api/storesearch/?term=' + urllib.parse.quote(search_query) + '&l=english&cc=US'
+        with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
+            f_dbg.write(f"Steam API Search URL: {url}\n")
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        res = urllib.request.urlopen(req, timeout=10).read()
+        data = json.loads(res)
+        with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
+            f_dbg.write(f"Steam API search results: {list(data.keys()) if data else 'Empty'}\n")
+            if data and data.get('items'):
+                f_dbg.write(f"Steam API items: {len(data['items'])} items found. First: {data['items'][0]['name']}\n")
+        if data.get('items'):
+            # Match the closest item by title or fallback to first
+            appid = data['items'][0]['id']
+            for item in data['items']:
+                if item.get('name', '').lower() == game_title.lower():
+                    appid = item['id']
+                    break
+            
+            # Fetch appdetails
+            details_url = 'https://store.steampowered.com/api/appdetails?appids=' + str(appid) + '&l=english'
+            details_req = urllib.request.Request(details_url, headers={'User-Agent': 'Mozilla/5.0'})
+            details_res = urllib.request.urlopen(details_req, timeout=10).read()
+            details_data = json.loads(details_res)
+            
+            if details_data.get(str(appid)) and details_data[str(appid)].get('success'):
+                g = details_data[str(appid)]['data']
+                
+                # Fetch reviews for score description and percentage
+                rating_str = ''
+                try:
+                    reviews_url = 'https://store.steampowered.com/appreviews/' + str(appid) + '?json=1&purchase_type=all'
+                    reviews_req = urllib.request.Request(reviews_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    reviews_res = urllib.request.urlopen(reviews_req, timeout=8).read()
+                    reviews_data = json.loads(reviews_res)
+                    if reviews_data.get('success') and reviews_data.get('query_summary'):
+                        qs = reviews_data['query_summary']
+                        tot = qs.get('total_reviews', 0)
+                        pos = qs.get('total_positive', 0)
+                        pct = round((pos / tot) * 100) if tot > 0 else 0
+                        desc = qs.get('review_score_desc', 'Positive')
+                        rating_str = f"{pct}% ({desc})"
+                except Exception:
+                    pass
+                
+                return {
+                    'description': g.get('short_description', ''),
+                    'developers': g.get('developers', []),
+                    'publishers': g.get('publishers', []),
+                    'release_date': g.get('release_date', {}).get('date', ''),
+                    'genres': [genre.get('description') for genre in g.get('genres', []) if genre.get('description')],
+                    'metacritic': g.get('metacritic', {}).get('score'),
+                    'screenshots': [s.get('path_full') for s in g.get('screenshots', [])],
+                    'header_image': g.get('header_image', ''),
+                    'steam_rating': rating_str
+                }
+    except Exception as e:
+        with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
+            f_dbg.write(f"Steam API error: {str(e)}\n")
+        add_log(f"Steam API metadata fetch error: {str(e)}")
+    return None
+
 def parse_online_fix_page(html, base_url):
     soup = BeautifulSoup(html, 'html.parser')
     articles = soup.find_all(class_=['article', 'article-short'])
@@ -3681,6 +3756,38 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                             screenshots.append(candidate)
                             screenshots = screenshots[:10]
 
+                        # Attempt to load premium metadata from Steam Store API
+                        steam_data = fetch_steam_metadata(title)
+                        
+                        developer_val = ""
+                        publisher_val = ""
+                        release_date_val = ""
+                        genres_val = []
+                        metacritic_val = None
+                        steam_rating_val = ""
+                        header_image_val = ""
+
+                        if steam_data:
+                            if steam_data.get('description'):
+                                description = steam_data['description']
+                            if steam_data.get('screenshots'):
+                                # Use high-quality Steam screenshots if found
+                                screenshots = steam_data['screenshots'][:10]
+                            if steam_data.get('developers'):
+                                developer_val = ", ".join(steam_data['developers'])
+                            if steam_data.get('publishers'):
+                                publisher_val = ", ".join(steam_data['publishers'])
+                            if steam_data.get('release_date'):
+                                release_date_val = steam_data['release_date']
+                            if steam_data.get('genres'):
+                                genres_val = steam_data['genres']
+                            if steam_data.get('metacritic'):
+                                metacritic_val = steam_data['metacritic']
+                            if steam_data.get('steam_rating'):
+                                steam_rating_val = steam_data['steam_rating']
+                            if steam_data.get('header_image'):
+                                header_image_val = steam_data['header_image']
+
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
@@ -3695,7 +3802,14 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "mirrors": mirrors,
                             "videos": videos,
                             "description": description,
-                            "screenshots": screenshots
+                            "screenshots": screenshots,
+                            "developer": developer_val,
+                            "publisher": publisher_val,
+                            "release_date": release_date_val,
+                            "genres": genres_val,
+                            "metacritic": metacritic_val,
+                            "steam_rating": steam_rating_val,
+                            "header_image": header_image_val
                         }).encode())
                         return
                     else:
@@ -4091,6 +4205,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     state["download_dir"] = os.path.abspath(computed_dir)
                     state["files"] = SafeList(files)
                     state["active_mirror"] = active_mirror
+                    state["original_size"] = data.get("original_size", "").strip()
                     state["is_configured"] = True
                     state["is_running"] = False
                     state["should_stop"] = False
@@ -4125,6 +4240,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 state["files"] = SafeList()
                 state["download_dir"] = ""
                 state["base_download_dir"] = ""
+                state["original_size"] = ""
                 state["is_configured"] = False
                 state["is_running"] = False
                 state["should_stop"] = False

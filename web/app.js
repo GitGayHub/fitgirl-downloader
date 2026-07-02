@@ -414,6 +414,16 @@ function updateUI(newState) {
         elActiveGameSubtitle.innerText = `Save directory: ${newState.download_dir}`;
         elDownloadDirDisplay.value = newState.download_dir;
         
+        const elActiveGameOriginalSize = document.getElementById("active-game-original-size");
+        if (elActiveGameOriginalSize) {
+            if (newState.original_size && newState.original_size !== "Unknown") {
+                elActiveGameOriginalSize.innerText = `Size after unpacking: ${newState.original_size}`;
+                elActiveGameOriginalSize.style.display = "block";
+            } else {
+                elActiveGameOriginalSize.style.display = "none";
+            }
+        }
+        
         // Sync mirror badge
         if (newState.active_mirror) {
             elDownloadMirrorBadge.innerText = `Mirror: ${newState.active_mirror}`;
@@ -834,9 +844,146 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     elBtnOpenBrowser.style.display = "inline-block";
                 }
                 
-                elMetadataOriginalSize.innerText = scrapedMetadata.original_size;
-                elMetadataRepackSize.innerText = scrapedMetadata.repack_size;
+                // Render Hero Banner backdrop
+                const heroBanner = document.getElementById("details-hero-banner");
+                const detailsSubtitle = document.getElementById("details-game-subtitle");
+                if (heroBanner) {
+                    const bannerUrl = data.header_image || (data.screenshots && data.screenshots.length > 0 ? data.screenshots[0] : scrapedMetadata.cover_image);
+                    if (bannerUrl) {
+                        heroBanner.style.backgroundImage = `url(${bannerUrl})`;
+                    } else {
+                        heroBanner.style.backgroundImage = "none";
+                    }
+                }
+                if (detailsSubtitle) {
+                    detailsSubtitle.innerText = data.developer || "FitGirl Repack";
+                }
                 
+                // Render description / About the Game
+                const descSection = document.getElementById("details-desc-section");
+                if (descSection && elGameDescription) {
+                    if (data.description) {
+                        elGameDescription.innerText = data.description;
+                        descSection.style.display = "block";
+                    } else {
+                        descSection.style.display = "none";
+                    }
+                }
+                
+                // Render Screenshots Gallery
+                const elScreenshotsSection = document.getElementById("game-screenshots-section");
+                const elScreenshotsContainer = document.getElementById("game-screenshots-container");
+                if (elScreenshotsSection && elScreenshotsContainer) {
+                    elScreenshotsContainer.innerHTML = "";
+                    if (data.screenshots && data.screenshots.length > 0) {
+                        data.screenshots.forEach(src => {
+                            const img = document.createElement("img");
+                            img.className = "screenshot-img";
+                            img.src = `/api/proxy_image?url=${encodeURIComponent(src)}`;
+                            img.alt = "Screenshot";
+                            img.addEventListener("click", () => {
+                                openScreenshotModal(img.src);
+                            });
+                            elScreenshotsContainer.appendChild(img);
+                        });
+                        elScreenshotsSection.style.display = "block";
+                    } else {
+                        elScreenshotsSection.style.display = "none";
+                    }
+                }
+                
+                // Populate Right-column database info
+                const rowDev = document.getElementById("row-developer");
+                const elDev = document.getElementById("details-developer");
+                if (rowDev && elDev) {
+                    if (data.developer) {
+                        elDev.innerText = data.developer;
+                        rowDev.style.display = "flex";
+                    } else {
+                        rowDev.style.display = "none";
+                    }
+                }
+                
+                const rowPub = document.getElementById("row-publisher");
+                const elPub = document.getElementById("details-publisher");
+                if (rowPub && elPub) {
+                    if (data.publisher) {
+                        elPub.innerText = data.publisher;
+                        rowPub.style.display = "flex";
+                    } else {
+                        rowPub.style.display = "none";
+                    }
+                }
+                
+                const rowRel = document.getElementById("row-release-date");
+                const elRel = document.getElementById("details-release-date");
+                if (rowRel && elRel) {
+                    if (data.release_date) {
+                        elRel.innerText = data.release_date;
+                        rowRel.style.display = "flex";
+                    } else {
+                        rowRel.style.display = "none";
+                    }
+                }
+                
+                const rowRate = document.getElementById("row-steam-rating");
+                const elRate = document.getElementById("details-steam-rating");
+                if (rowRate && elRate) {
+                    if (data.steam_rating) {
+                        elRate.innerText = data.steam_rating;
+                        rowRate.style.display = "flex";
+                    } else {
+                        rowRate.style.display = "none";
+                    }
+                }
+                
+                const rowGenres = document.getElementById("row-genres");
+                const elGenres = document.getElementById("details-genres");
+                if (rowGenres && elGenres) {
+                    if (data.genres && data.genres.length > 0) {
+                        elGenres.innerHTML = "";
+                        data.genres.forEach(g => {
+                            const span = document.createElement("span");
+                            span.className = "genre-pill";
+                            span.innerText = g;
+                            elGenres.appendChild(span);
+                        });
+                        rowGenres.style.display = "flex";
+                    } else {
+                        rowGenres.style.display = "none";
+                    }
+                }
+                
+                const rowUnpack = document.getElementById("row-unpack-size");
+                const elUnpack = document.getElementById("details-unpack-size");
+                if (rowUnpack && elUnpack) {
+                    if (scrapedMetadata.original_size && scrapedMetadata.original_size !== "Unknown") {
+                        elUnpack.innerText = scrapedMetadata.original_size;
+                        rowUnpack.style.display = "flex";
+                    } else {
+                        rowUnpack.style.display = "none";
+                    }
+                }
+                
+                // Populate Metacritic Score
+                const metacriticCard = document.getElementById("details-metacritic-card");
+                const metacriticScore = document.getElementById("details-metacritic-score");
+                if (metacriticCard && metacriticScore) {
+                    if (data.metacritic) {
+                        metacriticScore.innerText = data.metacritic;
+                        metacriticScore.className = "metacritic-score-badge";
+                        if (data.metacritic < 50) {
+                            metacriticScore.classList.add("red");
+                        } else if (data.metacritic < 75) {
+                            metacriticScore.classList.add("yellow");
+                        }
+                        metacriticCard.style.display = "flex";
+                    } else {
+                        metacriticCard.style.display = "none";
+                    }
+                }
+                
+                // Update sticky bottom download bar repack size
                 const detailsBottomBar = document.getElementById("details-bottom-bar");
                 const detailsBottomSize = document.getElementById("details-bottom-size");
                 if (detailsBottomBar && detailsBottomSize) {
@@ -844,32 +991,6 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     detailsBottomBar.style.display = "flex";
                 }
                 
-                // Render video trailer
-                const elVideoContainer = document.getElementById("details-video-container");
-                const elVideoIframe = document.getElementById("video-iframe");
-                if (elVideoContainer && elVideoIframe) {
-                    if (data.videos && data.videos.length > 0) {
-                        let videoUrl = data.videos[0];
-                        if (videoUrl.includes("youtube.com/watch?v=")) {
-                            const videoId = videoUrl.split("watch?v=")[1].split("&")[0];
-                            videoUrl = `https://www.youtube.com/embed/${videoId}`;
-                        } else if (videoUrl.includes("youtu.be/")) {
-                            const videoId = videoUrl.split("youtu.be/")[1].split("?")[0];
-                            videoUrl = `https://www.youtube.com/embed/${videoId}`;
-                        }
-                        if (videoUrl.startsWith("//")) {
-                            videoUrl = "https:" + videoUrl;
-                        }
-                        // Add autoplay & mute parameters to autoplay trailer seamlessly
-                        videoUrl += (videoUrl.includes("?") ? "&" : "?") + "autoplay=1&mute=1&enablejsapi=1";
-                        elVideoIframe.src = videoUrl;
-                        elVideoContainer.style.display = "block";
-                    } else {
-                        elVideoIframe.src = "";
-                        elVideoContainer.style.display = "none";
-                    }
-                }
-
                 if (scrapedMetadata.cover_image) {
                     const proxiedUrl = `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
                     getCachedImageUrl(proxiedUrl).then(cachedUrl => {
@@ -1121,32 +1242,48 @@ function displayConfigCard(title, files, url = "") {
     elMetadataOriginalSize.innerText = "N/A";
     elMetadataRepackSize.innerText = "N/A";
     
+    // Reset Hero Banner and Subtitle
+    const heroBanner = document.getElementById("details-hero-banner");
+    const detailsSubtitle = document.getElementById("details-game-subtitle");
+    if (heroBanner) {
+        heroBanner.style.backgroundImage = "none";
+    }
+    if (detailsSubtitle) {
+        detailsSubtitle.innerText = "Direct Link Queue";
+    }
+    
+    // Hide details page dynamic parts
+    const descSection = document.getElementById("details-desc-section");
+    if (descSection) descSection.style.display = "none";
+    
+    const elScreenshotsSection = document.getElementById("game-screenshots-section");
+    const elScreenshotsContainer = document.getElementById("game-screenshots-container");
+    if (elScreenshotsSection) elScreenshotsSection.style.display = "none";
+    if (elScreenshotsContainer) elScreenshotsContainer.innerHTML = "";
+    
+    // Reset metadata sidebar table
+    const sidebarRows = ["row-developer", "row-publisher", "row-release-date", "row-steam-rating", "row-genres", "row-unpack-size"];
+    sidebarRows.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = "none";
+    });
+    
+    const metacriticCard = document.getElementById("details-metacritic-card");
+    if (metacriticCard) metacriticCard.style.display = "none";
+    
     const detailsBottomBar = document.getElementById("details-bottom-bar");
     const detailsBottomSize = document.getElementById("details-bottom-size");
     if (detailsBottomBar && detailsBottomSize) {
         detailsBottomSize.innerText = "Direct Link";
         detailsBottomBar.style.display = "flex";
     }
-    elSetupCover.src = "";
-    elSetupCover.style.display = "none";
-    elSetupCoverPlaceholder.style.display = "flex";
-    clearDynamicBackground();
     
-    const elMediaColumnCard = document.getElementById("media-column-card");
-    if (elMediaColumnCard) elMediaColumnCard.style.display = "none";
-    if (elGameInfoCard) elGameInfoCard.style.display = "none";
-    if (elSetupDashboard) {
-        elSetupDashboard.style.setProperty("--details-grid-columns", "260px 1fr");
-        elSetupDashboard.classList.add("no-info-card");
-    }
+    clearDynamicBackground();
     
     rawFilesList = files;
     initCheckedFiles(files);
     
     configureRussianSorting(files);
-    
-    elSetupDashboard.style.display = "grid";
-    elConfigCard.style.display = "block";
     
     updateChecklistSorted();
     setViewState("details");
@@ -1562,6 +1699,7 @@ elConfirmQueueBtn.addEventListener("click", async () => {
                 download_dir: downloadDir,
                 files: selectedFiles,
                 active_mirror: activeMirrorName,
+                original_size: scrapedMetadata.original_size,
                 gofile_proxy: elChkGofileProxy ? elChkGofileProxy.checked : false
             })
         });
