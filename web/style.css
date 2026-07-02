@@ -3190,7 +3190,7 @@ details[open] .summary-toggle-icon {
 /* 2-Column Grid Details Layout */
 .details-columns-layout {
     display: grid;
-    grid-template-columns: 200px 1fr;
+    grid-template-columns: 130px 1fr;
     gap: 24px;
     width: 100%;
     align-items: start;

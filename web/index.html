@@ -259,22 +259,6 @@
                                         <span class="table-label">Repack Size</span>
                                         <span class="table-value highlight-pink" id="details-fg-repack-size" style="text-align: right;">--</span>
                                     </div>
-                                    <div class="metadata-table-row" id="row-unpack-size" style="display: none;">
-                                        <span class="table-label">Size after Unpacking</span>
-                                        <span class="table-value highlight-green" id="details-unpack-size" style="text-align: right;">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-developer" style="display: none;">
-                                        <span class="table-label">Developer</span>
-                                        <span class="table-value" id="details-developer" style="text-align: right;">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-release-date" style="display: none;">
-                                        <span class="table-label">Release Date</span>
-                                        <span class="table-value" id="details-release-date" style="text-align: right;">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-steam-rating" style="display: none;">
-                                        <span class="table-label">All Time Rating</span>
-                                        <span class="table-value" id="details-steam-rating" style="text-align: right;">--</span>
-                                    </div>
                                 </div>
                             </div>
                             
@@ -314,8 +298,10 @@
                                      <div class="screenshot-main-showcase" id="screenshot-main-showcase-container">
                                          <!-- Main Showcase Image -->
                                          <img id="screenshot-main-img" src="" alt="Gameplay Preview">
-                                         <!-- Main Showcase Video Iframe (hidden by default) -->
-                                         <iframe id="screenshot-main-video" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0;"></iframe>
+                                         <!-- Main Showcase Video player for direct mp4/webm videos -->
+                                         <video id="screenshot-main-direct-video" controls autoplay muted loop style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0; object-fit: cover;"></video>
+                                         <!-- Main Showcase Video Iframe for YouTube (hidden by default) -->
+                                         <iframe id="screenshot-main-video" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0;"></iframe >
                                      </div>
                                      <div id="game-screenshots-container" class="screenshots-grid"></div>
                                  </div>

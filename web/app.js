@@ -932,40 +932,6 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 // Render Screenshots & Videos Gallery
                 renderScreenshots(data.screenshots, data.videos);
                 
-                // Populate Left-column database info
-                const rowDev = document.getElementById("row-developer");
-                const elDev = document.getElementById("details-developer");
-                if (rowDev && elDev) {
-                    if (data.developer) {
-                        elDev.innerText = data.developer;
-                        rowDev.style.display = "flex";
-                    } else {
-                        rowDev.style.display = "none";
-                    }
-                }
-                
-                const rowRel = document.getElementById("row-release-date");
-                const elRel = document.getElementById("details-release-date");
-                if (rowRel && elRel) {
-                    if (data.release_date) {
-                        elRel.innerText = data.release_date;
-                        rowRel.style.display = "flex";
-                    } else {
-                        rowRel.style.display = "none";
-                    }
-                }
-                
-                const rowRate = document.getElementById("row-steam-rating");
-                const elRate = document.getElementById("details-steam-rating");
-                if (rowRate && elRate) {
-                    if (data.steam_rating) {
-                        elRate.innerText = data.steam_rating;
-                        rowRate.style.display = "flex";
-                    } else {
-                        rowRate.style.display = "none";
-                    }
-                }
-
                 // Populate FitGirl website metadata fields
                 const rowFgGenres = document.getElementById("row-fg-genres");
                 const elFgGenres = document.getElementById("details-fg-genres");
@@ -1019,17 +985,6 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         rowFgRepackSize.style.display = "flex";
                     } else {
                         rowFgRepackSize.style.display = "none";
-                    }
-                }
-                
-                const rowUnpack = document.getElementById("row-unpack-size");
-                const elUnpack = document.getElementById("details-unpack-size");
-                if (rowUnpack && elUnpack) {
-                    if (scrapedMetadata.original_size && scrapedMetadata.original_size !== "Unknown") {
-                        elUnpack.innerText = scrapedMetadata.original_size;
-                        rowUnpack.style.display = "flex";
-                    } else {
-                        rowUnpack.style.display = "none";
                     }
                 }
                 
@@ -3405,7 +3360,48 @@ function renderScreenshots(screenshotsList, videosList) {
     const elScreenshotsContainer = document.getElementById("game-screenshots-container");
     const elMainScreenshotImg = document.getElementById("screenshot-main-img");
     const elMainVideoIframe = document.getElementById("screenshot-main-video");
+    const elMainDirectVideo = document.getElementById("screenshot-main-direct-video");
     const elMainScreenshotShowcase = document.getElementById("screenshot-main-showcase-container");
+
+    function playVideo(videoUrl) {
+        const isDirect = videoUrl.includes(".webm") || videoUrl.includes(".mp4") || videoUrl.includes(".ogg") || videoUrl.includes("/store_trailers/");
+        
+        if (isDirect) {
+            if (elMainDirectVideo) {
+                elMainDirectVideo.src = videoUrl;
+                elMainDirectVideo.style.display = "block";
+                elMainDirectVideo.play().catch(e => console.log("Auto-play blocked:", e));
+            }
+            if (elMainVideoIframe) {
+                elMainVideoIframe.src = "";
+                elMainVideoIframe.style.display = "none";
+            }
+        } else {
+            if (elMainVideoIframe) {
+                elMainVideoIframe.src = videoUrl;
+                elMainVideoIframe.style.display = "block";
+            }
+            if (elMainDirectVideo) {
+                elMainDirectVideo.src = "";
+                elMainDirectVideo.style.display = "none";
+            }
+        }
+        if (elMainScreenshotImg) {
+            elMainScreenshotImg.style.display = "none";
+        }
+    }
+
+    function stopVideo() {
+        if (elMainDirectVideo) {
+            elMainDirectVideo.pause();
+            elMainDirectVideo.src = "";
+            elMainDirectVideo.style.display = "none";
+        }
+        if (elMainVideoIframe) {
+            elMainVideoIframe.src = "";
+            elMainVideoIframe.style.display = "none";
+        }
+    }
 
     if (elScreenshotsSection && elScreenshotsContainer) {
         elScreenshotsContainer.innerHTML = "";
@@ -3416,13 +3412,7 @@ function renderScreenshots(screenshotsList, videosList) {
         if (hasVideos || hasScreenshots) {
             // Setup default main preview
             if (hasVideos) {
-                if (elMainVideoIframe) {
-                    elMainVideoIframe.src = videosList[0];
-                    elMainVideoIframe.style.display = "block";
-                }
-                if (elMainScreenshotImg) {
-                    elMainScreenshotImg.style.display = "none";
-                }
+                playVideo(videosList[0]);
             } else if (hasScreenshots) {
                 const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
                 if (elMainScreenshotImg) {
@@ -3432,10 +3422,7 @@ function renderScreenshots(screenshotsList, videosList) {
                         openScreenshotModal(elMainScreenshotImg.src);
                     };
                 }
-                if (elMainVideoIframe) {
-                    elMainVideoIframe.src = "";
-                    elMainVideoIframe.style.display = "none";
-                }
+                stopVideo();
             }
 
             if (elMainScreenshotShowcase) {
@@ -3457,13 +3444,7 @@ function renderScreenshots(screenshotsList, videosList) {
                     `;
                     
                     thumbWrapper.addEventListener("click", () => {
-                        if (elMainVideoIframe) {
-                            elMainVideoIframe.src = videoUrl;
-                            elMainVideoIframe.style.display = "block";
-                        }
-                        if (elMainScreenshotImg) {
-                            elMainScreenshotImg.style.display = "none";
-                        }
+                        playVideo(videoUrl);
                         elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img").forEach(i => i.classList.remove("active"));
                         thumbWrapper.classList.add("active");
                     });
@@ -3481,10 +3462,7 @@ function renderScreenshots(screenshotsList, videosList) {
                     if (!hasVideos && idx === 0) img.className = "active";
                     
                     img.addEventListener("click", () => {
-                        if (elMainVideoIframe) {
-                            elMainVideoIframe.src = "";
-                            elMainVideoIframe.style.display = "none";
-                        }
+                        stopVideo();
                         if (elMainScreenshotImg) {
                             elMainScreenshotImg.src = proxiedSrc;
                             elMainScreenshotImg.style.display = "block";

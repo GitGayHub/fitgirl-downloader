@@ -3825,11 +3825,16 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         if candidate not in screenshots and candidate != cover_image:
                                             screenshots.append(candidate)
                             screenshots = screenshots[:10]
-                        
-                        fitgirl_gifs = [s for s in screenshots if s.lower().endswith('.gif')]
-
-                        # Attempt to load premium metadata from Steam Store API
-                        steam_data = fetch_steam_metadata(title)
+                            
+                            # Extract gameplay direct video tag trailers from FitGirl page
+                            for video in content_el.find_all('video'):
+                                source = video.find('source')
+                                video_src = source.get('src', '') if source else video.get('src', '')
+                                if video_src:
+                                    if video_src.startswith('//'):
+                                        video_src = 'https:' + video_src
+                                    if video_src not in videos:
+                                        videos.append(video_src)
                         
                         developer_val = ""
                         publisher_val = ""
@@ -3838,28 +3843,6 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         metacritic_val = None
                         steam_rating_val = ""
                         header_image_val = ""
-
-                        if steam_data:
-                            if steam_data.get('description'):
-                                description = steam_data['description']
-                            if steam_data.get('screenshots'):
-                                # Use high-quality Steam screenshots if found, but keep any FitGirl VOs or GIFs!
-                                screenshots = fitgirl_gifs + [s for s in steam_data['screenshots'] if s not in fitgirl_gifs]
-                                screenshots = screenshots[:12]
-                            if steam_data.get('developers'):
-                                developer_val = ", ".join(steam_data['developers'])
-                            if steam_data.get('publishers'):
-                                publisher_val = ", ".join(steam_data['publishers'])
-                            if steam_data.get('release_date'):
-                                release_date_val = steam_data['release_date']
-                            if steam_data.get('genres'):
-                                genres_val = steam_data['genres']
-                            if steam_data.get('metacritic'):
-                                metacritic_val = steam_data['metacritic']
-                            if steam_data.get('steam_rating'):
-                                steam_rating_val = steam_data['steam_rating']
-                            if steam_data.get('header_image'):
-                                header_image_val = steam_data['header_image']
 
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
