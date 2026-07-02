@@ -218,14 +218,15 @@
                     </div>
 
                     <!-- Main Columns Grid Layout -->
+                    <!-- Main Columns Grid Layout -->
                     <div class="details-columns-layout">
                         
-                        <!-- Left Column: Game Cover & Metadata Info -->
+                        <!-- Left Column: Game Cover & Metadata Info & Collapsible Description -->
                         <div class="details-left-column">
                             
                             <!-- Game Vertical Cover Card -->
                             <div class="details-cover-card" id="details-cover-card" style="margin-bottom: 15px; display: none;">
-                                <img id="details-cover-image" src="" alt="Game Cover" style="width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                                <img id="details-cover-image" src="" alt="Game Cover" style="width: 100%; aspect-ratio: 2/3; object-fit: contain; background: #06060c; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
                                 <div id="details-cover-placeholder" class="card-cover-placeholder" style="width: 100%; aspect-ratio: 2/3; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1b1c2e, #0c0d16); border: 1px solid rgba(255,255,255,0.08);">
                                     <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.45; color: var(--text-muted);">
                                         <rect x="2" y="6" width="20" height="12" rx="3"></rect>
@@ -261,18 +262,9 @@
                                     </div>
                                 </div>
                             </div>
-                            
-                            <!-- Metacritic Card (kept hidden to not break JS selector references) -->
-                            <div class="metacritic-card-box" id="details-metacritic-card" style="display: none !important;">
-                                <div class="metacritic-score-badge" id="details-metacritic-score">--</div>
-                            </div>
-                        </div>
-                        
-                        <!-- Right Column: Description, Features, Screenshots, and Files Checklist -->
-                        <div class="details-right-column">
-                            
-                            <!-- Description Collapsible Card -->
-                            <div class="details-section-card collapsible-section" id="details-desc-section" style="display: none;">
+
+                            <!-- Description Collapsible Card (Moved under repack size metadata) -->
+                            <div class="details-section-card collapsible-section" id="details-desc-section" style="display: none; width: 100%; margin-top: 10px;">
                                 <div class="collapsible-header" id="details-desc-header">
                                     <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Game Description</h3>
                                 </div>
@@ -280,18 +272,17 @@
                                     <div id="game-description" class="section-description-text" style="font-size: 0.85rem; line-height: 1.5; color: var(--text-white); margin-top: 10px;"></div>
                                 </div>
                             </div>
-
-                            <!-- Repack Features Collapsible Card -->
-                            <div class="details-section-card collapsible-section" id="details-features-section" style="display: none;">
-                                <div class="collapsible-header" id="details-features-header">
-                                    <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Repack Features</h3>
-                                </div>
-                                <div class="collapsible-content" id="details-features-content">
-                                    <ul id="repack-features-list" style="font-size: 0.85rem; line-height: 1.6; color: var(--text-white); margin-top: 10px; padding-left: 20px; list-style-type: disc;"></ul>
-                                </div>
-                            </div>
                             
-                            <!-- Screenshots / Gameplay Preview Gallery -->
+                            <!-- Metacritic Card (kept hidden to not break JS selector references) -->
+                            <div class="metacritic-card-box" id="details-metacritic-card" style="display: none !important;">
+                                <div class="metacritic-score-badge" id="details-metacritic-score">--</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Right Column: Screenshots, Features, and Files Checklist -->
+                        <div class="details-right-column">
+                            
+                            <!-- Screenshots / Gameplay Preview Gallery (Moved to top of right column) -->
                              <div class="details-section-card" id="game-screenshots-section" style="display: none;">
                                  <h3 class="section-title">Gameplay Preview</h3>
                                  <div class="screenshots-gallery-wrapper" style="margin-top: 15px;">
@@ -306,6 +297,16 @@
                                      <div id="game-screenshots-container" class="screenshots-grid"></div>
                                  </div>
                              </div>
+
+                            <!-- Repack Features Collapsible Card (Moved under screenshots) -->
+                            <div class="details-section-card collapsible-section" id="details-features-section" style="display: none;">
+                                <div class="collapsible-header" id="details-features-header">
+                                    <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Repack Features</h3>
+                                </div>
+                                <div class="collapsible-content" id="details-features-content">
+                                    <ul id="repack-features-list" style="font-size: 0.85rem; line-height: 1.6; color: var(--text-white); margin-top: 10px; padding-left: 20px; list-style-type: disc;"></ul>
+                                </div>
+                            </div>
                             
                             <!-- Files Checklist Box -->
                             <div class="details-section-card" id="details-files-card">
