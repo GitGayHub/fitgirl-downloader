@@ -1119,8 +1119,26 @@ elAnalyzeBtn.addEventListener("click", async () => {
 
                 // Render description & screenshots
                 if (elGameDescription && data.description) {
-                    elGameDescription.innerText = data.description;
+                    elGameDescription.innerText = "Translating description...";
                     elGameDescription.style.display = "block";
+                    
+                    // Auto translate description to Russian on load
+                    translateText(data.description).then(translated => {
+                        translatedDesc = translated;
+                        originalDesc = data.description;
+                        elGameDescription.innerText = translated;
+                        isDescTranslated = true;
+                        if (btnTranslateDesc) {
+                            btnTranslateDesc.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>Original</span>";
+                        }
+                    }).catch(err => {
+                        console.error("Auto-translate description failed:", err);
+                        elGameDescription.innerText = data.description;
+                        isDescTranslated = false;
+                        if (btnTranslateDesc) {
+                            btnTranslateDesc.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>Translate</span>";
+                        }
+                    });
                 } else if (elGameDescription) {
                     elGameDescription.innerText = "";
                     elGameDescription.style.display = "none";
@@ -3477,11 +3495,17 @@ function renderScreenshots(screenshotsList, videosList) {
     const elMainScreenshotShowcase = document.getElementById("screenshot-main-showcase-container");
 
     function playVideo(videoUrl) {
-        const isDirect = videoUrl.includes(".webm") || videoUrl.includes(".mp4") || videoUrl.includes(".ogg") || videoUrl.includes("/store_trailers/");
+        let playUrl = videoUrl;
+        if (playUrl.includes("steamstatic") && playUrl.includes(".webm")) {
+            playUrl = playUrl.replace(/\.webm($|\?)/, ".mp4$1");
+        }
+        
+        const isDirect = playUrl.includes(".webm") || playUrl.includes(".mp4") || playUrl.includes(".ogg") || playUrl.includes("/store_trailers/");
         
         if (isDirect) {
             if (elMainDirectVideo) {
-                elMainDirectVideo.src = videoUrl;
+                elMainDirectVideo.src = playUrl;
+                elMainDirectVideo.preload = "auto";
                 elMainDirectVideo.muted = true;
                 elMainDirectVideo.defaultMuted = true;
                 elMainDirectVideo.autoplay = true;
@@ -3870,6 +3894,17 @@ if (downloadConfigModal) {
                 downloadConfigModal.style.display = "none";
             }, 250);
         }
+    });
+}
+
+// Close button click handler inside modal card
+const elCloseDownloadModalBtn = document.getElementById("btn-close-download-modal");
+if (elCloseDownloadModalBtn && downloadConfigModal) {
+    elCloseDownloadModalBtn.addEventListener("click", () => {
+        downloadConfigModal.classList.remove("active");
+        setTimeout(() => {
+            downloadConfigModal.style.display = "none";
+        }, 250);
     });
 }
 

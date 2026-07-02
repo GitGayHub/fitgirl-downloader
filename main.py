@@ -14,6 +14,8 @@ import requests
 original_request = requests.Session.request
 def patched_request(self, *args, **kwargs):
     kwargs['verify'] = False
+    if 'timeout' not in kwargs:
+        kwargs['timeout'] = 15
     return original_request(self, *args, **kwargs)
 requests.Session.request = patched_request
 
@@ -3745,7 +3747,19 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     if isinstance(curr, str):
                                         continue
                                     if curr.name == 'ul':
-                                        repack_features_list = [li.get_text(strip=True) for li in curr.find_all('li')]
+                                        repack_features_list = []
+                                        for li in curr.find_all('li'):
+                                            parts = []
+                                            for c in li.contents:
+                                                if getattr(c, 'name', None) in ['li', 'ul', 'ol']:
+                                                    continue
+                                                if hasattr(c, 'get_text'):
+                                                    parts.append(c.get_text())
+                                                else:
+                                                    parts.append(str(c))
+                                            item_text = "".join(parts).strip()
+                                            if item_text:
+                                                repack_features_list.append(item_text)
                                         break
                                     if curr.name == 'p' and (curr.find('br') or len(curr.get_text()) > 100):
                                         repack_features_list = [line.strip() for line in curr.get_text().split('\n') if line.strip()]
@@ -3813,9 +3827,6 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             description = "\n\n".join(game_desc_paragraphs)
                             
                             for a in content_el.find_all('a'):
-                                # Skip links inside spoiler sections (download links, HV bypass info, etc.)
-                                if a.find_parent(class_='su-spoiler-content'):
-                                    continue
                                 href = a.get('href', '')
                                 img = a.find('img')
                                 img_src = img.get('src', '') if img else ''
@@ -4179,8 +4190,18 @@ class APIRequestHandler(BaseHTTPRequestHandler):
 
                 # PrivateBin URL directly
                 elif "paste.fitgirl-repacks.site" in url:
-                    add_log(f"Loading paste: {url}")
-                    res_paste = privatebinapi.get(url)
+                    add_log(f"Loading paste via curl_cffi: {url}")
+                    headers = {
+                        'X-Requested-With': 'JSONHttpRequest',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                    resp = cf_requests.get(url, headers=headers, impersonate="chrome", timeout=15)
+                    if resp.status_code != 200:
+                        raise Exception(f"PrivateBin server returned status code {resp.status_code}")
+                    
+                    from privatebinapi.download import decrypt_paste, extract_passphrase
+                    data = resp.json()
+                    res_paste = decrypt_paste(data, extract_passphrase(url))
                     text = res_paste.get('text', '')
                     if not text:
                         self.send_response(500)

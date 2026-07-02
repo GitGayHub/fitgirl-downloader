@@ -636,8 +636,14 @@
 
     <!-- iOS-style Mirror & Config Selector Modal (Step 1 & Step 2) -->
     <div class="modal-overlay" id="download-config-modal" style="display: none;">
-        <div class="modal-card" style="max-width: 620px; width: 90%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 25px;">
-            <div class="modal-drag-handle" style="margin-bottom: 12px; flex-shrink: 0;"></div>
+        <div class="modal-card" style="position: relative; max-width: 620px; width: 90%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 25px;">
+            <button class="modal-close-btn" id="btn-close-download-modal" style="position: absolute; top: 18px; right: 18px; width: 32px; height: 32px; border-radius: 50%; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: rgba(255,255,255,0.75); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s ease; z-index: 100;" title="Close">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+            <div class="modal-drag-handle" style="margin-bottom: 12px; flex-shrink: 0; padding-right: 40px;"></div>
             
             <div style="flex: 1; overflow-y: auto; padding-right: 4px;">
                 <!-- Step 1 Layout -->
