@@ -714,14 +714,28 @@
         </div>
     </div>
     <!-- Floating Download Mini-Badge (visible during browsing when download is active) -->
-    <div id="floating-download-badge" style="display: none;" class="floating-badge">
-        <svg class="progress-ring" width="36" height="36">
-            <circle class="progress-ring-bg" stroke="rgba(255,255,255,0.1)" stroke-width="3" fill="transparent" r="15" cx="18" cy="18"/>
-            <circle class="progress-ring-bar" id="mini-progress-bar" stroke="var(--color-accent)" stroke-width="3" fill="transparent" r="15" cx="18" cy="18" stroke-dasharray="94" stroke-dashoffset="94"/>
-        </svg>
-        <div class="badge-info">
-            <span class="badge-title" id="mini-game-title">Forza Horizon 6</span>
-            <span class="badge-status" id="mini-game-status">0.0 MB/s · 0%</span>
+    <div id="floating-download-badge" style="display: none;" class="floating-download-bar">
+        <div class="floating-bar-main-click" id="floating-bar-click-area">
+            <div class="floating-bar-top-row">
+                <span class="floating-bar-title" id="mini-game-title">Game Title</span>
+                <span class="floating-bar-eta" id="mini-game-eta">Remaining: --</span>
+                <span class="floating-bar-status" id="mini-game-status">0 kB/s | 0 MB / 0 GB</span>
+            </div>
+            <div class="floating-bar-progress-container">
+                <div class="floating-bar-progress-fill" id="mini-progress-bar-fill" style="width: 0%;"></div>
+            </div>
+        </div>
+        <div class="floating-bar-controls">
+            <button class="floating-control-btn" id="mini-btn-play-pause" title="Pause/Resume">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+            </button>
+            <button class="floating-control-btn" id="mini-btn-cancel" title="Cancel Download">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z"/>
+                </svg>
+            </button>
         </div>
     </div>
 </body>

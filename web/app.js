@@ -1888,19 +1888,57 @@ function updateMiniBadge(newState) {
         elMiniBadge.style.display = "flex";
         
         const elMiniTitle = document.getElementById("mini-game-title");
+        const elMiniEta = document.getElementById("mini-game-eta");
         const elMiniStatus = document.getElementById("mini-game-status");
-        const elMiniProgressBar = document.getElementById("mini-progress-bar");
+        const elMiniProgressBarFill = document.getElementById("mini-progress-bar-fill");
         
         if (elMiniTitle) elMiniTitle.innerText = newState.game_title || "Downloading";
         
-        // speed and progress
+        // Check if there is an active downloading task or install/extract
         const isDownloading = newState.files && newState.files.some(f => f.status === "downloading");
-        const speedText = isDownloading ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed) : "0.0 MB/s";
-        if (elMiniStatus) elMiniStatus.innerText = `${speedText} · ${newState.total_progress}%`;
         
-        if (elMiniProgressBar) {
-            const offset = 94 - (94 * newState.total_progress) / 100;
-            elMiniProgressBar.style.strokeDashoffset = offset;
+        // speed and progress
+        const speedText = isDownloading ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed) : "0.0 MB/s";
+        
+        // Format downloaded / total size
+        const totalBytes = newState.files ? newState.files.reduce((acc, f) => acc + (f.size || 0), 0) : 0;
+        const downloadedBytes = newState.files ? newState.files.reduce((acc, f) => acc + (f.downloaded || 0), 0) : 0;
+        const totalSizeText = formatBytes(totalBytes);
+        const downloadedSizeText = formatBytes(downloadedBytes);
+        
+        if (elMiniStatus) {
+            elMiniStatus.innerText = `${speedText} | ${downloadedSizeText} / ${totalSizeText}`;
+        }
+        
+        // ETA calculation
+        if (elMiniEta) {
+            if (newState.is_running && isDownloading && smoothedSpeed > 0) {
+                const remainingBytes = totalBytes - downloadedBytes;
+                const etaSeconds = Math.max(0, remainingBytes / smoothedSpeed);
+                elMiniEta.innerText = "Remaining: " + formatTime(etaSeconds);
+            } else if (!newState.is_running) {
+                elMiniEta.innerText = "Paused";
+            } else {
+                elMiniEta.innerText = "Checking files...";
+            }
+        }
+        
+        if (elMiniProgressBarFill) {
+            elMiniProgressBarFill.style.width = `${newState.total_progress}%`;
+        }
+
+        // Update the play/pause button state in mini-badge
+        const playPauseBtn = document.getElementById("mini-btn-play-pause");
+        if (playPauseBtn) {
+            playPauseBtn.innerHTML = newState.is_running ? `
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+            ` : `
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M8 5v14l11-7z"/>
+                </svg>
+            `;
         }
     } else {
         elMiniBadge.style.display = "none";
@@ -3535,12 +3573,48 @@ if (elBackToCatalogBtnDownload) {
     });
 }
 
-// Bind floating mini download badge
+// Bind floating mini download badge click and controls
 const elMiniBadge = document.getElementById("floating-download-badge");
 if (elMiniBadge) {
-    elMiniBadge.addEventListener("click", () => {
-        setViewState("downloading");
-    });
+    const elClickArea = document.getElementById("floating-bar-click-area");
+    if (elClickArea) {
+        elClickArea.addEventListener("click", () => {
+            setViewState("downloading");
+        });
+    }
+    
+    const playPauseBtn = document.getElementById("mini-btn-play-pause");
+    if (playPauseBtn) {
+        playPauseBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const api = appState.is_running ? "/api/pause" : "/api/start";
+            try {
+                const response = await fetch(api, { method: "POST" });
+                if (response.ok) {
+                    fetchState();
+                }
+            } catch (e) {
+                console.error("Error toggling download status from floating bar:", e);
+            }
+        });
+    }
+    
+    const cancelBtn = document.getElementById("mini-btn-cancel");
+    if (cancelBtn) {
+        cancelBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (confirm("Вы уверены, что хотите остановить и сбросить текущую загрузку?")) {
+                try {
+                    const response = await fetch("/api/reset", { method: "POST" });
+                    if (response.ok) {
+                        fetchState();
+                    }
+                } catch (e) {
+                    console.error("Error resetting queue from floating bar:", e);
+                }
+            }
+        });
+    }
 }
 
 // Start Polling Loop
