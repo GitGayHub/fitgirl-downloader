@@ -6,3 +6,4 @@ scratch/
 *.html
 *.jpg
 gdrive_chrome_profile/
+.playwright_profile/

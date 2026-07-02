@@ -837,6 +837,13 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 elMetadataOriginalSize.innerText = scrapedMetadata.original_size;
                 elMetadataRepackSize.innerText = scrapedMetadata.repack_size;
                 
+                const detailsBottomBar = document.getElementById("details-bottom-bar");
+                const detailsBottomSize = document.getElementById("details-bottom-size");
+                if (detailsBottomBar && detailsBottomSize) {
+                    detailsBottomSize.innerText = scrapedMetadata.repack_size !== "Unknown" ? scrapedMetadata.repack_size : "Size Unknown";
+                    detailsBottomBar.style.display = "flex";
+                }
+                
                 // Render video trailer
                 const elVideoContainer = document.getElementById("details-video-container");
                 const elVideoIframe = document.getElementById("video-iframe");
@@ -922,6 +929,9 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         });
                         elMirrorsContainer.appendChild(pill);
                     });
+                    
+                    // Populate new premium modal mirrors list
+                    populateModalMirrors(filteredMirrors);
                     
                     // Auto click first mirror pill
                     elMirrorsContainer.querySelector(".mirror-pill").click();
@@ -1110,6 +1120,13 @@ function displayConfigCard(title, files, url = "") {
     
     elMetadataOriginalSize.innerText = "N/A";
     elMetadataRepackSize.innerText = "N/A";
+    
+    const detailsBottomBar = document.getElementById("details-bottom-bar");
+    const detailsBottomSize = document.getElementById("details-bottom-size");
+    if (detailsBottomBar && detailsBottomSize) {
+        detailsBottomSize.innerText = "Direct Link";
+        detailsBottomBar.style.display = "flex";
+    }
     elSetupCover.src = "";
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
@@ -1758,6 +1775,8 @@ function syncViewState() {
             elCatalogContainer.classList.remove("hidden-view");
             elGameDetailsContainer.classList.add("hidden-view");
             clearDynamicBackground();
+            const detailsBottomBar = document.getElementById("details-bottom-bar");
+            if (detailsBottomBar) detailsBottomBar.style.display = "none";
         } else if (viewState === "details") {
             elCatalogContainer.classList.add("hidden-view");
             elGameDetailsContainer.classList.remove("hidden-view");
@@ -1836,11 +1855,13 @@ function animateCSSColorVariables(targetPrimary, targetSecondary, duration = 400
         const primary = `rgb(${rP}, ${gP}, ${bP})`;
         const secondary = `rgb(${rS}, ${gS}, ${bS})`;
         const glow = `rgba(${rP}, ${gP}, ${bP}, 0.35)`;
-        const border = `rgba(${rP}, ${gP}, ${bP}, 0.15)`;
+        const secondaryGlow = `rgba(${rS}, ${gS}, ${bS}, 0.28)`;
+        const border = `rgba(${rS}, ${gS}, ${bS}, 0.15)`;
         
         document.documentElement.style.setProperty('--color-primary', primary);
         document.documentElement.style.setProperty('--color-secondary', secondary);
         document.documentElement.style.setProperty('--color-primary-glow', glow);
+        document.documentElement.style.setProperty('--color-secondary-glow', secondaryGlow);
         document.documentElement.style.setProperty('--border-glow', border);
         
         if (progress < 1) {
@@ -2223,6 +2244,11 @@ function showDetailsLoadingState(gameTitle) {
     if (elBtnOpenBrowser) elBtnOpenBrowser.style.display = "none";
     elMetadataOriginalSize.innerText = "--";
     elMetadataRepackSize.innerText = "--";
+    
+    const detailsBottomBar = document.getElementById("details-bottom-bar");
+    const detailsBottomSize = document.getElementById("details-bottom-size");
+    if (detailsBottomSize) detailsBottomSize.innerText = "--";
+    if (detailsBottomBar) detailsBottomBar.style.display = "none";
     
     const elVideoContainer = document.getElementById("details-video-container");
     const elVideoIframe = document.getElementById("video-iframe");
@@ -3188,3 +3214,125 @@ if (elMiniBadge) {
 // Start Polling Loop
 fetchState();
 setInterval(fetchState, 1000);
+
+// iOS-style Premium Selection Modal and Details Bottom Bar Integration
+const elModalSaveDirInput = document.getElementById("modal-save-dir-input");
+const elModalGameNameInput = document.getElementById("modal-game-name-input");
+const elModalBrowseDirBtn = document.getElementById("modal-btn-browse-dir");
+const elModalStartDownloadBtn = document.getElementById("modal-btn-start-download");
+const elDetailsDownloadTriggerBtn = document.getElementById("btn-details-download-trigger");
+const downloadConfigModal = document.getElementById("download-config-modal");
+
+function populateModalMirrors(filteredMirrors) {
+    const modalMirrorsList = document.getElementById("modal-mirrors-list");
+    if (!modalMirrorsList) return;
+    modalMirrorsList.innerHTML = "";
+    
+    filteredMirrors.forEach((m, idx) => {
+        const row = document.createElement("div");
+        row.className = "modal-mirror-row" + (idx === 0 ? " selected" : "");
+        row.setAttribute("data-name", m.name);
+        row.setAttribute("data-url", m.url);
+        
+        let meta = "Regular Hoster";
+        if (m.name.toLowerCase().includes("gofile")) meta = "High Speed Mirror (No VPN needed)";
+        else if (m.name.toLowerCase().includes("torrent")) meta = "P2P BitTorrent Magnet Link";
+        else if (m.name.toLowerCase().includes("qiwi")) meta = "Direct Speed Hoster";
+        else if (m.name.toLowerCase().includes("pixeldrain")) meta = "Fast & Stable Mirror";
+        
+        row.innerHTML = `
+            <div class="mirror-row-info">
+                <span class="mirror-row-name">${m.name}</span>
+                <span class="mirror-row-meta">${meta}</span>
+            </div>
+            <div class="mirror-row-check">✔</div>
+        `;
+        
+        row.addEventListener("click", () => {
+            document.querySelectorAll(".modal-mirror-row").forEach(r => r.classList.remove("selected"));
+            row.classList.add("selected");
+            
+            // Sync with hidden original mirrors list
+            const pills = document.querySelectorAll(".mirror-pill");
+            pills.forEach(p => {
+                if (p.innerText.trim() === m.name.trim()) {
+                    p.click();
+                }
+            });
+        });
+        
+        modalMirrorsList.appendChild(row);
+    });
+}
+
+// Bind modal inputs folder browsing
+if (elModalBrowseDirBtn && elModalSaveDirInput) {
+    elModalBrowseDirBtn.addEventListener("click", async () => {
+        elModalBrowseDirBtn.setAttribute("disabled", "true");
+        try {
+            const response = await fetch("/api/browse_folder");
+            const data = await response.json();
+            if (response.ok && data.success && data.path) {
+                elModalSaveDirInput.value = data.path;
+                elSaveDirInput.value = data.path;
+            }
+        } catch (e) {
+            console.error("Error browsing folder inside modal:", e);
+        } finally {
+            elModalBrowseDirBtn.removeAttribute("disabled");
+        }
+    });
+}
+
+// Bind Details Bottom Bar trigger
+if (elDetailsDownloadTriggerBtn && downloadConfigModal) {
+    elDetailsDownloadTriggerBtn.addEventListener("click", () => {
+        // Sync original inputs to modal fields
+        if (elModalGameNameInput) elModalGameNameInput.value = elGameNameInput.value;
+        if (elModalSaveDirInput) elModalSaveDirInput.value = elSaveDirInput.value;
+        
+        // Open modal with smooth transition
+        downloadConfigModal.style.display = "flex";
+        setTimeout(() => {
+            downloadConfigModal.classList.add("active");
+        }, 15);
+    });
+}
+
+// Bind Modal Next / Start Download
+if (elModalStartDownloadBtn && downloadConfigModal) {
+    elModalStartDownloadBtn.addEventListener("click", () => {
+        const gameTitle = elModalGameNameInput ? elModalGameNameInput.value.trim() : "";
+        const downloadDir = elModalSaveDirInput ? elModalSaveDirInput.value.trim() : "";
+        
+        if (!gameTitle || !downloadDir) {
+            alert("Please enter a game folder name and select a save directory.");
+            return;
+        }
+        
+        // Copy back to original inputs
+        elGameNameInput.value = gameTitle;
+        elSaveDirInput.value = downloadDir;
+        
+        // Hide modal
+        downloadConfigModal.classList.remove("active");
+        setTimeout(() => {
+            downloadConfigModal.style.display = "none";
+        }, 250);
+        
+        // Start download by clicking original confirm button
+        elConfirmQueueBtn.click();
+    });
+}
+
+// Dismiss modal when clicking overlay background
+if (downloadConfigModal) {
+    downloadConfigModal.addEventListener("click", (e) => {
+        if (e.target === downloadConfigModal) {
+            downloadConfigModal.classList.remove("active");
+            setTimeout(() => {
+                downloadConfigModal.style.display = "none";
+            }, 250);
+        }
+    });
+}

@@ -2271,10 +2271,20 @@ def fetch_repack_details_helper(item):
             text_all = soup.get_text()
             orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
             repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+            company_match = re.search(r'Companies:\s*([^\n]+)', text_all, re.IGNORECASE)
             
             item['cover_image'] = clean_cover_url(cover_image)
             item['original_size'] = clean_size(orig_match.group(1)) if orig_match else "Unknown"
             item['repack_size'] = clean_size(repack_match.group(1)) if repack_match else "Unknown"
+            
+            developer = ""
+            if company_match:
+                comp_str = company_match.group(1).strip()
+                # Split by comma and take the first one (usually the developer)
+                parts = comp_str.split(',')
+                if parts:
+                    developer = parts[0].strip()
+            item['developer'] = developer
     except Exception as e:
         pass
         

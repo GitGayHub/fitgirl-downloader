@@ -48,8 +48,8 @@ body {
     z-index: -1;
     background: 
         radial-gradient(circle at 20% 15%, var(--color-primary-glow) 0%, transparent 45%),
-        radial-gradient(circle at 80% 85%, var(--border-glow) 0%, transparent 45%),
-        radial-gradient(circle at 50% 50%, rgba(46, 204, 113, 0.05) 0%, transparent 50%),
+        radial-gradient(circle at 80% 85%, var(--color-secondary-glow, var(--border-glow)) 0%, transparent 45%),
+        radial-gradient(circle at 50% 50%, var(--color-primary-glow) 0%, transparent 50%),
         transparent;
     pointer-events: none;
 }
@@ -2670,12 +2670,75 @@ details[open] .summary-toggle-icon {
                 linear-gradient(to bottom, var(--card-accent-top, rgba(255,255,255,0.06)), var(--card-accent-bot, rgba(255,255,255,0.06))) border-box !important;
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3), 0 0 10px var(--card-glow-color, transparent) !important;
     transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+    aspect-ratio: 2 / 3 !important;
+    position: relative !important;
+    height: auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
 }
 .game-card:hover {
     background: linear-gradient(rgba(25, 25, 38, 0.9), rgba(25, 25, 38, 0.9)) padding-box, 
                 linear-gradient(to bottom, var(--card-accent-top-hover, var(--color-primary)), var(--card-accent-bot-hover, var(--color-secondary))) border-box !important;
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55), 0 0 20px var(--card-glow-color-hover, rgba(155, 89, 182, 0.4)) !important;
     transform: translateY(-5px) !important;
+}
+
+/* Full size cover area alignment */
+.game-card .card-cover-area {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    height: 100% !important;
+    width: 100% !important;
+    z-index: 1 !important;
+}
+
+/* Hover-only Info Overlay */
+.game-card .card-info {
+    position: absolute !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 2 !important;
+    padding: 20px 12px 12px 12px !important;
+    background: linear-gradient(to top, rgba(8, 8, 12, 0.96) 0%, rgba(8, 8, 12, 0.72) 65%, transparent 100%) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 4px !important;
+    opacity: 0 !important;
+    transform: translateY(12px) !important;
+    transition: opacity 0.24s cubic-bezier(0.25, 0.8, 0.25, 1), transform 0.24s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+    pointer-events: none !important;
+}
+
+.game-card:hover .card-info {
+    opacity: 1 !important;
+    transform: translateY(0) !important;
+}
+
+.game-card .card-title {
+    margin: 0 !important;
+    font-size: 0.86rem !important;
+    font-weight: 700 !important;
+    color: var(--text-white) !important;
+    line-height: 1.25 !important;
+    display: -webkit-box !important;
+    -webkit-line-clamp: 2 !important;
+    -webkit-box-orient: vertical !important;
+    overflow: hidden !important;
+    height: auto !important;
+}
+
+.game-card .card-developer {
+    font-size: 0.72rem !important;
+    color: var(--text-muted) !important;
+    font-weight: 500 !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
 }
 
 /* Popular Slider Track CSS Animation */
@@ -2783,6 +2846,263 @@ details[open] .summary-toggle-icon {
     border-color: rgba(255, 255, 255, 0.16) !important;
     box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65), 
                 inset 0 0.5px 0.5px rgba(255, 255, 255, 0.22) !important;
+}
+
+/* Details view floating bottom bar */
+.details-bottom-bar {
+    position: sticky !important;
+    bottom: 12px !important;
+    margin: 15px auto 5px auto !important;
+    width: 96% !important;
+    max-width: 580px !important;
+    background: rgba(22, 22, 28, 0.65) !important;
+    backdrop-filter: blur(35px) saturate(210%) contrast(115%) brightness(90%) !important;
+    -webkit-backdrop-filter: blur(35px) saturate(210%) contrast(115%) brightness(90%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 40px !important;
+    padding: 10px 16px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 
+                inset 0 0.5px 0.5px rgba(255, 255, 255, 0.16) !important;
+    z-index: 95 !important;
+    transition: all 0.3s ease !important;
+}
+
+.details-bottom-size {
+    font-size: 1.15rem !important;
+    font-weight: 700 !important;
+    color: var(--text-white) !important;
+    padding-left: 12px !important;
+    font-family: 'Outfit', sans-serif !important;
+}
+
+.btn-details-download {
+    background: #ffffff !important;
+    color: #0c0d12 !important;
+    border: none !important;
+    border-radius: 30px !important;
+    padding: 10px 26px !important;
+    font-weight: 800 !important;
+    font-size: 0.92rem !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    cursor: pointer !important;
+    box-shadow: 0 4px 15px rgba(255, 255, 255, 0.25) !important;
+    transition: all 0.2s ease-in-out !important;
+}
+
+.btn-details-download:hover {
+    background: #f0f0f5 !important;
+    transform: scale(1.03) !important;
+    box-shadow: 0 6px 20px rgba(255, 255, 255, 0.35) !important;
+}
+
+.btn-details-download:active {
+    transform: scale(0.97) !important;
+}
+
+/* iOS Select Mirror Modal */
+.modal-overlay {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    background: rgba(4, 4, 8, 0.7) !important;
+    backdrop-filter: blur(12px) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    z-index: 1000 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: opacity 0.25s ease !important;
+}
+
+.modal-overlay.active {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+}
+
+.modal-card {
+    background: #0f0f13 !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 24px !important;
+    width: 420px !important;
+    max-width: 90% !important;
+    padding: 24px !important;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65),
+                inset 0 1px 1px rgba(255, 255, 255, 0.12) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    transform: translateY(20px) !important;
+    transition: transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+.modal-overlay.active .modal-card {
+    transform: translateY(0) !important;
+}
+
+.modal-drag-handle {
+    width: 38px !important;
+    height: 4px !important;
+    background: rgba(255, 255, 255, 0.15) !important;
+    border-radius: 2px !important;
+    margin: -8px auto 16px auto !important;
+}
+
+.modal-title {
+    font-size: 1.25rem !important;
+    font-weight: 800 !important;
+    color: var(--text-white) !important;
+    text-align: center !important;
+    margin-bottom: 20px !important;
+    letter-spacing: -0.4px !important;
+}
+
+.modal-mirrors-list {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    max-height: 240px !important;
+    overflow-y: auto !important;
+    margin-bottom: 20px !important;
+    padding-right: 4px !important;
+}
+
+.modal-mirror-row {
+    background: rgba(255, 255, 255, 0.03) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+    border-radius: 14px !important;
+    padding: 12px 16px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+}
+
+.modal-mirror-row:hover {
+    background: rgba(255, 255, 255, 0.06) !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.modal-mirror-row.selected {
+    background: rgba(255, 255, 255, 0.07) !important;
+    border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.mirror-row-info {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+}
+
+.mirror-row-name {
+    font-size: 0.88rem !important;
+    font-weight: 700 !important;
+    color: var(--text-white) !important;
+}
+
+.mirror-row-meta {
+    font-size: 0.72rem !important;
+    color: var(--text-muted) !important;
+}
+
+.mirror-row-check {
+    width: 20px !important;
+    height: 20px !important;
+    border-radius: 50% !important;
+    border: 1.5px solid rgba(255, 255, 255, 0.2) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 0.75rem !important;
+    font-weight: bold !important;
+    color: transparent !important;
+    transition: all 0.2s ease !important;
+}
+
+.modal-mirror-row.selected .mirror-row-check {
+    background: #ffffff !important;
+    border-color: #ffffff !important;
+    color: #0f0f13 !important;
+}
+
+/* Modal Config Form */
+.modal-config-form {
+    border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
+    padding-top: 16px !important;
+    margin-bottom: 20px !important;
+}
+
+.modal-form-group {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+}
+
+.modal-form-group label {
+    font-size: 0.72rem !important;
+    font-weight: 800 !important;
+    color: var(--text-muted) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+}
+
+.modal-form-group input {
+    background: rgba(255, 255, 255, 0.03) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 12px !important;
+    padding: 10px 14px !important;
+    color: var(--text-white) !important;
+    font-size: 0.85rem !important;
+    outline: none !important;
+    transition: all 0.2s ease !important;
+}
+
+.modal-form-group input:focus {
+    border-color: rgba(255, 255, 255, 0.2) !important;
+    background: rgba(255, 255, 255, 0.05) !important;
+}
+
+.modal-dir-input-wrapper {
+    display: flex !important;
+    gap: 8px !important;
+    width: 100% !important;
+}
+
+.modal-dir-input-wrapper input {
+    flex-grow: 1 !important;
+}
+
+.btn-modal-next {
+    background: #ffffff !important;
+    color: #0c0d12 !important;
+    border: none !important;
+    border-radius: 30px !important;
+    padding: 12px 24px !important;
+    font-weight: 800 !important;
+    font-size: 0.92rem !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    cursor: pointer !important;
+    box-shadow: 0 4px 15px rgba(255, 255, 255, 0.2) !important;
+    transition: all 0.2s ease !important;
+}
+
+.btn-modal-next:hover {
+    background: #f0f0f5 !important;
+    transform: scale(1.02) !important;
+}
+
+.btn-modal-next:active {
+    transform: scale(0.98) !important;
 }
 
 
