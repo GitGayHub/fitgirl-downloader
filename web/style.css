@@ -2900,14 +2900,12 @@ details[open] .summary-toggle-icon {
                 inset 0 0.5px 0.5px rgba(255, 255, 255, 0.22) !important;
 }
 
-/* Details view floating combined download pill */
 .details-bottom-bar {
-    position: relative !important;
-    bottom: auto !important;
-    left: auto !important;
-    transform: none !important;
+    position: sticky !important;
+    bottom: 24px !important;
     margin: 40px auto 20px auto !important;
     width: fit-content !important;
+    display: flex !important;
     min-width: 250px !important;
     background: rgba(12, 12, 18, 0.75) !important;
     backdrop-filter: blur(35px) saturate(210%) contrast(115%) brightness(95%) !important;
@@ -3619,5 +3617,22 @@ details[open] .summary-toggle-icon {
 
 #game-details-container {
     overflow-y: auto !important;
+}
+
+/* Hide translate flag toggle buttons by default when collapsible sections are closed */
+.collapsible-section:not(.active) .btn-lang-toggle {
+    display: none !important;
+}
+
+/* Show translate flag toggle buttons when collapsible sections are open (expanded) */
+.collapsible-section.active .btn-lang-toggle {
+    display: flex !important;
+}
+
+/* Hover effects for round language flag toggle buttons */
+.btn-lang-toggle:hover {
+    background: rgba(255, 255, 255, 0.12) !important;
+    border-color: rgba(255, 255, 255, 0.25) !important;
+    transform: scale(1.08) !important;
 }
 
