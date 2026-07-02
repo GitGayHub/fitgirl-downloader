@@ -871,26 +871,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 }
                 
                 // Render Screenshots Gallery
-                const elScreenshotsSection = document.getElementById("game-screenshots-section");
-                const elScreenshotsContainer = document.getElementById("game-screenshots-container");
-                if (elScreenshotsSection && elScreenshotsContainer) {
-                    elScreenshotsContainer.innerHTML = "";
-                    if (data.screenshots && data.screenshots.length > 0) {
-                        data.screenshots.forEach(src => {
-                            const img = document.createElement("img");
-                            img.className = "screenshot-img";
-                            img.src = `/api/proxy_image?url=${encodeURIComponent(src)}`;
-                            img.alt = "Screenshot";
-                            img.addEventListener("click", () => {
-                                openScreenshotModal(img.src);
-                            });
-                            elScreenshotsContainer.appendChild(img);
-                        });
-                        elScreenshotsSection.style.display = "block";
-                    } else {
-                        elScreenshotsSection.style.display = "none";
-                    }
-                }
+                renderScreenshots(data.screenshots);
                 
                 // Populate Right-column database info
                 const rowDev = document.getElementById("row-developer");
@@ -991,16 +972,34 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     detailsBottomBar.style.display = "flex";
                 }
                 
+                const detailsCoverCard = document.getElementById("details-cover-card");
+                const detailsCoverImage = document.getElementById("details-cover-image");
+                const detailsCoverPlaceholder = document.getElementById("details-cover-placeholder");
+
                 if (scrapedMetadata.cover_image) {
                     const proxiedUrl = `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
                     getCachedImageUrl(proxiedUrl).then(cachedUrl => {
                         elSetupCover.src = cachedUrl;
                         elSetupCover.style.display = "block";
                         elSetupCoverPlaceholder.style.display = "none";
+                        
+                        if (detailsCoverImage) {
+                            detailsCoverImage.src = cachedUrl;
+                            detailsCoverImage.style.display = "block";
+                        }
+                        if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "none";
+                        if (detailsCoverCard) detailsCoverCard.style.display = "block";
+
                         elSetupCover.onerror = () => {
                             elSetupCover.src = "";
                             elSetupCover.style.display = "none";
                             elSetupCoverPlaceholder.style.display = "flex";
+                            
+                            if (detailsCoverImage) {
+                                detailsCoverImage.src = "";
+                                detailsCoverImage.style.display = "none";
+                            }
+                            if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
                             clearDynamicBackground();
                         };
                         setHazeBackground(cachedUrl);
@@ -1010,6 +1009,13 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     elSetupCover.src = "";
                     elSetupCover.style.display = "none";
                     elSetupCoverPlaceholder.style.display = "flex";
+                    
+                    if (detailsCoverImage) {
+                        detailsCoverImage.src = "";
+                        detailsCoverImage.style.display = "none";
+                    }
+                    if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
+                    if (detailsCoverCard) detailsCoverCard.style.display = "none";
                     clearDynamicBackground();
                 }
 
@@ -1070,23 +1076,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     elGameDescription.style.display = "none";
                 }
 
-                if (elGameScreenshotsSection && elGameScreenshotsContainer && data.screenshots && data.screenshots.length > 0) {
-                    elGameScreenshotsSection.style.display = "block";
-                    elGameScreenshotsContainer.innerHTML = "";
-                    data.screenshots.forEach(src => {
-                        const img = document.createElement("img");
-                        img.className = "screenshot-img";
-                        img.src = `/api/proxy_image?url=${encodeURIComponent(src)}`;
-                        img.alt = "Screenshot";
-                        img.addEventListener("click", () => {
-                            openScreenshotModal(img.src);
-                        });
-                        elGameScreenshotsContainer.appendChild(img);
-                    });
-                } else if (elGameScreenshotsSection) {
-                    elGameScreenshotsSection.style.display = "none";
-                    if (elGameScreenshotsContainer) elGameScreenshotsContainer.innerHTML = "";
-                }
+                renderScreenshots(data.screenshots);
 
                 // Toggle media column visibility and columns
                 const elMediaColumnCard = document.getElementById("media-column-card");
@@ -1260,6 +1250,9 @@ function displayConfigCard(title, files, url = "") {
     const elScreenshotsContainer = document.getElementById("game-screenshots-container");
     if (elScreenshotsSection) elScreenshotsSection.style.display = "none";
     if (elScreenshotsContainer) elScreenshotsContainer.innerHTML = "";
+    
+    const detailsCoverCard = document.getElementById("details-cover-card");
+    if (detailsCoverCard) detailsCoverCard.style.display = "none";
     
     // Reset metadata sidebar table
     const sidebarRows = ["row-developer", "row-publisher", "row-release-date", "row-steam-rating", "row-genres", "row-unpack-size"];
@@ -2290,6 +2283,7 @@ function createGameCard(game) {
         </div>
         <div class="card-info">
             <h4 class="card-title" title="${game.title}">${game.title}</h4>
+            ${game.developer ? `<div class="card-developer">${game.developer}</div>` : ""}
             <div class="card-sizes" style="display: flex; align-items: center; width: 100%;">
                 ${game.repack_size !== "Unknown" ? `<span class="size-badge repack">Repack: ${game.repack_size}</span>` : ""}
                 ${game.original_size !== "Unknown" ? `<span class="size-badge original">Orig: ${game.original_size}</span>` : ""}
@@ -2549,11 +2543,17 @@ elBtnBackToCatalog.addEventListener("click", () => {
 // Settings Modal controls
 elSettingsGearBtn.addEventListener("click", () => {
     elSettingsModal.style.display = "flex";
+    setTimeout(() => {
+        elSettingsModal.classList.add("active");
+    }, 15);
     loadGDriveAccounts();
 });
 
 const closeSettings = () => {
-    elSettingsModal.style.display = "none";
+    elSettingsModal.classList.remove("active");
+    setTimeout(() => {
+        elSettingsModal.style.display = "none";
+    }, 250);
 };
 
 elCloseSettingsModalBtn.addEventListener("click", closeSettings);
@@ -3288,6 +3288,51 @@ if (elChecklistContainer) {
 initSettings();
 syncViewState();
 loadCatalogGames();
+
+// Render Screenshots Showcase + Grid Gallery
+function renderScreenshots(screenshotsList) {
+    const elScreenshotsSection = document.getElementById("game-screenshots-section");
+    const elScreenshotsContainer = document.getElementById("game-screenshots-container");
+    const elMainScreenshotImg = document.getElementById("screenshot-main-img");
+    const elMainScreenshotShowcase = document.getElementById("screenshot-main-showcase-container");
+
+    if (elScreenshotsSection && elScreenshotsContainer) {
+        elScreenshotsContainer.innerHTML = "";
+        if (screenshotsList && screenshotsList.length > 0) {
+            const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
+            
+            if (elMainScreenshotImg) {
+                elMainScreenshotImg.src = firstScreenshotUrl;
+                elMainScreenshotImg.onclick = () => {
+                    openScreenshotModal(elMainScreenshotImg.src);
+                };
+            }
+            if (elMainScreenshotShowcase) {
+                elMainScreenshotShowcase.style.display = "block";
+            }
+
+            screenshotsList.forEach((src, idx) => {
+                const img = document.createElement("img");
+                const proxiedSrc = `/api/proxy_image?url=${encodeURIComponent(src)}`;
+                img.src = proxiedSrc;
+                img.alt = "Screenshot thumbnail";
+                if (idx === 0) img.className = "active";
+                
+                img.addEventListener("click", () => {
+                    if (elMainScreenshotImg) {
+                        elMainScreenshotImg.src = proxiedSrc;
+                    }
+                    elScreenshotsContainer.querySelectorAll("img").forEach(i => i.classList.remove("active"));
+                    img.classList.add("active");
+                });
+                elScreenshotsContainer.appendChild(img);
+            });
+            elScreenshotsSection.style.display = "block";
+        } else {
+            elScreenshotsSection.style.display = "none";
+        }
+    }
+}
 
 // Screenshot modal controls
 function openScreenshotModal(imgSrc) {

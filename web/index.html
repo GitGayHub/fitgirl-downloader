@@ -233,12 +233,15 @@
                             </div>
                             
                             <!-- Screenshots Gallery -->
-                            <div class="details-section-card" id="game-screenshots-section" style="display: none;">
-                                <h3 class="section-title">Screenshots</h3>
-                                <div id="game-screenshots-container" class="screenshots-gallery">
-                                    <!-- Populated dynamically with wide aspect ratio img elements -->
-                                </div>
-                            </div>
+                             <div class="details-section-card" id="game-screenshots-section" style="display: none;">
+                                 <h3 class="section-title">Screenshots (Click to enlarge)</h3>
+                                 <div class="screenshots-gallery-wrapper" style="margin-top: 15px;">
+                                     <div class="screenshot-main-showcase" id="screenshot-main-showcase-container">
+                                         <img id="screenshot-main-img" src="" alt="Gameplay Preview">
+                                     </div>
+                                     <div id="game-screenshots-container" class="screenshots-grid"></div>
+                                 </div>
+                             </div>
                             
                             <!-- Files Checklist Box -->
                             <div class="details-section-card" id="details-files-card">
@@ -305,16 +308,25 @@
                         <!-- Right Column: Database Info & Metacritic badge -->
                         <div class="details-right-column">
                             
+                            <!-- Game Vertical Cover Card -->
+                            <div class="details-cover-card" id="details-cover-card" style="margin-bottom: 20px; display: none;">
+                                <img id="details-cover-image" src="" alt="Game Cover" style="width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                                <div id="details-cover-placeholder" class="card-cover-placeholder" style="width: 100%; aspect-ratio: 2/3; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1b1c2e, #0c0d16); border: 1px solid rgba(255,255,255,0.08);">
+                                    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.45; color: var(--text-muted);">
+                                        <rect x="2" y="6" width="20" height="12" rx="3"></rect>
+                                        <path d="M6 12h4M8 10v4"></path>
+                                        <circle cx="15" cy="11" r="1" fill="currentColor"></circle>
+                                        <circle cx="18" cy="13" r="1" fill="currentColor"></circle>
+                                    </svg>
+                                </div>
+                            </div>
+                            
                             <!-- Database Metadata Box -->
                             <div class="sidebar-section-card">
                                 <div class="metadata-table">
                                     <div class="metadata-table-row" id="row-developer" style="display: none;">
                                         <span class="table-label">Developer</span>
                                         <span class="table-value" id="details-developer">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-publisher" style="display: none;">
-                                        <span class="table-label">Publisher</span>
-                                        <span class="table-value" id="details-publisher">--</span>
                                     </div>
                                     <div class="metadata-table-row" id="row-release-date" style="display: none;">
                                         <span class="table-label">Release Date</span>
@@ -366,7 +378,8 @@
                         <div id="config-card"></div>
                         <div id="media-column-card"></div>
                         <div id="details-video-container"><iframe id="video-iframe"></iframe></div>
-                        <button id="btn-confirm-queue"></button>
+                         <div id="row-publisher" style="display: none;"><span id="details-publisher">--</span></div>
+                         <button id="btn-confirm-queue"></button>
                     </div>
 
                     <!-- Details sticky bottom combined pill -->

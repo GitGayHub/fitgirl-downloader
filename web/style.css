@@ -1476,22 +1476,36 @@ body {
 }
 
 /* Game Card */
+/* Game Card */
 .game-card {
-    background: rgba(20, 20, 30, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 12px;
-    overflow: hidden;
-    cursor: pointer;
-    transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
-    display: flex;
-    flex-direction: column;
-    position: relative;
+    border: 2px solid transparent !important;
+    border-radius: 16px !important;
+    background: linear-gradient(rgba(20, 20, 30, 0.85), rgba(20, 20, 30, 0.85)) padding-box, 
+                linear-gradient(to bottom, var(--card-accent-top, rgba(255,255,255,0.06)), var(--card-accent-bot, rgba(255,255,255,0.06))) border-box !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3), 0 0 10px var(--card-glow-color, transparent) !important;
+    transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), background 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease !important;
+    aspect-ratio: 2 / 3 !important;
+    position: relative !important;
+    height: auto !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+    cursor: pointer !important;
 }
 
 .game-card:hover {
-    transform: translateY(-5px);
-    border-color: var(--color-primary);
-    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.4), 0 0 10px rgba(155, 89, 182, 0.2);
+    transform: translateY(-5px) scale(1.03) !important;
+    background: linear-gradient(rgba(25, 25, 38, 0.9), rgba(25, 25, 38, 0.9)) padding-box, 
+                linear-gradient(135deg, var(--card-accent-top-hover, var(--color-primary)), var(--card-accent-bot-hover, var(--color-secondary)), var(--card-accent-top-hover, var(--color-primary))) border-box !important;
+    background-size: 100% 100% padding-box, 300% 300% border-box !important;
+    animation: border-shimmer 4s ease infinite !important;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55), 0 0 20px var(--card-glow-color-hover, rgba(155, 89, 182, 0.4)) !important;
+}
+
+@keyframes border-shimmer {
+    0% { background-position: 0% 0% padding-box, 0% 50% border-box; }
+    50% { background-position: 0% 0% padding-box, 100% 50% border-box; }
+    100% { background-position: 0% 0% padding-box, 0% 50% border-box; }
 }
 
 .card-cover-area {
@@ -1617,15 +1631,8 @@ body {
 }
 
 .game-card {
-    width: 170px; /* Fixed width for flex layout */
-    flex: 0 0 auto;
-    transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), border-color 0.2s ease, box-shadow 0.2s ease !important;
-}
-
-.game-card:hover {
-    transform: translateY(-4px) scale(1.015) !important;
-    border-color: var(--color-primary) !important;
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4), 0 0 12px var(--color-primary-glow) !important;
+    width: 170px !important; /* Fixed width for flex layout */
+    flex: 0 0 auto !important;
 }
 
 /* Expanded Grid height to fit more games */
@@ -2663,26 +2670,7 @@ details[open] .summary-toggle-icon {
     scrollbar-width: none !important;
 }
 
-/* Dynamic Card Borders and Glow Accents */
-.game-card {
-    border: 2px solid transparent !important;
-    background: linear-gradient(rgba(20, 20, 30, 0.85), rgba(20, 20, 30, 0.85)) padding-box, 
-                linear-gradient(to bottom, var(--card-accent-top, rgba(255,255,255,0.06)), var(--card-accent-bot, rgba(255,255,255,0.06))) border-box !important;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3), 0 0 10px var(--card-glow-color, transparent) !important;
-    transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
-    aspect-ratio: 2 / 3 !important;
-    position: relative !important;
-    height: auto !important;
-    display: flex !important;
-    flex-direction: column !important;
-    overflow: hidden !important;
-}
-.game-card:hover {
-    background: linear-gradient(rgba(25, 25, 38, 0.9), rgba(25, 25, 38, 0.9)) padding-box, 
-                linear-gradient(to bottom, var(--card-accent-top-hover, var(--color-primary)), var(--card-accent-bot-hover, var(--color-secondary))) border-box !important;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55), 0 0 20px var(--card-glow-color-hover, rgba(155, 89, 182, 0.4)) !important;
-    transform: translateY(-5px) !important;
-}
+/* Consolidate Dynamic Card Borders and Glow Accents at the top */
 
 /* Full size cover area alignment */
 .game-card .card-cover-area {
@@ -3407,8 +3395,72 @@ details[open] .summary-toggle-icon {
         top: 0;
     }
 }
+/* Screenshots Showcase + Grid Gallery */
+.screenshots-gallery-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+}
 
+.screenshot-main-showcase {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    background: #06060c;
+    cursor: zoom-in;
+    transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.3s;
+}
 
+.screenshot-main-showcase:hover {
+    transform: scale(1.01);
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.7), 0 0 15px var(--color-primary-glow);
+}
 
+.screenshot-main-showcase img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
 
+.screenshots-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 10px;
+    width: 100%;
+}
+
+.screenshots-grid img {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.screenshots-grid img:hover {
+    transform: scale(1.05) translateY(-2px);
+    box-shadow: 0 6px 15px rgba(0, 0, 0, 0.5);
+}
+
+.screenshots-grid img.active {
+    border-color: var(--color-primary) !important;
+    box-shadow: 0 0 12px var(--color-primary-glow);
+}
+
+/* Details vertical cover card style */
+.details-cover-card {
+    border-radius: 16px;
+    overflow: hidden;
+    transition: transform 0.3s ease;
+}
+.details-cover-card:hover {
+    transform: scale(1.02);
+}
 

@@ -3755,6 +3755,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         if candidate not in screenshots and candidate != cover_image:
                                             screenshots.append(candidate)
                             screenshots = screenshots[:10]
+                        
+                        fitgirl_gifs = [s for s in screenshots if s.lower().endswith('.gif')]
 
                         # Attempt to load premium metadata from Steam Store API
                         steam_data = fetch_steam_metadata(title)
@@ -3771,8 +3773,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             if steam_data.get('description'):
                                 description = steam_data['description']
                             if steam_data.get('screenshots'):
-                                # Use high-quality Steam screenshots if found
-                                screenshots = steam_data['screenshots'][:10]
+                                # Use high-quality Steam screenshots if found, but keep any FitGirl VOs or GIFs!
+                                screenshots = fitgirl_gifs + [s for s in steam_data['screenshots'] if s not in fitgirl_gifs]
+                                screenshots = screenshots[:12]
                             if steam_data.get('developers'):
                                 developer_val = ", ".join(steam_data['developers'])
                             if steam_data.get('publishers'):
