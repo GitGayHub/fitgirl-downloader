@@ -1230,12 +1230,14 @@ function configureRussianSorting(files) {
 // Load links nested when user clicks mirror
 async function loadMirrorLinks(mirrorUrl, mirrorName) {
     activeMirrorName = mirrorName;
-    elConfirmQueueBtn.setAttribute("disabled", "true");
-    elConfirmQueueBtn.innerText = "Resolving Mirror Paste...";
+    if (elConfirmQueueBtn) {
+        elConfirmQueueBtn.setAttribute("disabled", "true");
+        elConfirmQueueBtn.innerText = "Resolving Mirror Paste...";
+    }
     
     // Show checklist loading overlay
-    elChecklistLoadingSpinner.style.display = "flex";
-    elActiveMirrorBadge.style.display = "none";
+    if (elChecklistLoadingSpinner) elChecklistLoadingSpinner.style.display = "flex";
+    if (elActiveMirrorBadge) elActiveMirrorBadge.style.display = "none";
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
@@ -1260,11 +1262,13 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
             configureRussianSorting(data.files);
             
             // Show mirror badge and update label
-            elActiveMirrorName.innerText = mirrorName;
-            elActiveMirrorBadge.style.display = "inline-block";
+            if (elActiveMirrorName) elActiveMirrorName.innerText = mirrorName;
+            if (elActiveMirrorBadge) elActiveMirrorBadge.style.display = "inline-block";
             
-            elConfirmQueueBtn.removeAttribute("disabled");
-            elConfirmQueueBtn.innerText = "Confirm and Start Download";
+            if (elConfirmQueueBtn) {
+                elConfirmQueueBtn.removeAttribute("disabled");
+                elConfirmQueueBtn.innerText = "Confirm and Start Download";
+            }
             
             updateChecklistSorted();
         } else {
@@ -1279,21 +1283,21 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
             alert("Failed to load mirror. Check internet connection.");
         }
     } finally {
-        elChecklistLoadingSpinner.style.display = "none";
+        if (elChecklistLoadingSpinner) elChecklistLoadingSpinner.style.display = "none";
     }
 }
 
 // Display config card for direct files/PrivateBin
 function displayConfigCard(title, files, url = "") {
     activeMirrorName = "";
-    elGameNameInput.value = title;
+    if (elGameNameInput) elGameNameInput.value = title;
     
     const defaultDir = appState.default_download_dir || "D:\\Downloads";
-    elSaveDirInput.value = defaultDir;
+    if (elSaveDirInput) elSaveDirInput.value = defaultDir;
     
     // Hide mirror selection since it's a direct paste
-    elMirrorSelectSection.style.display = "none";
-    elActiveMirrorBadge.style.display = "none";
+    if (elMirrorSelectSection) elMirrorSelectSection.style.display = "none";
+    if (elActiveMirrorBadge) elActiveMirrorBadge.style.display = "none";
     
     // Set placeholder metadata
     scrapedMetadata.original_size = "N/A";
