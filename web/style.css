@@ -2713,11 +2713,10 @@ details[open] .summary-toggle-icon {
     font-weight: 700 !important;
     color: var(--text-white) !important;
     line-height: 1.25 !important;
-    display: -webkit-box !important;
-    -webkit-line-clamp: 2 !important;
-    -webkit-box-orient: vertical !important;
-    overflow: hidden !important;
+    display: block !important;
+    overflow: visible !important;
     height: auto !important;
+    white-space: normal !important;
 }
 
 .game-card .card-developer {
@@ -3191,7 +3190,7 @@ details[open] .summary-toggle-icon {
 /* 2-Column Grid Details Layout */
 .details-columns-layout {
     display: grid;
-    grid-template-columns: 1.25fr 0.75fr;
+    grid-template-columns: 1fr 240px;
     gap: 24px;
     width: 100%;
     align-items: start;

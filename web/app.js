@@ -3417,7 +3417,7 @@ function populateModalMirrors(filteredMirrors) {
         row.setAttribute("data-name", m.name);
         row.setAttribute("data-url", m.url);
         
-        let meta = "Regular Hoster";
+        let meta = "";
         if (m.name.toLowerCase().includes("gofile")) meta = "High Speed Mirror (No VPN needed)";
         else if (m.name.toLowerCase().includes("torrent")) meta = "P2P BitTorrent Magnet Link";
         else if (m.name.toLowerCase().includes("qiwi")) meta = "Direct Speed Hoster";
@@ -3426,7 +3426,7 @@ function populateModalMirrors(filteredMirrors) {
         row.innerHTML = `
             <div class="mirror-row-info">
                 <span class="mirror-row-name">${m.name}</span>
-                <span class="mirror-row-meta">${meta}</span>
+                ${meta ? `<span class="mirror-row-meta">${meta}</span>` : ""}
             </div>
             <div class="mirror-row-check">✔</div>
         `;
@@ -3485,26 +3485,33 @@ if (elDetailsDownloadTriggerBtn && downloadConfigModal) {
 // Bind Modal Next / Start Download
 if (elModalStartDownloadBtn && downloadConfigModal) {
     elModalStartDownloadBtn.addEventListener("click", () => {
-        const gameTitle = elModalGameNameInput ? elModalGameNameInput.value.trim() : "";
-        const downloadDir = elModalSaveDirInput ? elModalSaveDirInput.value.trim() : "";
-        
-        if (!gameTitle || !downloadDir) {
-            alert("Please enter a game folder name and select a save directory.");
-            return;
+        try {
+            const gameTitle = elModalGameNameInput ? elModalGameNameInput.value.trim() : "";
+            const downloadDir = elModalSaveDirInput ? elModalSaveDirInput.value.trim() : "";
+            
+            if (!gameTitle || !downloadDir) {
+                alert("Please enter a game folder name and select a save directory.");
+                return;
+            }
+            
+            // Copy back to original inputs
+            elGameNameInput.value = gameTitle;
+            elSaveDirInput.value = downloadDir;
+            
+            // Hide modal
+            downloadConfigModal.classList.remove("active");
+            setTimeout(() => {
+                downloadConfigModal.style.display = "none";
+            }, 250);
+            
+            // Start download by clicking original confirm button
+            if (elConfirmQueueBtn) {
+                elConfirmQueueBtn.click();
+            }
+        } catch (e) {
+            console.error("Error clicking Next button:", e);
+            alert("Failed to proceed: " + e.message);
         }
-        
-        // Copy back to original inputs
-        elGameNameInput.value = gameTitle;
-        elSaveDirInput.value = downloadDir;
-        
-        // Hide modal
-        downloadConfigModal.classList.remove("active");
-        setTimeout(() => {
-            downloadConfigModal.style.display = "none";
-        }, 250);
-        
-        // Start download by clicking original confirm button
-        elConfirmQueueBtn.click();
     });
 }
 
