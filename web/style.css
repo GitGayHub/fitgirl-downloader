@@ -3255,7 +3255,7 @@ details[open] .summary-toggle-icon {
 /* 2-Column Grid Details Layout */
 .details-columns-layout {
     display: grid;
-    grid-template-columns: 240px 1fr;
+    grid-template-columns: 280px 1fr; /* Increased cover/left column width from 240px to 280px */
     gap: 24px;
     width: 100%;
     align-items: start;

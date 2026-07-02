@@ -813,6 +813,7 @@ function resetSetupDashboard() {
     if (elGameScreenshotsSection) elGameScreenshotsSection.style.display = "none";
     if (elGameInfoCard) elGameInfoCard.style.display = "none";
     if (elSetupDashboard) elSetupDashboard.classList.add("no-info-card");
+    if (typeof resetTranslationCache === "function") resetTranslationCache();
 }
 
 function initCheckedFiles(files) {
@@ -3870,4 +3871,125 @@ if (downloadConfigModal) {
             }, 250);
         }
     });
+}
+
+// Google Translate API Integration
+async function translateText(text) {
+    if (!text || !text.trim()) return "";
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q=${encodeURIComponent(text)}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error("Translation request failed");
+    const data = await response.json();
+    return data[0].map(item => item[0]).join("");
+}
+
+let originalDesc = "";
+let translatedDesc = "";
+let isDescTranslated = false;
+
+const btnTranslateDesc = document.getElementById("btn-translate-desc");
+if (btnTranslateDesc) {
+    btnTranslateDesc.addEventListener("click", async (e) => {
+        e.stopPropagation(); // Avoid collapsible trigger toggle
+        const elText = document.getElementById("game-description");
+        if (!elText) return;
+        
+        if (!originalDesc) {
+            originalDesc = elText.innerText;
+        }
+        
+        if (isDescTranslated) {
+            elText.innerText = originalDesc;
+            btnTranslateDesc.querySelector(".btn-translate-text").innerText = "Translate";
+            isDescTranslated = false;
+        } else {
+            if (translatedDesc) {
+                elText.innerText = translatedDesc;
+                btnTranslateDesc.querySelector(".btn-translate-text").innerText = "Original";
+                isDescTranslated = true;
+            } else {
+                btnTranslateDesc.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>Translating...</span>";
+                btnTranslateDesc.setAttribute("disabled", "true");
+                try {
+                    translatedDesc = await translateText(originalDesc);
+                    elText.innerText = translatedDesc;
+                    btnTranslateDesc.querySelector(".btn-translate-text").innerText = "Original";
+                    isDescTranslated = true;
+                } catch (err) {
+                    console.error("Translation error:", err);
+                    alert("Translation failed. Check internet connection.");
+                } finally {
+                    btnTranslateDesc.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>" + (isDescTranslated ? "Original" : "Translate") + "</span>";
+                    btnTranslateDesc.removeAttribute("disabled");
+                }
+            }
+        }
+    });
+}
+
+let originalFeatures = [];
+let translatedFeatures = [];
+let isFeaturesTranslated = false;
+
+const btnTranslateFeatures = document.getElementById("btn-translate-features");
+if (btnTranslateFeatures) {
+    btnTranslateFeatures.addEventListener("click", async (e) => {
+        e.stopPropagation(); // Avoid collapsible trigger toggle
+        const elList = document.getElementById("repack-features-list");
+        if (!elList) return;
+        
+        const listItems = Array.from(elList.querySelectorAll("li"));
+        if (listItems.length === 0) return;
+        
+        if (originalFeatures.length === 0) {
+            originalFeatures = listItems.map(li => li.innerText);
+        }
+        
+        if (isFeaturesTranslated) {
+            elList.innerHTML = originalFeatures.map(txt => `<li>${txt}</li>`).join("");
+            btnTranslateFeatures.querySelector(".btn-translate-text").innerText = "Translate";
+            isFeaturesTranslated = false;
+        } else {
+            if (translatedFeatures.length > 0) {
+                elList.innerHTML = translatedFeatures.map(txt => `<li>${txt}</li>`).join("");
+                btnTranslateFeatures.querySelector(".btn-translate-text").innerText = "Original";
+                isFeaturesTranslated = true;
+            } else {
+                btnTranslateFeatures.setAttribute("disabled", "true");
+                btnTranslateFeatures.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>Translating...</span>";
+                const textToTranslate = originalFeatures.join("\n");
+                try {
+                    const translatedText = await translateText(textToTranslate);
+                    translatedFeatures = translatedText.split("\n");
+                    elList.innerHTML = translatedFeatures.map(txt => `<li>${txt}</li>`).join("");
+                    btnTranslateFeatures.querySelector(".btn-translate-text").innerText = "Original";
+                    isFeaturesTranslated = true;
+                } catch (err) {
+                    console.error("Translation error:", err);
+                    alert("Translation failed. Check internet connection.");
+                } finally {
+                    btnTranslateFeatures.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>" + (isFeaturesTranslated ? "Original" : "Translate") + "</span>";
+                    btnTranslateFeatures.removeAttribute("disabled");
+                }
+            }
+        }
+    });
+}
+
+function resetTranslationCache() {
+    originalDesc = "";
+    translatedDesc = "";
+    isDescTranslated = false;
+    originalFeatures = [];
+    translatedFeatures = [];
+    isFeaturesTranslated = false;
+    
+    if (btnTranslateDesc) {
+        const textSpan = btnTranslateDesc.querySelector(".btn-translate-text");
+        if (textSpan) textSpan.innerText = "Translate";
+    }
+    if (btnTranslateFeatures) {
+        const textSpan = btnTranslateFeatures.querySelector(".btn-translate-text");
+        if (textSpan) textSpan.innerText = "Translate";
+    }
 }
