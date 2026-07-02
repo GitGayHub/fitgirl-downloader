@@ -1635,13 +1635,13 @@ body {
 }
 
 .game-card {
-    width: 170px !important; /* Fixed width for flex layout */
+    width: 195px !important; /* Increased from 170px for larger covers */
     flex: 0 0 auto !important;
 }
 
-/* Expanded Grid height to fit more games */
+/* Expanded Grid height to fit more games and dynamically fill empty space */
 .games-grid {
-    max-height: 700px !important; /* Increase from 480px to show more games */
+    max-height: calc(100vh - 190px) !important; /* Dynamic height to fill bottom space */
 }
 
 /* Haze Background Blur (Harmonoid style) */
@@ -2902,11 +2902,12 @@ details[open] .summary-toggle-icon {
 
 /* Details view floating combined download pill */
 .details-bottom-bar {
-    position: fixed !important;
-    bottom: 24px !important;
-    left: 50% !important;
-    transform: translateX(-50%) !important;
-    width: auto !important;
+    position: relative !important;
+    bottom: auto !important;
+    left: auto !important;
+    transform: none !important;
+    margin: 30px auto 20px auto !important;
+    width: fit-content !important;
     min-width: 250px !important;
     background: rgba(12, 12, 18, 0.75) !important;
     backdrop-filter: blur(35px) saturate(210%) contrast(115%) brightness(95%) !important;

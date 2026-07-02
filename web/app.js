@@ -3468,8 +3468,24 @@ function renderScreenshots(screenshotsList, videosList) {
         if (isDirect) {
             if (elMainDirectVideo) {
                 elMainDirectVideo.src = videoUrl;
+                elMainDirectVideo.muted = true;
+                elMainDirectVideo.defaultMuted = true;
+                elMainDirectVideo.autoplay = true;
+                elMainDirectVideo.loop = true;
+                elMainDirectVideo.playsInline = true;
                 elMainDirectVideo.style.display = "block";
-                elMainDirectVideo.play().catch(e => console.log("Auto-play blocked:", e));
+                
+                // Attempt programmatical playback with auto-retry on interaction
+                elMainDirectVideo.play().catch(e => {
+                    console.log("Direct video autoplay blocked, setting up user interaction retry:", e);
+                    const runPlay = () => {
+                        elMainDirectVideo.play().catch(err => console.log("Subsequent play failed:", err));
+                        document.removeEventListener("click", runPlay);
+                        document.removeEventListener("keydown", runPlay);
+                    };
+                    document.addEventListener("click", runPlay);
+                    document.addEventListener("keydown", runPlay);
+                });
             }
             if (elMainVideoIframe) {
                 elMainVideoIframe.src = "";
@@ -3751,6 +3767,34 @@ if (elModalBrowseDirBtn && elModalSaveDirInput) {
     });
 }
 
+// 2-Step Setup Modal Wizard Logic
+let modalStep = 1;
+const elModalBtnBack = document.getElementById("modal-btn-back");
+const elModalNextIcon = document.getElementById("modal-next-icon");
+const elModalStartIcon = document.getElementById("modal-start-icon");
+const elModalBtnText = document.getElementById("modal-btn-text");
+const elModalStep1Container = document.getElementById("modal-step-1");
+const elModalStep2Container = document.getElementById("modal-step-2");
+
+function setModalStep(step) {
+    modalStep = step;
+    if (step === 1) {
+        if (elModalStep1Container) elModalStep1Container.style.display = "block";
+        if (elModalStep2Container) elModalStep2Container.style.display = "none";
+        if (elModalBtnBack) elModalBtnBack.style.display = "none";
+        if (elModalNextIcon) elModalNextIcon.style.display = "inline-block";
+        if (elModalStartIcon) elModalStartIcon.style.display = "none";
+        if (elModalBtnText) elModalBtnText.innerText = "Next";
+    } else if (step === 2) {
+        if (elModalStep1Container) elModalStep1Container.style.display = "none";
+        if (elModalStep2Container) elModalStep2Container.style.display = "block";
+        if (elModalBtnBack) elModalBtnBack.style.display = "block";
+        if (elModalNextIcon) elModalNextIcon.style.display = "none";
+        if (elModalStartIcon) elModalStartIcon.style.display = "inline-block";
+        if (elModalBtnText) elModalBtnText.innerText = "Confirm & Start Download";
+    }
+}
+
 // Bind Details Bottom Bar trigger
 if (elDetailsDownloadTriggerBtn && downloadConfigModal) {
     elDetailsDownloadTriggerBtn.addEventListener("click", () => {
@@ -3758,11 +3802,21 @@ if (elDetailsDownloadTriggerBtn && downloadConfigModal) {
         if (elModalGameNameInput) elModalGameNameInput.value = elGameNameInput.value;
         if (elModalSaveDirInput) elModalSaveDirInput.value = elSaveDirInput.value;
         
+        // Reset to Step 1
+        setModalStep(1);
+        
         // Open modal with smooth transition
         downloadConfigModal.style.display = "flex";
         setTimeout(() => {
             downloadConfigModal.classList.add("active");
         }, 15);
+    });
+}
+
+// Bind modal back button click
+if (elModalBtnBack) {
+    elModalBtnBack.addEventListener("click", () => {
+        setModalStep(1);
     });
 }
 
@@ -3777,7 +3831,15 @@ if (elModalStartDownloadBtn && downloadConfigModal) {
             if (elGameNameInput) elGameNameInput.value = gameTitle;
             if (elSaveDirInput) elSaveDirInput.value = downloadDir;
             
-            confirmDownloadQueue(gameTitle, downloadDir);
+            if (modalStep === 1) {
+                if (!downloadDir) {
+                    alert("Please select a save directory first!");
+                    return;
+                }
+                setModalStep(2);
+            } else {
+                confirmDownloadQueue(gameTitle, downloadDir);
+            }
         } catch (e) {
             console.error("Error clicking Next button:", e);
             alert("Failed to proceed: " + e.message);

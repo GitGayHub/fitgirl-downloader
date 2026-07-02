@@ -290,7 +290,7 @@
                                          <!-- Main Showcase Image -->
                                          <img id="screenshot-main-img" src="" alt="Gameplay Preview">
                                          <!-- Main Showcase Video player for direct mp4/webm videos -->
-                                         <video id="screenshot-main-direct-video" controls autoplay muted loop style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0; object-fit: cover;"></video>
+                                         <video id="screenshot-main-direct-video" autoplay muted loop playsinline style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0; object-fit: cover;"></video>
                                          <!-- Main Showcase Video Iframe for YouTube (hidden by default) -->
                                          <iframe id="screenshot-main-video" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0;"></iframe >
                                      </div>
@@ -307,67 +307,7 @@
                                     <ul id="repack-features-list" style="font-size: 0.85rem; line-height: 1.6; color: var(--text-white); margin-top: 10px; padding-left: 20px; list-style-type: disc;"></ul>
                                 </div>
                             </div>
-                            
-                            <!-- Files Checklist Box -->
-                            <div class="details-section-card" id="details-files-card">
-                                <div class="checklist-header">
-                                    <h3 class="section-title" style="margin-bottom: 4px;">
-                                        Select Files to Download
-                                        <span class="active-mirror-badge" id="active-mirror-badge-container" style="display:none; font-size: 0.72rem; font-weight: normal; text-transform: none; opacity: 0.85;">
-                                            (Mirror: <span id="active-mirror-name">Loading...</span>)
-                                        </span>
-                                    </h3>
-                                    <div class="selection-status-pills" id="selection-status-pills" style="display: flex; gap: 8px; align-items: center; margin-top: 4px; margin-bottom: 8px;"></div>
-                                    <div class="checklist-controls" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 10px; margin-bottom: 12px;">
-                                        <div class="sorting-selector">
-                                            <span class="sorting-label" style="font-size: 0.75rem; color: var(--text-muted);">Сортировка:</span>
-                                            <select id="sorting-select" style="font-size: 0.75rem; padding: 2px 6px; border-radius: 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: var(--text-white);">
-                                                <option value="sequential" selected>По порядку (1-N)</option>
-                                                <option value="original">Как на сайте</option>
-                                            </select>
-                                        </div>
-                                        <div class="checklist-actions" style="display: flex; gap: 4px;">
-                                            <button id="btn-sel-main" class="btn btn-accent btn-sm" style="padding: 4px 10px; font-size: 0.72rem;">Main Game Only</button>
-                                            <button id="btn-sel-rus" class="btn btn-accent btn-sm" style="padding: 4px 10px; font-size: 0.72rem; background: rgba(52, 152, 219, 0.15); border-color: rgba(52, 152, 219, 0.35); color: #5dade2; display: none;">Select Russian</button>
-                                            <button id="btn-sel-all" class="btn btn-accent btn-sm" style="padding: 4px 10px; font-size: 0.72rem;">Select All</button>
-                                            <button id="btn-sel-none" class="btn btn-accent btn-sm" style="padding: 4px 10px; font-size: 0.72rem;">Deselect All</button>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="files-checklist-wrapper" style="position: relative; overflow: hidden; display: flex; flex-direction: column;">
-                                    <!-- Spinner overlay while mirror links fetch -->
-                                    <div class="checklist-loading-overlay" id="checklist-loading-spinner" style="display: none;">
-                                        <div class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></div>
-                                        <p style="font-size: 0.8rem; margin-top: 5px;">Decrypting mirror paste...</p>
-                                    </div>
-
-                                    <div class="files-checklist-container" style="overflow-y: auto; padding-right: 2px;">
-                                        <!-- Collapsible Parts lists -->
-                                        <details class="file-group-collapsible file-group-box" id="file-group-main-box" open>
-                                            <summary class="file-group-summary">
-                                                <span class="summary-toggle-icon">⏵</span>
-                                                <span class="group-title-label">Main Game Parts & Setup</span>
-                                            </summary>
-                                            <div class="file-checkbox-list" id="files-list-main"></div>
-                                        </details>
-                                        <details class="file-group-collapsible file-group-box" id="file-group-lang-box" style="margin-top: 8px;">
-                                            <summary class="file-group-summary">
-                                                <span class="summary-toggle-icon">⏵</span>
-                                                <span class="group-title-label">Optional Language Packs</span>
-                                            </summary>
-                                            <div class="file-checkbox-list" id="files-list-lang"></div>
-                                        </details>
-                                        <details class="file-group-collapsible file-group-box" id="file-group-other-box" style="margin-top: 8px;">
-                                            <summary class="file-group-summary">
-                                                <span class="summary-toggle-icon">⏵</span>
-                                                <span class="group-title-label">Optional Extras</span>
-                                            </summary>
-                                            <div class="file-checkbox-list" id="files-list-other"></div>
-                                        </details>
-                                    </div>
-                                </div>
-                            </div>
+                            <!-- Files checklist has been moved into the modal config wizard step 2 -->
                         </div>
 
                     </div>
@@ -685,41 +625,115 @@
         <img id="screenshot-modal-img" src="" alt="Fullscreen Screenshot" style="max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
     </div>
 
-    <!-- iOS-style Mirror & Config Selector Modal -->
+    <!-- iOS-style Mirror & Config Selector Modal (Step 1 & Step 2) -->
     <div class="modal-overlay" id="download-config-modal" style="display: none;">
-        <div class="modal-card">
-            <div class="modal-drag-handle"></div>
-            <h3 class="modal-title">Choose a mirror</h3>
+        <div class="modal-card" style="max-width: 620px; width: 90%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 25px;">
+            <div class="modal-drag-handle" style="margin-bottom: 12px; flex-shrink: 0;"></div>
             
-            <div class="modal-mirrors-list" id="modal-mirrors-list">
-                <!-- Dynamically populated mirrors -->
-            </div>
-            
-            <!-- Folder config inside the modal -->
-            <div class="modal-config-form">
-                <div class="modal-form-group">
-                    <label>Save Directory</label>
-                    <div class="modal-dir-input-wrapper">
-                        <input type="text" id="modal-save-dir-input" placeholder="e.g., D:\Downloads">
-                        <button class="btn btn-accent btn-icon-only" id="modal-btn-browse-dir" style="padding: 10px; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;" title="Select Save Directory">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                                <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.89-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-4H6V8h12v6z"/>
-                            </svg>
-                        </button>
+            <div style="flex: 1; overflow-y: auto; padding-right: 4px;">
+                <!-- Step 1 Layout -->
+                <div id="modal-step-1" class="modal-step-container">
+                    <h3 class="modal-title" style="margin-bottom: 15px; font-family: 'Outfit', sans-serif; font-weight: 700; color: #fff;">Configure Download</h3>
+                    
+                    <div class="modal-form-group" style="margin-bottom: 14px;">
+                        <label style="font-weight: 600; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 8px;">Choose a download mirror</label>
+                        <div class="modal-mirrors-list" id="modal-mirrors-list" style="margin-bottom: 0; max-height: 200px; overflow-y: auto;">
+                            <!-- Dynamically populated mirrors -->
+                        </div>
+                    </div>
+                    
+                    <!-- Folder config inside the modal -->
+                    <div class="modal-config-form" style="margin-top: 15px; display: flex; flex-direction: column; gap: 14px;">
+                        <div class="modal-form-group">
+                            <label style="font-weight: 600; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Save Directory</label>
+                            <div class="modal-dir-input-wrapper" style="display: flex; gap: 8px; align-items: center; width: 100%;">
+                                <input type="text" id="modal-save-dir-input" placeholder="e.g., D:\Downloads" style="flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 0.85rem; box-sizing: border-box; min-width: 0;">
+                                <button class="btn btn-accent btn-icon-only" id="modal-btn-browse-dir" style="padding: 10px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 40px; height: 40px;" title="Select Save Directory">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                                        <path d="M20 6h-8l-2-2H4c-1.1 0-1.99.89-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-4H6V8h12v6z"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="modal-form-group">
+                            <label style="font-weight: 600; font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 6px;">Game Folder Name</label>
+                            <input type="text" id="modal-game-name-input" placeholder="e.g., Arma Reforger" style="width: 100%; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 0.85rem; box-sizing: border-box;">
+                        </div>
                     </div>
                 </div>
-                <div class="modal-form-group" style="margin-top: 12px;">
-                    <label>Game Folder Name</label>
-                    <input type="text" id="modal-game-name-input" placeholder="e.g., Arma Reforger">
+                
+                <!-- Step 2 Layout -->
+                <div id="modal-step-2" class="modal-step-container" style="display: none;">
+                    <h3 class="modal-title" style="margin-bottom: 12px; font-family: 'Outfit', sans-serif; font-weight: 700; color: #fff;">Select Files to Download</h3>
+                    
+                    <div class="selection-status-pills" id="selection-status-pills" style="display: flex; gap: 8px; align-items: center; margin-top: 4px; margin-bottom: 10px; flex-wrap: wrap;"></div>
+                    
+                    <div class="checklist-controls" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 10px; margin-bottom: 12px;">
+                        <div class="sorting-selector" style="display: flex; align-items: center; gap: 6px;">
+                            <span class="sorting-label" style="font-size: 0.75rem; color: var(--text-muted);">Сортировка:</span>
+                            <select id="sorting-select" style="font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: var(--text-white); cursor: pointer;">
+                                <option value="sequential" selected>По порядку (1-N)</option>
+                                <option value="original">Как на сайте</option>
+                            </select>
+                        </div>
+                        <div class="checklist-actions" style="display: flex; gap: 4px; flex-wrap: wrap;">
+                            <button id="btn-sel-main" class="btn btn-accent btn-sm" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 6px;">Main Only</button>
+                            <button id="btn-sel-rus" class="btn btn-accent btn-sm" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 6px; background: rgba(52, 152, 219, 0.15); border-color: rgba(52, 152, 219, 0.35); color: #5dade2; display: none;">Select Rus</button>
+                            <button id="btn-sel-all" class="btn btn-accent btn-sm" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 6px;">All</button>
+                            <button id="btn-sel-none" class="btn btn-accent btn-sm" style="padding: 4px 8px; font-size: 0.7rem; border-radius: 6px;">None</button>
+                        </div>
+                    </div>
+                    
+                    <div class="files-checklist-wrapper" style="position: relative; overflow: hidden; display: flex; flex-direction: column; max-height: 320px;">
+                        <!-- Spinner overlay while mirror links fetch -->
+                        <div class="checklist-loading-overlay" id="checklist-loading-spinner" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,10,20,0.85); z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px;">
+                            <div class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></div>
+                            <p style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">Decrypting mirror paste...</p>
+                        </div>
+
+                        <div class="files-checklist-container" style="overflow-y: auto; padding-right: 4px; max-height: 310px;">
+                            <!-- Collapsible Parts lists -->
+                            <details class="file-group-collapsible file-group-box" id="file-group-main-box" open>
+                                <summary class="file-group-summary" style="font-size: 0.8rem; padding: 6px 10px;">
+                                    <span class="summary-toggle-icon">⏵</span>
+                                    <span class="group-title-label">Main Game Parts & Setup</span>
+                                </summary>
+                                <div class="file-checkbox-list" id="files-list-main" style="padding: 8px 10px;"></div>
+                            </details>
+                            <details class="file-group-collapsible file-group-box" id="file-group-lang-box" style="margin-top: 8px;">
+                                <summary class="file-group-summary" style="font-size: 0.8rem; padding: 6px 10px;">
+                                    <span class="summary-toggle-icon">⏵</span>
+                                    <span class="group-title-label">Optional Language Packs</span>
+                                </summary>
+                                <div class="file-checkbox-list" id="files-list-lang" style="padding: 8px 10px;"></div>
+                            </details>
+                            <details class="file-group-collapsible file-group-box" id="file-group-other-box" style="margin-top: 8px;">
+                                <summary class="file-group-summary" style="font-size: 0.8rem; padding: 6px 10px;">
+                                    <span class="summary-toggle-icon">⏵</span>
+                                    <span class="group-title-label">Optional Extras</span>
+                                </summary>
+                                <div class="file-checkbox-list" id="files-list-other" style="padding: 8px 10px;"></div>
+                            </details>
+                        </div>
+                    </div>
                 </div>
             </div>
             
-            <button class="btn btn-modal-next" id="modal-btn-start-download">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                    <path d="M5 13h11.86l-5.43 5.43 1.42 1.42L21 12l-8.15-8.15-1.42 1.42L16.86 11H5v2z"/>
-                </svg>
-                <span>Next</span>
-            </button>
+            <!-- Cohesive Navigation Row at the bottom of the modal card -->
+            <div class="modal-navigation-row" style="display: flex; gap: 12px; margin-top: 20px; width: 100%; flex-shrink: 0;">
+                <button class="btn btn-secondary" id="modal-btn-back" style="display: none; flex: 1; padding: 12px; border-radius: 12px; font-weight: 600; font-size: 0.9rem; cursor: pointer; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); color: #fff; transition: all 0.2s;">
+                    Back
+                </button>
+                <button class="btn btn-modal-next" id="modal-btn-start-download" style="flex: 2; padding: 12px; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; font-size: 0.9rem; cursor: pointer; border: none; transition: all 0.2s;">
+                    <svg id="modal-next-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M5 13h11.86l-5.43 5.43 1.42 1.42L21 12l-8.15-8.15-1.42 1.42L16.86 11H5v2z"/>
+                    </svg>
+                    <svg id="modal-start-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="display: none;">
+                        <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+                    </svg>
+                    <span id="modal-btn-text">Next</span>
+                </button>
+            </div>
         </div>
     </div>
     <!-- Floating Download Mini-Badge (visible during browsing when download is active) -->
