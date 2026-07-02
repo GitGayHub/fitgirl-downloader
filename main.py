@@ -3830,7 +3830,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             screenshots = screenshots[:10]
                             
                             # Extract gameplay direct video tag trailers from FitGirl page
-                            for video in content_el.find_all('video'):
+                            for video in soup.find_all('video'):
                                 source = video.find('source')
                                 video_src = source.get('src', '') if source else video.get('src', '')
                                 if video_src:

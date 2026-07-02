@@ -3404,6 +3404,7 @@ loadCatalogGames();
 
 // Render Screenshots Showcase + Grid Gallery
 function renderScreenshots(screenshotsList, videosList) {
+    console.log("renderScreenshots called with:", {screenshotsList, videosList});
     const elScreenshotsSection = document.getElementById("game-screenshots-section");
     const elScreenshotsContainer = document.getElementById("game-screenshots-container");
     const elMainScreenshotImg = document.getElementById("screenshot-main-img");

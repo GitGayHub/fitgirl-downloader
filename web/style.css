@@ -1519,7 +1519,7 @@ body {
 .card-cover {
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: cover;
     background: #06060c;
     transition: transform 0.3s ease;
 }
@@ -2556,7 +2556,7 @@ details[open] .summary-toggle-icon {
 /* Floating Download Badge */
 .floating-download-bar {
     position: fixed;
-    bottom: 24px;
+    top: 24px;
     left: 50%;
     transform: translateX(-50%);
     width: 90%;
@@ -2580,7 +2580,7 @@ details[open] .summary-toggle-icon {
     background: rgba(22, 22, 38, 0.6) !important;
     border-color: rgba(255, 255, 255, 0.2) !important;
     box-shadow: 0 16px 45px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.25) !important;
-    transform: translateX(-50%) translateY(-2px);
+    transform: translateX(-50%) translateY(2px);
 }
 
 .floating-bar-main-click {
@@ -3508,6 +3508,8 @@ details[open] .summary-toggle-icon {
 
 .screenshot-main-showcase {
     width: 100%;
+    max-width: 70%;
+    margin: 0 auto;
     aspect-ratio: 21 / 9;
     border-radius: 16px;
     overflow: hidden;
