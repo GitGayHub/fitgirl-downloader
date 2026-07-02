@@ -863,17 +863,76 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 const descSection = document.getElementById("details-desc-section");
                 if (descSection && elGameDescription) {
                     if (data.description) {
-                        elGameDescription.innerText = data.description;
+                        elGameDescription.innerHTML = data.description.replace(/\n/g, "<br>");
                         descSection.style.display = "block";
                     } else {
                         descSection.style.display = "none";
                     }
                 }
                 
-                // Render Screenshots Gallery
-                renderScreenshots(data.screenshots);
+                // Render Repack Features list
+                const featuresSection = document.getElementById("details-features-section");
+                const featuresList = document.getElementById("repack-features-list");
+                if (featuresSection && featuresList) {
+                    if (data.repack_features && data.repack_features.length > 0) {
+                        featuresList.innerHTML = "";
+                        data.repack_features.forEach(feat => {
+                            const li = document.createElement("li");
+                            li.innerText = feat;
+                            featuresList.appendChild(li);
+                        });
+                        featuresSection.style.display = "block";
+                    } else {
+                        featuresSection.style.display = "none";
+                    }
+                }
+
+                // Bind collapsible header toggle behaviors
+                const descHeader = document.getElementById("details-desc-header");
+                if (descHeader) {
+                    descHeader.onclick = () => {
+                        const parent = descHeader.parentElement;
+                        parent.classList.toggle("active");
+                        const titleEl = descHeader.querySelector(".section-title");
+                        titleEl.innerText = parent.classList.contains("active") ? "− Game Description" : "+ Game Description";
+                    };
+                    descHeader.parentElement.classList.remove("active");
+                    const titleEl = descHeader.querySelector(".section-title");
+                    if (titleEl) titleEl.innerText = "+ Game Description";
+                }
                 
-                // Populate Right-column database info
+                const featuresHeader = document.getElementById("details-features-header");
+                if (featuresHeader) {
+                    featuresHeader.onclick = () => {
+                        const parent = featuresHeader.parentElement;
+                        parent.classList.toggle("active");
+                        const titleEl = featuresHeader.querySelector(".section-title");
+                        titleEl.innerText = parent.classList.contains("active") ? "− Repack Features" : "+ Repack Features";
+                    };
+                    featuresHeader.parentElement.classList.remove("active");
+                    const titleEl = featuresHeader.querySelector(".section-title");
+                    if (titleEl) titleEl.innerText = "+ Repack Features";
+                }
+
+                // Bind Sticky Top Header Buttons
+                const btnBackTop = document.getElementById("btn-back-to-catalog-top");
+                if (btnBackTop) {
+                    btnBackTop.onclick = () => {
+                        setViewState("catalog");
+                    };
+                }
+                const btnOpenBrowserTop = document.getElementById("btn-open-browser-top");
+                if (btnOpenBrowserTop && url) {
+                    btnOpenBrowserTop.href = url;
+                    btnOpenBrowserTop.style.display = "flex";
+                } else if (btnOpenBrowserTop) {
+                    btnOpenBrowserTop.style.display = "none";
+                }
+
+                // Render Screenshots & Videos Gallery
+                renderScreenshots(data.screenshots, data.videos);
+                
+                // Populate Left-column database info
                 const rowDev = document.getElementById("row-developer");
                 const elDev = document.getElementById("details-developer");
                 if (rowDev && elDev) {
@@ -882,17 +941,6 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         rowDev.style.display = "flex";
                     } else {
                         rowDev.style.display = "none";
-                    }
-                }
-                
-                const rowPub = document.getElementById("row-publisher");
-                const elPub = document.getElementById("details-publisher");
-                if (rowPub && elPub) {
-                    if (data.publisher) {
-                        elPub.innerText = data.publisher;
-                        rowPub.style.display = "flex";
-                    } else {
-                        rowPub.style.display = "none";
                     }
                 }
                 
@@ -917,21 +965,60 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         rowRate.style.display = "none";
                     }
                 }
-                
-                const rowGenres = document.getElementById("row-genres");
-                const elGenres = document.getElementById("details-genres");
-                if (rowGenres && elGenres) {
-                    if (data.genres && data.genres.length > 0) {
-                        elGenres.innerHTML = "";
-                        data.genres.forEach(g => {
-                            const span = document.createElement("span");
-                            span.className = "genre-pill";
-                            span.innerText = g;
-                            elGenres.appendChild(span);
-                        });
-                        rowGenres.style.display = "flex";
+
+                // Populate FitGirl website metadata fields
+                const rowFgGenres = document.getElementById("row-fg-genres");
+                const elFgGenres = document.getElementById("details-fg-genres");
+                if (rowFgGenres && elFgGenres) {
+                    if (data.genres_tags) {
+                        elFgGenres.innerText = data.genres_tags;
+                        rowFgGenres.style.display = "flex";
                     } else {
-                        rowGenres.style.display = "none";
+                        rowFgGenres.style.display = "none";
+                    }
+                }
+
+                const rowFgCompany = document.getElementById("row-fg-company");
+                const elFgCompany = document.getElementById("details-fg-company");
+                if (rowFgCompany && elFgCompany) {
+                    if (data.company) {
+                        elFgCompany.innerText = data.company;
+                        rowFgCompany.style.display = "flex";
+                    } else {
+                        rowFgCompany.style.display = "none";
+                    }
+                }
+
+                const rowFgLanguages = document.getElementById("row-fg-languages");
+                const elFgLanguages = document.getElementById("details-fg-languages");
+                if (rowFgLanguages && elFgLanguages) {
+                    if (data.languages) {
+                        elFgLanguages.innerText = data.languages;
+                        rowFgLanguages.style.display = "flex";
+                    } else {
+                        rowFgLanguages.style.display = "none";
+                    }
+                }
+
+                const rowFgOrigSize = document.getElementById("row-fg-orig-size");
+                const elFgOrigSize = document.getElementById("details-fg-orig-size");
+                if (rowFgOrigSize && elFgOrigSize) {
+                    if (data.original_size && data.original_size !== "Unknown") {
+                        elFgOrigSize.innerText = data.original_size;
+                        rowFgOrigSize.style.display = "flex";
+                    } else {
+                        rowFgOrigSize.style.display = "none";
+                    }
+                }
+
+                const rowFgRepackSize = document.getElementById("row-fg-repack-size");
+                const elFgRepackSize = document.getElementById("details-fg-repack-size");
+                if (rowFgRepackSize && elFgRepackSize) {
+                    if (data.repack_size && data.repack_size !== "Unknown") {
+                        elFgRepackSize.innerText = data.repack_size;
+                        rowFgRepackSize.style.display = "flex";
+                    } else {
+                        rowFgRepackSize.style.display = "none";
                     }
                 }
                 
@@ -943,24 +1030,6 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         rowUnpack.style.display = "flex";
                     } else {
                         rowUnpack.style.display = "none";
-                    }
-                }
-                
-                // Populate Metacritic Score
-                const metacriticCard = document.getElementById("details-metacritic-card");
-                const metacriticScore = document.getElementById("details-metacritic-score");
-                if (metacriticCard && metacriticScore) {
-                    if (data.metacritic) {
-                        metacriticScore.innerText = data.metacritic;
-                        metacriticScore.className = "metacritic-score-badge";
-                        if (data.metacritic < 50) {
-                            metacriticScore.classList.add("red");
-                        } else if (data.metacritic < 75) {
-                            metacriticScore.classList.add("yellow");
-                        }
-                        metacriticCard.style.display = "flex";
-                    } else {
-                        metacriticCard.style.display = "none";
                     }
                 }
                 
@@ -1662,13 +1731,10 @@ elBrowseDirBtn.addEventListener("click", async () => {
 });
 
 // Confirm download queue configuration
-elConfirmQueueBtn.addEventListener("click", async () => {
-    const gameTitle = elGameNameInput.value.trim();
-    const downloadDir = elSaveDirInput.value.trim();
-    
+async function confirmDownloadQueue(gameTitle, downloadDir) {
     if (!gameTitle || !downloadDir) {
-        alert("Please enter a game name and select a save directory.");
-        return;
+        alert("Please enter a game folder name and select a save directory.");
+        return false;
     }
     
     // Gather checked files
@@ -1676,11 +1742,18 @@ elConfirmQueueBtn.addEventListener("click", async () => {
     
     if (selectedFiles.length === 0) {
         alert("Please select at least one file to download.");
-        return;
+        return false;
     }
     
-    elConfirmQueueBtn.setAttribute("disabled", "true");
-    elConfirmQueueBtn.innerText = "Configuring Queue...";
+    if (elConfirmQueueBtn) {
+        elConfirmQueueBtn.setAttribute("disabled", "true");
+        elConfirmQueueBtn.innerText = "Configuring Queue...";
+    }
+    if (elModalStartDownloadBtn) {
+        elModalStartDownloadBtn.setAttribute("disabled", "true");
+        const span = elModalStartDownloadBtn.querySelector("span");
+        if (span) span.innerText = "Starting...";
+    }
     
     try {
         const response = await fetch("/api/confirm_config", {
@@ -1699,21 +1772,41 @@ elConfirmQueueBtn.addEventListener("click", async () => {
         
         const data = await response.json();
         if (response.ok && data.success) {
-            // Trigger status polling and automatically start downloads
             fetchState();
             await fetch("/api/start", { method: "POST" });
             fetchState();
+            
+            if (downloadConfigModal) {
+                downloadConfigModal.classList.remove("active");
+                setTimeout(() => {
+                    downloadConfigModal.style.display = "none";
+                }, 250);
+            }
+            return true;
         } else {
             alert("Configuration failed: " + (data.error || "Unknown error"));
-            elConfirmQueueBtn.removeAttribute("disabled");
-            elConfirmQueueBtn.innerText = "Confirm and Start Download";
         }
     } catch (e) {
         console.error("Error setting config:", e);
         alert("Connection error setting configuration.");
-        elConfirmQueueBtn.removeAttribute("disabled");
-        elConfirmQueueBtn.innerText = "Confirm and Start Download";
+    } finally {
+        if (elConfirmQueueBtn) {
+            elConfirmQueueBtn.removeAttribute("disabled");
+            elConfirmQueueBtn.innerText = "Confirm and Start Download";
+        }
+        if (elModalStartDownloadBtn) {
+            elModalStartDownloadBtn.removeAttribute("disabled");
+            const span = elModalStartDownloadBtn.querySelector("span");
+            if (span) span.innerText = "Next";
+        }
     }
+    return false;
+}
+
+elConfirmQueueBtn.addEventListener("click", () => {
+    const gameTitle = elGameNameInput.value.trim();
+    const downloadDir = elSaveDirInput.value.trim();
+    confirmDownloadQueue(gameTitle, downloadDir);
 });
 
 // Sorting select listener
@@ -3202,19 +3295,36 @@ function initSettings() {
     if (elProviderSelect) {
         elProviderSelect.value = activeProvider;
     }
-    elChkShowLogs.checked = showLogs;
+    if (elChkShowLogs) {
+        elChkShowLogs.checked = showLogs;
+        elChkShowLogs.addEventListener("change", () => {
+            const val = elChkShowLogs.checked;
+            elConsoleBox.parentElement.classList.toggle("hidden", !val);
+            localStorage.setItem("showLogs", val ? "true" : "false");
+        });
+    }
     if (elChkRainbowBg) {
         elChkRainbowBg.checked = rainbowBg;
+        elChkRainbowBg.addEventListener("change", () => {
+            const val = elChkRainbowBg.checked;
+            document.body.classList.toggle("rainbow-active", val);
+            localStorage.setItem("rainbowBg", val ? "true" : "false");
+        });
     }
     if (elChkGofileProxy) {
         elChkGofileProxy.checked = gofileProxy;
+        elChkGofileProxy.addEventListener("change", () => {
+            localStorage.setItem("gofileProxy", elChkGofileProxy.checked ? "true" : "false");
+        });
     }
     if (elChkHideGDrive) {
         elChkHideGDrive.checked = hideGDrive;
         elChkHideGDrive.addEventListener("change", () => {
+            const val = elChkHideGDrive.checked;
             document.querySelectorAll(".gdrive-ui-element").forEach(el => {
-                el.style.display = elChkHideGDrive.checked ? "none" : "";
+                el.style.display = val ? "none" : "";
             });
+            localStorage.setItem("hideGDrive", val ? "true" : "false");
         });
     }
     document.querySelectorAll(".gdrive-ui-element").forEach(el => {
@@ -3290,43 +3400,104 @@ syncViewState();
 loadCatalogGames();
 
 // Render Screenshots Showcase + Grid Gallery
-function renderScreenshots(screenshotsList) {
+function renderScreenshots(screenshotsList, videosList) {
     const elScreenshotsSection = document.getElementById("game-screenshots-section");
     const elScreenshotsContainer = document.getElementById("game-screenshots-container");
     const elMainScreenshotImg = document.getElementById("screenshot-main-img");
+    const elMainVideoIframe = document.getElementById("screenshot-main-video");
     const elMainScreenshotShowcase = document.getElementById("screenshot-main-showcase-container");
 
     if (elScreenshotsSection && elScreenshotsContainer) {
         elScreenshotsContainer.innerHTML = "";
-        if (screenshotsList && screenshotsList.length > 0) {
-            const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
-            
-            if (elMainScreenshotImg) {
-                elMainScreenshotImg.src = firstScreenshotUrl;
-                elMainScreenshotImg.onclick = () => {
-                    openScreenshotModal(elMainScreenshotImg.src);
-                };
+        
+        const hasVideos = videosList && videosList.length > 0;
+        const hasScreenshots = screenshotsList && screenshotsList.length > 0;
+
+        if (hasVideos || hasScreenshots) {
+            // Setup default main preview
+            if (hasVideos) {
+                if (elMainVideoIframe) {
+                    elMainVideoIframe.src = videosList[0];
+                    elMainVideoIframe.style.display = "block";
+                }
+                if (elMainScreenshotImg) {
+                    elMainScreenshotImg.style.display = "none";
+                }
+            } else if (hasScreenshots) {
+                const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
+                if (elMainScreenshotImg) {
+                    elMainScreenshotImg.src = firstScreenshotUrl;
+                    elMainScreenshotImg.style.display = "block";
+                    elMainScreenshotImg.onclick = () => {
+                        openScreenshotModal(elMainScreenshotImg.src);
+                    };
+                }
+                if (elMainVideoIframe) {
+                    elMainVideoIframe.src = "";
+                    elMainVideoIframe.style.display = "none";
+                }
             }
+
             if (elMainScreenshotShowcase) {
                 elMainScreenshotShowcase.style.display = "block";
             }
 
-            screenshotsList.forEach((src, idx) => {
-                const img = document.createElement("img");
-                const proxiedSrc = `/api/proxy_image?url=${encodeURIComponent(src)}`;
-                img.src = proxiedSrc;
-                img.alt = "Screenshot thumbnail";
-                if (idx === 0) img.className = "active";
-                
-                img.addEventListener("click", () => {
-                    if (elMainScreenshotImg) {
-                        elMainScreenshotImg.src = proxiedSrc;
-                    }
-                    elScreenshotsContainer.querySelectorAll("img").forEach(i => i.classList.remove("active"));
-                    img.classList.add("active");
+            // 1. Render Video Thumbnails
+            if (hasVideos) {
+                videosList.forEach((videoUrl, idx) => {
+                    const thumbWrapper = document.createElement("div");
+                    thumbWrapper.className = "video-thumbnail-wrapper" + (idx === 0 ? " active" : "");
+                    thumbWrapper.innerHTML = `
+                        <div class="video-thumbnail-overlay">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                                <path d="M8 5v14l11-7z"/>
+                            </svg>
+                        </div>
+                        <span style="font-size: 0.65rem; font-weight: 700; color: #fff; text-transform: uppercase;">Trailer</span>
+                    `;
+                    
+                    thumbWrapper.addEventListener("click", () => {
+                        if (elMainVideoIframe) {
+                            elMainVideoIframe.src = videoUrl;
+                            elMainVideoIframe.style.display = "block";
+                        }
+                        if (elMainScreenshotImg) {
+                            elMainScreenshotImg.style.display = "none";
+                        }
+                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img").forEach(i => i.classList.remove("active"));
+                        thumbWrapper.classList.add("active");
+                    });
+                    elScreenshotsContainer.appendChild(thumbWrapper);
                 });
-                elScreenshotsContainer.appendChild(img);
-            });
+            }
+
+            // 2. Render Screenshot Thumbnails
+            if (hasScreenshots) {
+                screenshotsList.forEach((src, idx) => {
+                    const img = document.createElement("img");
+                    const proxiedSrc = `/api/proxy_image?url=${encodeURIComponent(src)}`;
+                    img.src = proxiedSrc;
+                    img.alt = "Screenshot thumbnail";
+                    if (!hasVideos && idx === 0) img.className = "active";
+                    
+                    img.addEventListener("click", () => {
+                        if (elMainVideoIframe) {
+                            elMainVideoIframe.src = "";
+                            elMainVideoIframe.style.display = "none";
+                        }
+                        if (elMainScreenshotImg) {
+                            elMainScreenshotImg.src = proxiedSrc;
+                            elMainScreenshotImg.style.display = "block";
+                            elMainScreenshotImg.onclick = () => {
+                                openScreenshotModal(proxiedSrc);
+                            };
+                        }
+                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img").forEach(i => i.classList.remove("active"));
+                        img.classList.add("active");
+                    });
+                    elScreenshotsContainer.appendChild(img);
+                });
+            }
             elScreenshotsSection.style.display = "block";
         } else {
             elScreenshotsSection.style.display = "none";
@@ -3489,25 +3660,11 @@ if (elModalStartDownloadBtn && downloadConfigModal) {
             const gameTitle = elModalGameNameInput ? elModalGameNameInput.value.trim() : "";
             const downloadDir = elModalSaveDirInput ? elModalSaveDirInput.value.trim() : "";
             
-            if (!gameTitle || !downloadDir) {
-                alert("Please enter a game folder name and select a save directory.");
-                return;
-            }
+            // Sync values to the original inputs
+            if (elGameNameInput) elGameNameInput.value = gameTitle;
+            if (elSaveDirInput) elSaveDirInput.value = downloadDir;
             
-            // Copy back to original inputs
-            elGameNameInput.value = gameTitle;
-            elSaveDirInput.value = downloadDir;
-            
-            // Hide modal
-            downloadConfigModal.classList.remove("active");
-            setTimeout(() => {
-                downloadConfigModal.style.display = "none";
-            }, 250);
-            
-            // Start download by clicking original confirm button
-            if (elConfirmQueueBtn) {
-                elConfirmQueueBtn.click();
-            }
+            confirmDownloadQueue(gameTitle, downloadDir);
         } catch (e) {
             console.error("Error clicking Next button:", e);
             alert("Failed to proceed: " + e.message);

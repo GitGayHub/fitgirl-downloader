@@ -3190,7 +3190,7 @@ details[open] .summary-toggle-icon {
 /* 2-Column Grid Details Layout */
 .details-columns-layout {
     display: grid;
-    grid-template-columns: 1fr 240px;
+    grid-template-columns: 200px 1fr;
     gap: 24px;
     width: 100%;
     align-items: start;
@@ -3199,16 +3199,55 @@ details[open] .summary-toggle-icon {
 .details-left-column {
     display: flex;
     flex-direction: column;
-    gap: 20px;
-    min-height: 0;
+    gap: 15px;
+    position: sticky;
+    top: 60px;
 }
 
 .details-right-column {
     display: flex;
     flex-direction: column;
     gap: 20px;
+    min-height: 0;
+}
+
+/* Sticky Top Navigation Bar */
+.details-sticky-header {
     position: sticky;
-    top: 10px;
+    top: 0;
+    z-index: 100;
+    background: rgba(12, 13, 18, 0.7) !important;
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+    padding: 12px 20px !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+    margin: -15px -24px 20px -24px !important;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Collapsible Panel Section Styles */
+.collapsible-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 8px;
+    transition: opacity 0.2s ease;
+}
+.collapsible-header:hover {
+    opacity: 0.8;
+}
+.collapsible-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1), margin 0.35s ease;
+}
+.collapsible-section.active .collapsible-content {
+    max-height: 1200px;
+    margin-top: 10px;
 }
 
 /* Styled Container Card */
@@ -3461,5 +3500,51 @@ details[open] .summary-toggle-icon {
 }
 .details-cover-card:hover {
     transform: scale(1.02);
+}
+
+.screenshot-main-showcase {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    background: #06060c;
+    transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.3s;
+}
+
+.video-thumbnail-wrapper {
+    width: 100%;
+    aspect-ratio: 16/9;
+    border-radius: 8px;
+    background: #11121a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    gap: 4px;
+    transition: all 0.2s ease;
+}
+.video-thumbnail-wrapper:hover {
+    border-color: var(--color-primary);
+    transform: scale(1.03);
+}
+.video-thumbnail-wrapper.active {
+    border-color: var(--color-accent) !important;
+    box-shadow: 0 0 10px var(--color-accent-glow);
+}
+.video-thumbnail-overlay {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 50%;
+    padding: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
 }
 

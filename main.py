@@ -3705,40 +3705,110 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         # Extract description and screenshots
                         description = ""
                         screenshots = []
+                        genres_tags = ""
+                        company = ""
+                        languages = ""
+                        repack_features_list = []
+                        
                         if content_el:
-                            paragraphs = []
+                            # 1. Scrape FitGirl-specific metadata lines
                             for p in content_el.find_all('p', recursive=True):
-                                p_copy = BeautifulSoup(str(p), 'html.parser')
-                                for br in p_copy.find_all('br'):
-                                    br.replace_with('\n')
-                                text = p_copy.get_text()
-                                
-                                cleaned_lines = []
-                                for line in text.split('\n'):
-                                    line = line.strip()
-                                    if not line:
+                                text = p.get_text()
+                                if "genres/tags:" in text.lower() or "genre/tag:" in text.lower():
+                                    match = re.search(r'(?:genres/tags|genre/tag|genres):\s*(.*)', text, re.IGNORECASE)
+                                    if match:
+                                        genres_tags = match.group(1).strip()
+                                if "compan" in text.lower():
+                                    match = re.search(r'(?:companies|company):\s*(.*)', text, re.IGNORECASE)
+                                    if match:
+                                        company = match.group(1).strip()
+                                if "languages:" in text.lower() or "language:" in text.lower():
+                                    match = re.search(r'(?:languages|language):\s*(.*)', text, re.IGNORECASE)
+                                    if match:
+                                        languages = match.group(1).strip()
+
+                            # 2. Extract Repack Features list
+                            repack_header = None
+                            for el in content_el.find_all(['h3', 'h4', 'p', 'strong', 'div']):
+                                el_text = el.get_text().lower()
+                                if "repack features" in el_text:
+                                    repack_header = el
+                                    break
+                            if repack_header:
+                                curr = repack_header
+                                for _ in range(10):
+                                    curr = curr.next_sibling
+                                    if not curr:
                                         continue
-                                    line_lower = line.lower()
-                                    if line_lower.endswith('.rar') or line_lower.endswith('.bin') or line_lower.endswith('.exe') or 'fitgirl-repacks' in line_lower:
+                                    if isinstance(curr, str):
                                         continue
-                                    if any(token in line_lower for token in [
-                                        "genres/tags:", "companies:", "languages:", "original size:", "repack size:", 
-                                        "screenshots:", "discussion and", "download mirrors", "filehoster:", "repack features",
-                                        "backwards compatibility", "game description", "if you experience", "repack notes",
-                                        "show direct links", "magnet", "1337x", "rutor", "tapochek.net", "compatibl",
-                                        "requires windows", "game updates", "unpack to", "run patch.bat", "patch", "update",
-                                        "elamigos", "rune", "flt", "tenoke", "soundtrack"
-                                    ]):
+                                    if curr.name == 'ul':
+                                        repack_features_list = [li.get_text(strip=True) for li in curr.find_all('li')]
+                                        break
+                                    if curr.name == 'p' and (curr.find('br') or len(curr.get_text()) > 100):
+                                        repack_features_list = [line.strip() for line in curr.get_text().split('\n') if line.strip()]
+                                        break
+
+                            # 3. Extract Game Description paragraphs
+                            game_desc_paragraphs = []
+                            desc_header = None
+                            for el in content_el.find_all(['h3', 'h4', 'p', 'strong', 'div']):
+                                el_text = el.get_text().lower()
+                                if "game description" in el_text:
+                                    desc_header = el
+                                    break
+                            if desc_header:
+                                curr = desc_header
+                                for _ in range(10):
+                                    curr = curr.next_sibling
+                                    if not curr:
                                         continue
-                                    cleaned_lines.append(line)
+                                    if isinstance(curr, str):
+                                        continue
+                                    if curr.name in ['h3', 'h4'] or "repack features" in curr.get_text().lower() or "screenshots" in curr.get_text().lower():
+                                        break
+                                    if curr.name == 'p':
+                                        p_text = curr.get_text(strip=True)
+                                        if p_text:
+                                            game_desc_paragraphs.append(p_text)
+
+                            # Fallback if no specific description header
+                            if not game_desc_paragraphs:
+                                paragraphs = []
+                                for p in content_el.find_all('p', recursive=True):
+                                    p_copy = BeautifulSoup(str(p), 'html.parser')
+                                    for br in p_copy.find_all('br'):
+                                        br.replace_with('\n')
+                                    text = p_copy.get_text()
                                     
-                                if cleaned_lines:
-                                    p_text = " ".join(cleaned_lines)
-                                    if len(p_text) > 40:
-                                        paragraphs.append(p_text)
-                                        if len(paragraphs) == 3:
-                                            break
-                            description = "\n\n".join(paragraphs)
+                                    cleaned_lines = []
+                                    for line in text.split('\n'):
+                                        line = line.strip()
+                                        if not line:
+                                            continue
+                                        line_lower = line.lower()
+                                        if line_lower.endswith('.rar') or line_lower.endswith('.bin') or line_lower.endswith('.exe') or 'fitgirl-repacks' in line_lower:
+                                            continue
+                                        if any(token in line_lower for token in [
+                                            "genres/tags:", "companies:", "languages:", "original size:", "repack size:", 
+                                            "screenshots:", "discussion and", "download mirrors", "filehoster:", "repack features",
+                                            "backwards compatibility", "game description", "if you experience", "repack notes",
+                                            "show direct links", "magnet", "1337x", "rutor", "tapochek.net", "compatibl",
+                                            "requires windows", "game updates", "unpack to", "run patch.bat", "patch", "update",
+                                            "elamigos", "rune", "flt", "tenoke", "soundtrack"
+                                        ]):
+                                            continue
+                                        cleaned_lines.append(line)
+                                        
+                                    if cleaned_lines:
+                                        p_text = " ".join(cleaned_lines)
+                                        if len(p_text) > 40:
+                                            paragraphs.append(p_text)
+                                            if len(paragraphs) == 3:
+                                                break
+                                game_desc_paragraphs = paragraphs
+                                
+                            description = "\n\n".join(game_desc_paragraphs)
                             
                             for a in content_el.find_all('a'):
                                 href = a.get('href', '')
@@ -3812,7 +3882,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "genres": genres_val,
                             "metacritic": metacritic_val,
                             "steam_rating": steam_rating_val,
-                            "header_image": header_image_val
+                            "header_image": header_image_val,
+                            "genres_tags": genres_tags,
+                            "company": company,
+                            "languages": languages,
+                            "repack_features": repack_features_list
                         }).encode())
                         return
                     else:

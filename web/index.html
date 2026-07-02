@@ -192,52 +192,130 @@
                 <!-- GAME DETAILS CONTAINER -->
                 <div id="game-details-container" class="subview-container hidden-view" style="padding-bottom: 90px; overflow-y: auto; height: 100%;">
                     
-                    <!-- Top Hero Banner Section -->
-                    <div id="details-hero-banner" class="details-hero-banner">
-                        <div class="hero-overlay"></div>
-                        
-                        <!-- Nav Back & Browser buttons floating inside hero -->
-                        <div class="hero-nav-bar">
-                            <button id="btn-back-to-catalog" class="btn btn-secondary btn-sm hero-nav-btn">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                                    <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
-                                </svg>
-                                <span>Back to Catalog</span>
-                            </button>
-                            <a id="btn-open-browser" class="btn btn-secondary btn-sm hero-nav-btn" target="_blank" style="display: none; text-decoration: none;">
-                                <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
-                                    <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                                </svg>
-                                <span>Open in Browser</span>
-                            </a>
-                        </div>
-                        
-                        <!-- Hero Info bottom absolute alignment -->
-                        <div class="hero-info-area">
-                            <span id="details-version-badge" class="hero-version-badge" style="display: none;">Version</span>
-                            <h2 id="details-game-title" class="hero-game-title">Game Title</h2>
-                            <p id="details-game-subtitle" class="hero-game-subtitle"></p>
-                        </div>
+                    <!-- Sticky Details Top Header -->
+                    <div class="details-sticky-header">
+                        <button id="btn-back-to-catalog-top" class="btn btn-secondary btn-sm" style="display: flex; align-items: center; gap: 6px; font-weight: 700; border-radius: 8px;">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                            </svg>
+                            <span>Back to Catalog</span>
+                        </button>
+                        <a id="btn-open-browser-top" class="btn btn-secondary btn-sm" target="_blank" style="display: none; text-decoration: none; align-items: center; gap: 6px; font-weight: 700; border-radius: 8px;">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+                                <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                            </svg>
+                            <span>Open in Browser</span>
+                        </a>
+                    </div>
+
+                    <!-- Hidden Hero Banner Section (kept for JS backward compatibility) -->
+                    <div id="details-hero-banner" style="display: none;">
+                        <button id="btn-back-to-catalog" style="display: none;"></button>
+                        <a id="btn-open-browser" style="display: none;"></a>
+                        <span id="details-version-badge" style="display: none;"></span>
+                        <h2 id="details-game-title" style="display: none;"></h2>
+                        <p id="details-game-subtitle" style="display: none;"></p>
                     </div>
 
                     <!-- Main Columns Grid Layout -->
                     <div class="details-columns-layout">
                         
-                        <!-- Left Column: Description, Screenshots, and Files Checklist -->
+                        <!-- Left Column: Game Cover & Metadata Info -->
                         <div class="details-left-column">
                             
-                            <!-- Description (About the Game) -->
-                            <div class="details-section-card" id="details-desc-section" style="display: none;">
-                                <h3 class="section-title">Description</h3>
-                                <div id="game-description" class="section-description-text"></div>
+                            <!-- Game Vertical Cover Card -->
+                            <div class="details-cover-card" id="details-cover-card" style="margin-bottom: 15px; display: none;">
+                                <img id="details-cover-image" src="" alt="Game Cover" style="width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+                                <div id="details-cover-placeholder" class="card-cover-placeholder" style="width: 100%; aspect-ratio: 2/3; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1b1c2e, #0c0d16); border: 1px solid rgba(255,255,255,0.08);">
+                                    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.45; color: var(--text-muted);">
+                                        <rect x="2" y="6" width="20" height="12" rx="3"></rect>
+                                        <path d="M6 12h4M8 10v4"></path>
+                                        <circle cx="15" cy="11" r="1" fill="currentColor"></circle>
+                                        <circle cx="18" cy="13" r="1" fill="currentColor"></circle>
+                                    </svg>
+                                </div>
                             </div>
                             
-                            <!-- Screenshots Gallery -->
+                            <!-- Database Metadata Box -->
+                            <div class="sidebar-section-card" style="width: 100%;">
+                                <div class="metadata-table">
+                                    <div class="metadata-table-row" id="row-fg-genres" style="display: none;">
+                                        <span class="table-label">Genres/Tags</span>
+                                        <span class="table-value" id="details-fg-genres" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-fg-company" style="display: none;">
+                                        <span class="table-label">Company</span>
+                                        <span class="table-value" id="details-fg-company" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-fg-languages" style="display: none;">
+                                        <span class="table-label">Languages</span>
+                                        <span class="table-value" id="details-fg-languages" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-fg-orig-size" style="display: none;">
+                                        <span class="table-label">Original Size</span>
+                                        <span class="table-value" id="details-fg-orig-size" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-fg-repack-size" style="display: none;">
+                                        <span class="table-label">Repack Size</span>
+                                        <span class="table-value highlight-pink" id="details-fg-repack-size" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-unpack-size" style="display: none;">
+                                        <span class="table-label">Size after Unpacking</span>
+                                        <span class="table-value highlight-green" id="details-unpack-size" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-developer" style="display: none;">
+                                        <span class="table-label">Developer</span>
+                                        <span class="table-value" id="details-developer" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-release-date" style="display: none;">
+                                        <span class="table-label">Release Date</span>
+                                        <span class="table-value" id="details-release-date" style="text-align: right;">--</span>
+                                    </div>
+                                    <div class="metadata-table-row" id="row-steam-rating" style="display: none;">
+                                        <span class="table-label">All Time Rating</span>
+                                        <span class="table-value" id="details-steam-rating" style="text-align: right;">--</span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Metacritic Card (kept hidden to not break JS selector references) -->
+                            <div class="metacritic-card-box" id="details-metacritic-card" style="display: none !important;">
+                                <div class="metacritic-score-badge" id="details-metacritic-score">--</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Right Column: Description, Features, Screenshots, and Files Checklist -->
+                        <div class="details-right-column">
+                            
+                            <!-- Description Collapsible Card -->
+                            <div class="details-section-card collapsible-section" id="details-desc-section" style="display: none;">
+                                <div class="collapsible-header" id="details-desc-header">
+                                    <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Game Description</h3>
+                                </div>
+                                <div class="collapsible-content" id="details-desc-content">
+                                    <div id="game-description" class="section-description-text" style="font-size: 0.85rem; line-height: 1.5; color: var(--text-white); margin-top: 10px;"></div>
+                                </div>
+                            </div>
+
+                            <!-- Repack Features Collapsible Card -->
+                            <div class="details-section-card collapsible-section" id="details-features-section" style="display: none;">
+                                <div class="collapsible-header" id="details-features-header">
+                                    <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Repack Features</h3>
+                                </div>
+                                <div class="collapsible-content" id="details-features-content">
+                                    <ul id="repack-features-list" style="font-size: 0.85rem; line-height: 1.6; color: var(--text-white); margin-top: 10px; padding-left: 20px; list-style-type: disc;"></ul>
+                                </div>
+                            </div>
+                            
+                            <!-- Screenshots / Gameplay Preview Gallery -->
                              <div class="details-section-card" id="game-screenshots-section" style="display: none;">
-                                 <h3 class="section-title">Screenshots (Click to enlarge)</h3>
+                                 <h3 class="section-title">Gameplay Preview</h3>
                                  <div class="screenshots-gallery-wrapper" style="margin-top: 15px;">
                                      <div class="screenshot-main-showcase" id="screenshot-main-showcase-container">
+                                         <!-- Main Showcase Image -->
                                          <img id="screenshot-main-img" src="" alt="Gameplay Preview">
+                                         <!-- Main Showcase Video Iframe (hidden by default) -->
+                                         <iframe id="screenshot-main-video" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0;"></iframe>
                                      </div>
                                      <div id="game-screenshots-container" class="screenshots-grid"></div>
                                  </div>
@@ -301,57 +379,6 @@
                                             <div class="file-checkbox-list" id="files-list-other"></div>
                                         </details>
                                     </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Right Column: Database Info & Metacritic badge -->
-                        <div class="details-right-column">
-                            
-                            <!-- Game Vertical Cover Card -->
-                            <div class="details-cover-card" id="details-cover-card" style="margin-bottom: 20px; display: none;">
-                                <img id="details-cover-image" src="" alt="Game Cover" style="width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-                                <div id="details-cover-placeholder" class="card-cover-placeholder" style="width: 100%; aspect-ratio: 2/3; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1b1c2e, #0c0d16); border: 1px solid rgba(255,255,255,0.08);">
-                                    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.45; color: var(--text-muted);">
-                                        <rect x="2" y="6" width="20" height="12" rx="3"></rect>
-                                        <path d="M6 12h4M8 10v4"></path>
-                                        <circle cx="15" cy="11" r="1" fill="currentColor"></circle>
-                                        <circle cx="18" cy="13" r="1" fill="currentColor"></circle>
-                                    </svg>
-                                </div>
-                            </div>
-                            
-                            <!-- Database Metadata Box -->
-                            <div class="sidebar-section-card">
-                                <div class="metadata-table">
-                                    <div class="metadata-table-row" id="row-developer" style="display: none;">
-                                        <span class="table-label">Developer</span>
-                                        <span class="table-value" id="details-developer">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-release-date" style="display: none;">
-                                        <span class="table-label">Release Date</span>
-                                        <span class="table-value" id="details-release-date">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-steam-rating" style="display: none;">
-                                        <span class="table-label">All Time Rating</span>
-                                        <span class="table-value" id="details-steam-rating">--</span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-genres" style="display: none;">
-                                        <span class="table-label">Genres</span>
-                                        <span class="table-value" id="details-genres" style="display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end;"></span>
-                                    </div>
-                                    <div class="metadata-table-row" id="row-unpack-size" style="display: none;">
-                                        <span class="table-label">Size after Unpacking</span>
-                                        <span class="table-value highlight-green" id="details-unpack-size">--</span>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <!-- Metacritic Card -->
-                            <div class="metacritic-card-box" id="details-metacritic-card" style="display: none;">
-                                <div class="metacritic-score-badge" id="details-metacritic-score">--</div>
-                                <div class="metacritic-label-container">
-                                    <span class="metacritic-label">Metacritic</span>
                                 </div>
                             </div>
                         </div>
