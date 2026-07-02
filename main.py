@@ -3397,8 +3397,10 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/pause":
             with state_lock:
                 if state["is_running"]:
+                    state["is_running"] = False
+                    state["total_speed"] = 0
                     state["should_stop"] = True
-                    add_log("Pausing downloads... please wait for current chunk to finish.")
+                    add_log("Pausing downloads... Workers will exit shortly.")
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

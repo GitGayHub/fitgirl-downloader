@@ -454,26 +454,41 @@ function updateUI(newState) {
             elThreadsSelect.value = String(newState.max_workers);
         }
         
-        // Sync Play/Pause Button
-        if (newState.is_running !== appState.is_running) {
-            if (newState.is_running) {
-                elStartPauseBtn.innerHTML = `
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                        <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                    </svg>
-                    <span>Pause Download</span>
-                `;
-                elStartPauseBtn.classList.remove("btn-pulse");
-                elStartPauseBtn.style.backgroundColor = "#e67e22";
-            } else {
-                elStartPauseBtn.innerHTML = `
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                        <path d="M8 5v14l11-7z"/>
-                    </svg>
-                    <span>Start Download</span>
-                `;
-                elStartPauseBtn.classList.add("btn-pulse");
-                elStartPauseBtn.style.backgroundColor = ""; // reset to primary
+        // Sync Play/Pause Button & Status Badge
+        const elDownloadStatusBadge = document.getElementById("download-status-badge");
+        if (newState.is_running) {
+            elStartPauseBtn.innerHTML = `
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+                <span>Pause</span>
+            `;
+            elStartPauseBtn.classList.remove("btn-pulse");
+            elStartPauseBtn.style.backgroundColor = "#e67e22";
+            elStartPauseBtn.style.borderColor = "#d35400";
+            
+            if (elDownloadStatusBadge) {
+                elDownloadStatusBadge.innerText = "DOWNLOADING";
+                elDownloadStatusBadge.style.background = "rgba(155, 89, 182, 0.15)";
+                elDownloadStatusBadge.style.borderColor = "rgba(155, 89, 182, 0.35)";
+                elDownloadStatusBadge.style.color = "#be90d4";
+            }
+        } else {
+            elStartPauseBtn.innerHTML = `
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                    <path d="M8 5v14l11-7z"/>
+                </svg>
+                <span>Resume</span>
+            `;
+            elStartPauseBtn.classList.add("btn-pulse");
+            elStartPauseBtn.style.backgroundColor = ""; // reset to primary
+            elStartPauseBtn.style.borderColor = "";
+            
+            if (elDownloadStatusBadge) {
+                elDownloadStatusBadge.innerText = "PAUSED";
+                elDownloadStatusBadge.style.background = "rgba(230, 126, 34, 0.15)";
+                elDownloadStatusBadge.style.borderColor = "rgba(230, 126, 34, 0.35)";
+                elDownloadStatusBadge.style.color = "#f39c12";
             }
         }
         
@@ -940,6 +955,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
 
                 // Render Screenshots & Videos Gallery
                 renderScreenshots(data.screenshots, data.videos);
+                updateMiniBadge(appState);
                 
                 // Populate FitGirl website metadata fields
                 const rowFgGenres = document.getElementById("row-fg-genres");
@@ -1949,8 +1965,41 @@ function updateMiniBadge(newState) {
                 </svg>
             `;
         }
+        // Dynamic positioning of the floating badge based on active game view
+        const elDetailsGameTitle = document.getElementById("details-game-title");
+        const isViewingActiveGame = viewState === "details" && 
+                                    elDetailsGameTitle && 
+                                    elDetailsGameTitle.innerText === newState.game_title;
+        
+        const detailsBottomBar = document.getElementById("details-bottom-bar");
+        
+        if (isViewingActiveGame) {
+            // Move to bottom, covering the download trigger button
+            elMiniBadge.style.top = "auto";
+            elMiniBadge.style.bottom = "24px";
+            elMiniBadge.style.transform = "translateX(-50%)";
+            
+            if (detailsBottomBar) {
+                detailsBottomBar.style.display = "none";
+            }
+        } else {
+            // Move to top (dynamic island)
+            elMiniBadge.style.top = "24px";
+            elMiniBadge.style.bottom = "auto";
+            elMiniBadge.style.transform = "translateX(-50%)";
+            
+            if (viewState === "details" && detailsBottomBar) {
+                detailsBottomBar.style.display = "flex";
+            }
+        }
     } else {
         elMiniBadge.style.display = "none";
+        
+        // Show details bottom bar if we are not downloading this game anymore
+        const detailsBottomBar = document.getElementById("details-bottom-bar");
+        if (viewState === "details" && detailsBottomBar) {
+            detailsBottomBar.style.display = "flex";
+        }
     }
 }
 
@@ -1960,6 +2009,7 @@ let viewState = "catalog"; // "catalog", "details", "downloading"
 function setViewState(state) {
     viewState = state;
     syncViewState();
+    updateMiniBadge(appState);
 }
 
 function syncViewState() {

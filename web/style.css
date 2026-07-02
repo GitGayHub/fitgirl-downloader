@@ -3255,10 +3255,11 @@ details[open] .summary-toggle-icon {
 /* 2-Column Grid Details Layout */
 .details-columns-layout {
     display: grid;
-    grid-template-columns: 210px 1fr;
-    gap: 16px;
+    grid-template-columns: 240px 1fr;
+    gap: 24px;
     width: 100%;
     align-items: start;
+    padding-left: 24px;
 }
 
 .details-left-column {
@@ -3613,5 +3614,9 @@ details[open] .summary-toggle-icon {
     align-items: center;
     justify-content: center;
     color: #fff;
+}
+
+#game-details-container {
+    overflow-y: auto !important;
 }
 
