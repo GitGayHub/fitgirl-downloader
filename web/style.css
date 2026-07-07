@@ -3636,3 +3636,209 @@ details[open] .summary-toggle-icon {
     transform: scale(1.08) !important;
 }
 
+/* ==========================================================================
+   MINIMALIST AESTHETIC & FLOATING OVERLAY OVERRIDES (Gemini Redesign)
+   ========================================================================== */
+
+/* 1. Minimalist Button Styles */
+.btn-minimal {
+    background: rgba(255, 255, 255, 0.02) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    color: rgba(255, 255, 255, 0.8) !important;
+    font-family: 'Outfit', sans-serif !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.8px !important;
+    box-shadow: none !important;
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+.btn-minimal:hover:not(:disabled) {
+    border-color: rgba(255, 255, 255, 0.2) !important;
+    background: rgba(255, 255, 255, 0.06) !important;
+    color: #fff !important;
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.05) !important;
+    transform: translateY(-1px) !important;
+}
+.btn-minimal:active:not(:disabled) {
+    transform: translateY(0) !important;
+}
+.btn-minimal:disabled {
+    opacity: 0.25 !important;
+    cursor: not-allowed !important;
+}
+
+/* 2. Unified 9x3 Catalog Grid Layout */
+.games-grid {
+    display: grid !important;
+    grid-template-columns: repeat(9, 1fr) !important;
+    gap: 16px !important;
+    width: 100% !important;
+    max-height: calc(100vh - 200px) !important;
+    overflow-y: auto !important;
+    flex: 1 !important;
+    align-items: start !important;
+    align-content: start !important;
+}
+
+/* Card in the grid container takes 100% width of the grid column */
+.games-grid .game-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: none !important;
+    aspect-ratio: 3 / 4.15 !important; /* Force standard vertical ratio */
+}
+
+.games-grid .game-card .card-cover-area {
+    width: 100% !important;
+    height: 100% !important;
+    aspect-ratio: 3 / 4.15 !important;
+}
+
+/* Card in the horizontal popular slider retains fixed width */
+.popular-slider-scroll .game-card {
+    width: 170px !important;
+    flex: 0 0 auto !important;
+    aspect-ratio: 3 / 4.15 !important;
+}
+
+.popular-slider-scroll .game-card .card-cover-area {
+    width: 100% !important;
+    height: 100% !important;
+    aspect-ratio: 3 / 4.15 !important;
+}
+
+/* 3. Online-Fix landscape aspect ratios (16:10) */
+.games-grid .onlinefix-card {
+    aspect-ratio: 16 / 10.5 !important;
+}
+
+.games-grid .onlinefix-card .card-cover-area {
+    width: 100% !important;
+    height: 100% !important;
+    aspect-ratio: 16 / 10.5 !important;
+}
+
+.popular-slider-scroll .onlinefix-card {
+    width: 240px !important;
+    flex: 0 0 auto !important;
+    aspect-ratio: 16 / 10.5 !important;
+}
+
+.popular-slider-scroll .onlinefix-card .card-cover-area {
+    width: 100% !important;
+    height: 100% !important;
+    aspect-ratio: 16 / 10.5 !important;
+}
+
+/* 3.5. Hover-only Card Title Overlays (Sleek transition) */
+.game-card .card-info {
+    position: absolute !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 2 !important;
+    padding: 18px 10px 8px 10px !important;
+    background: linear-gradient(to top, rgba(10, 10, 15, 0.98) 0%, rgba(10, 10, 15, 0.8) 60%, transparent 100%) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 4px !important;
+    opacity: 0 !important; /* Hidden by default */
+    transform: translateY(8px) !important;
+    pointer-events: none !important;
+    transition: opacity 0.25s cubic-bezier(0.25, 0.8, 0.25, 1), 
+                transform 0.25s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
+}
+
+.game-card:hover .card-info {
+    opacity: 1 !important;
+    transform: translateY(0) !important;
+    pointer-events: auto !important;
+    background: linear-gradient(to top, rgba(10, 10, 15, 0.99) 0%, rgba(10, 10, 15, 0.85) 70%, transparent 100%) !important;
+}
+
+/* 4. Floating Liquid Glass Download Overlay */
+#download-view {
+    position: fixed !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -46%) scale(0.95) !important;
+    width: 65vw !important;
+    height: 70vh !important;
+    max-width: 1050px !important;
+    max-height: 750px !important;
+    background: rgba(12, 12, 22, 0.45) !important;
+    backdrop-filter: blur(35px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(35px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 20px !important;
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.85), 
+                inset 0 1px 2px rgba(255, 255, 255, 0.12),
+                0 0 30px rgba(155, 89, 182, 0.1) !important;
+    z-index: 1000 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), 
+                transform 0.4s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    padding: 15px !important;
+}
+
+#download-view.active-overlay {
+    display: flex !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: translate(-50%, -50%) scale(1) !important;
+}
+
+.download-dashboard-header {
+    background: transparent !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+    padding: 8px 10px 14px 10px !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+.download-dashboard-content {
+    flex: 1 !important;
+    min-height: 0 !important;
+    display: grid !important;
+    grid-template-columns: 1fr 1.6fr !important;
+    gap: 15px !important;
+    padding: 15px 5px 5px 5px !important;
+}
+
+.download-left-col {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+}
+
+.download-right-col {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 15px !important;
+    min-height: 0 !important;
+}
+
+.dashboard-card {
+    background: rgba(255, 255, 255, 0.02) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+    border-radius: 12px !important;
+    padding: 15px !important;
+}
+
+/* 5. Uniform layout tweaks across resolutions */
+@media (max-width: 1400px) {
+    .games-grid {
+        grid-template-columns: repeat(7, 1fr) !important; /* Scale to 7 cards on smaller screens */
+    }
+}
+@media (max-width: 1100px) {
+    .games-grid {
+        grid-template-columns: repeat(5, 1fr) !important; /* Scale to 5 cards */
+    }
+}
+
+

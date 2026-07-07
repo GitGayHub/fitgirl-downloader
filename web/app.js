@@ -3,6 +3,7 @@ const elStartPauseBtn = document.getElementById("btn-start-pause");
 const elExtractBtn = document.getElementById("btn-extract");
 const elInstallBtn = document.getElementById("btn-install");
 const elResetSessionBtn = document.getElementById("btn-reset-session");
+const elResetSessionBtnDashboard = document.getElementById("btn-reset-session-dashboard");
 const elThreadsSelect = document.getElementById("threads-select");
 const elSaveThreadsBtn = document.getElementById("btn-save-threads");
 const elConsoleBox = document.getElementById("console-box");
@@ -134,6 +135,14 @@ const elHazeBgImg1 = document.getElementById("haze-bg-img-1");
 const elHazeBgImg2 = document.getElementById("haze-bg-img-2");
 let activeHazeBuffer = 1;
 
+// Proxy helper for blocked ISP domains
+function getOpenBrowserUrl(originalUrl) {
+    if (originalUrl && originalUrl.includes("fitgirl-repacks.site")) {
+        return `/api/proxy_page?url=${encodeURIComponent(originalUrl)}`;
+    }
+    return originalUrl;
+}
+
 // Download View Elements
 const elActiveGameTitle = document.getElementById("active-game-title");
 const elActiveGameSubtitle = document.getElementById("active-game-subtitle");
@@ -188,6 +197,7 @@ async function getCachedImageUrl(url) {
 let analyzedFiles = [];
 let smoothedSpeed = 0;
 let checkedFiles = new Set();
+const openQueueGroups = new Set();
 let activeMirrorName = "";
 let scrapedMirrors = [];
 let scrapedMetadata = {
@@ -625,7 +635,15 @@ function updateUI(newState) {
                     // Render collapsible group details
                     const details = document.createElement("details");
                     details.className = "queue-group-collapsible";
-                    details.open = false; // Collapsed by default (прикрыто по умолчанию)
+                    details.open = openQueueGroups.has(baseName);
+                    
+                    details.addEventListener("toggle", () => {
+                        if (details.open) {
+                            openQueueGroups.add(baseName);
+                        } else {
+                            openQueueGroups.delete(baseName);
+                        }
+                    });
                     
                     // Calculate group aggregates
                     const totalSize = groupItems.reduce((sum, item) => sum + (item.file.size || 0), 0);
@@ -865,7 +883,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 
                 // Open in Browser URL mapping
                 if (elBtnOpenBrowser) {
-                    elBtnOpenBrowser.href = url;
+                    elBtnOpenBrowser.href = getOpenBrowserUrl(url);
                     elBtnOpenBrowser.style.display = "inline-block";
                 }
                 
@@ -948,7 +966,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 }
                 const btnOpenBrowserTop = document.getElementById("btn-open-browser-top");
                 if (btnOpenBrowserTop && url) {
-                    btnOpenBrowserTop.href = url;
+                    btnOpenBrowserTop.href = getOpenBrowserUrl(url);
                     btnOpenBrowserTop.style.display = "flex";
                 } else if (btnOpenBrowserTop) {
                     btnOpenBrowserTop.style.display = "none";
@@ -1073,20 +1091,24 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 elGameNameInput.value = data.title;
                 
                 // Prefill default directory
-                const defaultDir = appState.default_download_dir || "D:\\Downloads";
+                const defaultDir = appState.default_download_dir || "C:\\Games";
                 elSaveDirInput.value = defaultDir;
                 
                 // Store mirrors list for provider switching
                 scrapedMirrors = data.mirrors || [];
                 
                 const hideGDrive = localStorage.getItem("hideGDrive") !== "false";
-                const filteredMirrors = (data.mirrors || []).filter(m => {
+                let filteredMirrors = (data.mirrors || []).filter(m => {
                     if (hideGDrive) {
                         const name = m.name.toLowerCase();
                         return !(name.includes("google") || name.includes("gdrive") || name.includes("drive") || name.includes("disk") || name.includes("диск") || name.includes("гугл"));
                     }
                     return true;
                 });
+                
+                if (activeProvider === "onlinefix") {
+                    filteredMirrors.sort((a, b) => (b.num_files || 0) - (a.num_files || 0));
+                }
 
                 if (filteredMirrors.length > 0) {
                     elMirrorSelectSection.style.display = "block";
@@ -1129,14 +1151,14 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         elGameDescription.innerText = translated;
                         isDescTranslated = true;
                         if (btnTranslateDesc) {
-                            btnTranslateDesc.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>Original</span>";
+                            btnTranslateDesc.innerHTML = "<span>🇷🇺</span>";
                         }
                     }).catch(err => {
                         console.error("Auto-translate description failed:", err);
                         elGameDescription.innerText = data.description;
                         isDescTranslated = false;
                         if (btnTranslateDesc) {
-                            btnTranslateDesc.innerHTML = "<span>🇷🇺</span> <span class='btn-translate-text'>Translate</span>";
+                            btnTranslateDesc.innerHTML = "<span>🇬🇧</span>";
                         }
                     });
                 } else if (elGameDescription) {
@@ -1292,7 +1314,7 @@ function displayConfigCard(title, files, url = "") {
     activeMirrorName = "";
     if (elGameNameInput) elGameNameInput.value = title;
     
-    const defaultDir = appState.default_download_dir || "D:\\Downloads";
+    const defaultDir = appState.default_download_dir || "C:\\Games";
     if (elSaveDirInput) elSaveDirInput.value = defaultDir;
     
     // Hide mirror selection since it's a direct paste
@@ -1308,7 +1330,7 @@ function displayConfigCard(title, files, url = "") {
     elDetailsVersionBadge.style.display = "none";
     
     if (elBtnOpenBrowser && url) {
-        elBtnOpenBrowser.href = url;
+        elBtnOpenBrowser.href = getOpenBrowserUrl(url);
         elBtnOpenBrowser.style.display = "inline-block";
     } else if (elBtnOpenBrowser) {
         elBtnOpenBrowser.style.display = "none";
@@ -1652,6 +1674,22 @@ function updateSelectionPill() {
             <span>${text}</span>
         </span>
     `;
+    
+    // Update sticky bottom size text dynamically based on checked files
+    const detailsBottomSize = document.getElementById("details-bottom-size");
+    if (detailsBottomSize && rawFilesList && rawFilesList.length > 0) {
+        let totalSelectedSize = 0;
+        rawFilesList.forEach(f => {
+            if (checkedFiles.has(f.filename) && f.size) {
+                totalSelectedSize += f.size;
+            }
+        });
+        if (totalSelectedSize > 0) {
+            detailsBottomSize.innerText = formatBytes(totalSelectedSize);
+        } else {
+            detailsBottomSize.innerText = "0 Bytes";
+        }
+    }
 }
 
 // Checkbox selection controls
@@ -1900,7 +1938,7 @@ elClearLogsBtn.addEventListener("click", () => {
 });
 
 // Reset session (Download new game)
-elResetSessionBtn.addEventListener("click", async () => {
+const handleResetSession = async () => {
     if (confirm("Are you sure you want to reset this downloader session? This will clear the active download queue config. Downloaded files on disk will NOT be deleted.")) {
         try {
             const response = await fetch("/api/reset", { method: "POST" });
@@ -1917,7 +1955,10 @@ elResetSessionBtn.addEventListener("click", async () => {
             console.error("Error resetting session:", e);
         }
     }
-});
+};
+
+if (elResetSessionBtn) elResetSessionBtn.addEventListener("click", handleResetSession);
+if (elResetSessionBtnDashboard) elResetSessionBtnDashboard.addEventListener("click", handleResetSession);
 
 // Global function to retry a specific index (failsafe if UI gets stuck)
 window.triggerRetry = async (index) => {
@@ -2060,22 +2101,29 @@ function syncViewState() {
     }
 
     const elMiniBadge = document.getElementById("floating-download-badge");
+    const elDownloadBackdrop = document.getElementById("download-view-backdrop");
+
+    // Hide sidebar completely in the new visual redesign
+    const elSidebar = document.querySelector(".sidebar");
+    if (elSidebar) elSidebar.style.display = "none";
+    const elAppContainer = document.querySelector(".app-container");
+    if (elAppContainer) elAppContainer.classList.remove("has-sidebar");
 
     if (viewState === "downloading") {
-        document.querySelector(".app-container").classList.remove("has-sidebar");
-        document.querySelector(".sidebar").style.display = "none";
+        // Keep catalog or details visible in the background
+        elSetupView.classList.remove("hidden-view");
         
-        elSetupView.classList.add("hidden-view");
+        // Show download dashboard as a floating modal overlay
         elDownloadView.classList.remove("hidden-view");
-        elDownloadView.style.display = "flex";
+        elDownloadView.classList.add("active-overlay");
+        if (elDownloadBackdrop) elDownloadBackdrop.style.display = "block";
         
         if (elMiniBadge) elMiniBadge.style.display = "none";
     } else {
-        document.querySelector(".app-container").classList.remove("has-sidebar");
-        document.querySelector(".sidebar").style.display = "none";
-        
-        elSetupView.classList.remove("hidden-view");
+        // Hide download overlay
+        elDownloadView.classList.remove("active-overlay");
         elDownloadView.classList.add("hidden-view");
+        if (elDownloadBackdrop) elDownloadBackdrop.style.display = "none";
         
         if (elMiniBadge && appState.is_configured) {
             elMiniBadge.style.display = "flex";
@@ -2083,17 +2131,24 @@ function syncViewState() {
         } else if (elMiniBadge) {
             elMiniBadge.style.display = "none";
         }
+    }
 
-        if (viewState === "catalog") {
-            elCatalogContainer.classList.remove("hidden-view");
-            elGameDetailsContainer.classList.add("hidden-view");
-            clearDynamicBackground();
-            const detailsBottomBar = document.getElementById("details-bottom-bar");
-            if (detailsBottomBar) detailsBottomBar.style.display = "none";
-        } else if (viewState === "details") {
-            elCatalogContainer.classList.add("hidden-view");
-            elGameDetailsContainer.classList.remove("hidden-view");
-        }
+    // Handle catalog background views based on background state
+    let bgState = viewState;
+    if (bgState === "downloading") {
+        // Keep the previous view state in background if overlay is open
+        bgState = "catalog";
+    }
+
+    if (bgState === "catalog") {
+        elCatalogContainer.classList.remove("hidden-view");
+        elGameDetailsContainer.classList.add("hidden-view");
+        clearDynamicBackground();
+        const detailsBottomBar = document.getElementById("details-bottom-bar");
+        if (detailsBottomBar) detailsBottomBar.style.display = "none";
+    } else if (bgState === "details") {
+        elCatalogContainer.classList.add("hidden-view");
+        elGameDetailsContainer.classList.remove("hidden-view");
     }
 }
 
@@ -2513,8 +2568,17 @@ function renderGamesList(results, popularList) {
         return;
     }
     
+    // Reset display mode for default grid
+    elGamesGridContainer.style.display = "";
+    elGamesGridContainer.style.flexDirection = "";
+    elGamesGridContainer.style.gap = "";
+    
     // If Online-Fix and we have a popularList, and we're not performing a search query
     if (activeProvider === "onlinefix" && popularList && popularList.length > 0 && !searchQuery) {
+        elGamesGridContainer.style.display = "flex";
+        elGamesGridContainer.style.flexDirection = "column";
+        elGamesGridContainer.style.gap = "20px";
+        
         const popSection = document.createElement("div");
         popSection.className = "popular-section";
         popSection.innerHTML = `
@@ -3940,13 +4004,13 @@ if (btnTranslateDesc) {
         if (isDescTranslated) {
             // Toggle to original (English)
             elText.innerText = originalDesc;
-            btnTranslateDesc.innerHTML = "<span>🇷🇺</span>";
+            btnTranslateDesc.innerHTML = "<span>🇬🇧</span>";
             isDescTranslated = false;
         } else {
             // Toggle to translation (Russian)
             if (translatedDesc) {
                 elText.innerText = translatedDesc;
-                btnTranslateDesc.innerHTML = "<span>🇬🇧</span>";
+                btnTranslateDesc.innerHTML = "<span>🇷🇺</span>";
                 isDescTranslated = true;
             } else {
                 btnTranslateDesc.innerHTML = "<span>⏳</span>";
@@ -3954,11 +4018,11 @@ if (btnTranslateDesc) {
                 try {
                     translatedDesc = await translateText(originalDesc);
                     elText.innerText = translatedDesc;
-                    btnTranslateDesc.innerHTML = "<span>🇬🇧</span>";
+                    btnTranslateDesc.innerHTML = "<span>🇷🇺</span>";
                     isDescTranslated = true;
                 } catch (err) {
                     console.error("Translation error:", err);
-                    btnTranslateDesc.innerHTML = "<span>🇷🇺</span>";
+                    btnTranslateDesc.innerHTML = "<span>🇬🇧</span>";
                     alert("Translation failed. Check internet connection.");
                 } finally {
                     btnTranslateDesc.removeAttribute("disabled");
@@ -3989,13 +4053,13 @@ if (btnTranslateFeatures) {
         if (isFeaturesTranslated) {
             // Toggle to original (English)
             elList.innerHTML = originalFeatures.map(txt => `<li>${txt}</li>`).join("");
-            btnTranslateFeatures.innerHTML = "<span>🇷🇺</span>";
+            btnTranslateFeatures.innerHTML = "<span>🇬🇧</span>";
             isFeaturesTranslated = false;
         } else {
             // Toggle to translation (Russian)
             if (translatedFeatures.length > 0) {
                 elList.innerHTML = translatedFeatures.map(txt => `<li>${txt}</li>`).join("");
-                btnTranslateFeatures.innerHTML = "<span>🇬🇧</span>";
+                btnTranslateFeatures.innerHTML = "<span>🇷🇺</span>";
                 isFeaturesTranslated = true;
             } else {
                 btnTranslateFeatures.setAttribute("disabled", "true");
@@ -4005,11 +4069,11 @@ if (btnTranslateFeatures) {
                     const translatedText = await translateText(textToTranslate);
                     translatedFeatures = translatedText.split("\n");
                     elList.innerHTML = translatedFeatures.map(txt => `<li>${txt}</li>`).join("");
-                    btnTranslateFeatures.innerHTML = "<span>🇬🇧</span>";
+                    btnTranslateFeatures.innerHTML = "<span>🇷🇺</span>";
                     isFeaturesTranslated = true;
                 } catch (err) {
                     console.error("Translation error:", err);
-                    btnTranslateFeatures.innerHTML = "<span>🇷🇺</span>";
+                    btnTranslateFeatures.innerHTML = "<span>🇬🇧</span>";
                     alert("Translation failed. Check internet connection.");
                 } finally {
                     btnTranslateFeatures.removeAttribute("disabled");
@@ -4033,4 +4097,12 @@ function resetTranslationCache() {
     if (btnTranslateFeatures) {
         btnTranslateFeatures.innerHTML = "<span>🇷🇺</span>";
     }
+}
+
+// Bind backdrop click to close floating download overlay
+const elDownloadBackdrop = document.getElementById("download-view-backdrop");
+if (elDownloadBackdrop) {
+    elDownloadBackdrop.addEventListener("click", () => {
+        setViewState("catalog");
+    });
 }

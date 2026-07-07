@@ -7,3 +7,7 @@ scratch/
 *.jpg
 gdrive_chrome_profile/
 .playwright_profile/
+.venv/
+*.log
+story_text.txt
+

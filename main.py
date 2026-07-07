@@ -50,6 +50,101 @@ except ImportError:
 
 import requests  # Standard requests for downloading
 
+# DNS-over-HTTPS fallback to bypass ISP/censor blocking (e.g. Vodafone CUII in Germany, RKN in Russia)
+import socket
+import urllib.parse
+from curl_cffi import CurlOpt
+
+BLOCK_IPS = {
+    "139.7.146.129",  # Vodafone Germany / CUII
+}
+
+_doh_cache = {}
+original_getaddrinfo = socket.getaddrinfo
+
+def resolve_doh(host):
+    if not host or host.replace(".", "").isdigit():
+        return host
+    if host in _doh_cache:
+        return _doh_cache[host]
+    
+    # Query DoH endpoints directly via their IP addresses to bypass local DNS resolution for the DNS service
+    for url, ip_or_domain in [("https://1.1.1.1/dns-query", "1.1.1.1"), ("https://8.8.8.8/resolve", "8.8.8.8")]:
+        try:
+            if ip_or_domain == "1.1.1.1":
+                r = requests.get(url, params={"name": host, "type": "A"}, headers={"accept": "application/dns-json"}, verify=False, timeout=5)
+            else:
+                r = requests.get(url, params={"name": host, "type": "A"}, verify=False, timeout=5)
+            data = r.json()
+            if "Answer" in data:
+                for ans in data["Answer"]:
+                    if ans.get("type") == 1:  # A record
+                        ip = ans.get("data")
+                        _doh_cache[host] = ip
+                        return ip
+        except Exception:
+            pass
+    return None
+
+def patched_getaddrinfo(host, port, *args, **kwargs):
+    if host in ("1.1.1.1", "8.8.8.8", "cloudflare-dns.com", "dns.google"):
+        return original_getaddrinfo(host, port, *args, **kwargs)
+        
+    try:
+        res = original_getaddrinfo(host, port, *args, **kwargs)
+        if res:
+            first_ip = res[0][4][0]
+            if first_ip in BLOCK_IPS:
+                doh_ip = resolve_doh(host)
+                if doh_ip:
+                    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port))]
+        return res
+    except Exception:
+        doh_ip = resolve_doh(host)
+        if doh_ip:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port))]
+        raise
+
+socket.getaddrinfo = patched_getaddrinfo
+
+# Monkey patch curl_cffi Session.request to dynamically insert CurlOpt.RESOLVE when needed
+original_cf_request = cf_requests.Session.request
+
+def patched_cf_request(self, method, url, *args, **kwargs):
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    
+    if host:
+        need_doh = False
+        try:
+            res = socket.getaddrinfo(host, 443)
+            if res and res[0][4][0] in BLOCK_IPS:
+                need_doh = True
+        except Exception:
+            need_doh = True
+            
+        if need_doh:
+            doh_ip = resolve_doh(host)
+            if doh_ip:
+                if not hasattr(self, "curl_options") or self.curl_options is None:
+                    self.curl_options = {}
+                self.curl_options[CurlOpt.RESOLVE] = [f"{host}:443:{doh_ip}", f"{host}:80:{doh_ip}"]
+                
+    try:
+        return original_cf_request(self, method, url, *args, **kwargs)
+    except Exception as e:
+        if host:
+            doh_ip = resolve_doh(host)
+            if doh_ip:
+                if not hasattr(self, "curl_options") or self.curl_options is None:
+                    self.curl_options = {}
+                self.curl_options[CurlOpt.RESOLVE] = [f"{host}:443:{doh_ip}", f"{host}:80:{doh_ip}"]
+                return original_cf_request(self, method, url, *args, **kwargs)
+        raise e
+
+cf_requests.Session.request = patched_cf_request
+
+
 class SafeList(list):
     def __getitem__(self, index):
         try:
@@ -68,7 +163,7 @@ state = {
     "files": SafeList(),
     "download_dir": "",
     "base_download_dir": "",
-    "default_download_dir": "D:\\Downloads",
+    "default_download_dir": "C:\\Games",
     "is_configured": False,
     "is_running": False,
     "active_index": -1,
@@ -110,6 +205,69 @@ if os.path.exists(cache_path):
         pass
 
 state["average_download_speed"] = float(sizes_cache.get("__average_download_speed__", 5000000.0))
+
+session_state_path = os.path.join(os.path.dirname(__file__), "session_state.json")
+
+def save_session_state():
+    try:
+        with state_lock:
+            serializable_files = []
+            for f in state["files"]:
+                serializable_files.append({
+                    "filename": f["filename"],
+                    "url": f["url"],
+                    "type": f["type"],
+                    "status": f["status"],
+                    "progress": f["progress"],
+                    "downloaded": f["downloaded"],
+                    "size": f["size"],
+                    "speed": f["speed"],
+                    "time_left": f["time_left"],
+                    "error": f.get("error", "")
+                })
+            data = {
+                "game_title": state["game_title"],
+                "files": serializable_files,
+                "download_dir": state["download_dir"],
+                "base_download_dir": state.get("base_download_dir", state["default_download_dir"]),
+                "default_download_dir": state["default_download_dir"],
+                "is_configured": state["is_configured"],
+                "total_progress": state["total_progress"],
+                "active_mirror": state["active_mirror"],
+                "average_download_speed": state.get("average_download_speed", 5000000.0)
+            }
+        with open(session_state_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        add_log(f"[WARNING] Failed to save session state: {str(e)}")
+
+def load_session_state():
+    try:
+        if os.path.exists(session_state_path):
+            with open(session_state_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            with state_lock:
+                state["game_title"] = data.get("game_title", "")
+                files_list = data.get("files", [])
+                state["files"].clear()
+                for f in files_list:
+                    if f["status"] in ["downloading", "connecting"]:
+                        f["status"] = "waiting"
+                        f["speed"] = 0
+                    state["files"].append(f)
+                
+                state["download_dir"] = data.get("download_dir", "")
+                state["base_download_dir"] = data.get("base_download_dir", "")
+                state["default_download_dir"] = data.get("default_download_dir", "C:\\Games")
+                state["is_configured"] = data.get("is_configured", False)
+                state["is_running"] = False
+                state["total_progress"] = data.get("total_progress", 0)
+                state["active_mirror"] = data.get("active_mirror", "")
+                state["average_download_speed"] = data.get("average_download_speed", 5000000.0)
+                
+            add_log("[SYSTEM] Previous session state restored successfully.")
+    except Exception as e:
+        print(f"Error loading session state: {e}")
 
 gdrive_accounts_path = os.path.join(os.path.dirname(__file__), "gdrive_accounts.json")
 def load_gdrive_accounts():
@@ -1078,7 +1236,7 @@ def extract_gofile_link(page_url):
                             if status == "ok":
                                 children = data.get("data", {}).get("children", {})
                                 for cid, cinfo in children.items():
-                                    link = cinfo.get("link")
+                                    link = cinfo.get("directLink") or cinfo.get("link")
                                     if link:
                                         gofile_links.append(link)
                         except Exception:
@@ -1097,6 +1255,21 @@ def extract_gofile_link(page_url):
                     if gofile_links or api_status[0]:
                         break
                     page.wait_for_timeout(1000)
+                
+                gofile_token = None
+                try:
+                    for cookie in context.cookies():
+                        if cookie.get("name") == "accountToken":
+                            gofile_token = cookie.get("value")
+                            break
+                    if not gofile_token:
+                        gofile_token = page.evaluate("localStorage.getItem('accountToken')")
+                except Exception:
+                    pass
+                if gofile_token:
+                    with state_lock:
+                        state["gofile_account_token"] = gofile_token
+                    add_log("Gofile: Captured session token.")
                 
                 browser.close()
                 
@@ -1314,8 +1487,11 @@ def prefill_part_sizes(files):
                 f["size"] = 2 * 1024 * 1024 * 1024  # 2 GB
             elif "multiupload" in url_lower or "multiup" in url_lower:
                 f["size"] = int(1.95 * 1024 * 1024 * 1024)  # 1.95 GB
+            elif "gofile" in url_lower:
+                f["size"] = 5 * 1024 * 1024 * 1024  # 5 GB for Gofile parts
             else:
                 f["size"] = 2 * 1024 * 1024 * 1024  # Default to 2 GB
+
 
 def guess_game_title(files):
     if not files:
@@ -1751,6 +1927,12 @@ def download_file(index, file_info):
     else:
         direct_link = page_url
         
+    # Attach Gofile account token cookie if available
+    if "gofile.io" in page_url or (direct_link and "gofile.io" in direct_link):
+        gofile_token = state.get("gofile_account_token")
+        if gofile_token:
+            headers["Cookie"] = f"accountToken={gofile_token}"
+        
     resume_byte = 0
     if os.path.exists(file_path):
         resume_byte = os.path.getsize(file_path)
@@ -1773,6 +1955,7 @@ def download_file(index, file_info):
             state["files"][index]["progress"] = 100
             state["files"][index]["downloaded"] = total_size
             state["files"][index]["size"] = total_size
+        save_session_state()
         return True
         
     downloaded = resume_byte
@@ -1982,6 +2165,7 @@ def download_file(index, file_info):
         with state_lock:
             state["files"][index]["status"] = "failed"
             state["files"][index]["error"] = "Downloaded 0 bytes. Connection failed or direct link expired."
+        save_session_state()
         return False
         
     if file_id and "drive.online-fix.me" in page_url and access_token:
@@ -1989,6 +2173,7 @@ def download_file(index, file_info):
         delete_gdrive_file(file_id, access_token)
         
     add_log(f"Successfully downloaded {filename}.")
+    save_session_state()
     return True
 
 def recalculate_total_progress():
@@ -2429,6 +2614,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         url_parsed = urllib.parse.urlparse(self.path)
         path = url_parsed.path
         
+        
         if path == "/api/browse_folder":
             import subprocess
             ps_script = (
@@ -2653,6 +2839,45 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 self.send_response(500)
                 self.end_headers()
             return
+            
+        elif path == "/api/proxy_page":
+            try:
+                query_params = urllib.parse.parse_qs(url_parsed.query)
+                page_url = query_params.get("url", [""])[0]
+                if not page_url:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                
+                add_log(f"Proxying page request: {page_url}")
+                response = cf_requests.get(page_url, impersonate="chrome120", timeout=20, verify=False)
+                
+                if response.status_code == 200:
+                    html = response.text
+                    
+                    def link_replacer(match):
+                        matched_url = match.group(1)
+                        if "fitgirl-repacks.site" in matched_url and not matched_url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".torrent", ".zip", ".rar")):
+                            return f'href="/api/proxy_page?url={urllib.parse.quote(matched_url)}"'
+                        return match.group(0)
+                        
+                    html = re.sub(r'href="([^"]+)"', link_replacer, html)
+                    html = re.sub(r"href='([^']+)'", link_replacer, html)
+                    
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(html.encode("utf-8"))
+                else:
+                    self.send_response(response.status_code)
+                    self.end_headers()
+            except Exception as e:
+                add_log(f"Proxy page exception: {str(e)}")
+                self.send_response(500)
+                self.end_headers()
+            return
+            
         elif path == "/api/popular":
             try:
                 query_params = urllib.parse.parse_qs(url_parsed.query)
@@ -2663,13 +2888,16 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 results = []
                 has_next = False
                 if provider == "onlinefix":
-                    add_log("Fetching popular Online-Fix games...")
+                    add_log("Fetching popular Online-Fix games (pages 1 & 2)...")
                     url = "https://online-fix.me/"
                     response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
+                    
+                    popular_results = []
+                    standard_results = []
+                    
                     if response.status_code == 200:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         slider = soup.find('div', class_='horizontal-slider')
-                        popular_results = []
                         if slider:
                             items = slider.find_all('a')
                             for a in items:
@@ -2693,16 +2921,37 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         "summary": "Popular Online-Fix Game"
                                     })
                         
-                        # Parse standard homepage games
-                        all_homepage_games = parse_online_fix_page(response.text, url)
-                        standard_results = []
-                        pop_urls = {item["url"] for item in popular_results}
-                        for item in all_homepage_games:
-                            if item["url"] not in pop_urls:
-                                standard_results.append(item)
+                        # Scrape standard page 1 games
+                        standard_results.extend(parse_online_fix_page(response.text, url))
                         
-                        # Limit standard results to first 12
-                        results = standard_results[:12]
+                    # Also scrape pages 2, 3, and 4 standard games to fill the 54 list
+                    for page_num in range(2, 5):
+                        try:
+                            url_next = f"https://online-fix.me/page/{page_num}/"
+                            response_next = cf_requests.get(url_next, impersonate="chrome120", timeout=20, verify=False)
+                            if response_next.status_code == 200:
+                                standard_results.extend(parse_online_fix_page(response_next.text, url_next))
+                        except Exception as e_next:
+                            add_log(f"Warning: Failed to fetch Online-Fix page {page_num}: {e_next}")
+                        
+                    if standard_results or popular_results:
+                        # Filter standard results to remove duplicates (including items that are in popular_results)
+                        pop_urls = {item["url"] for item in popular_results}
+                        unique_standard = []
+                        seen_urls = set()
+                        for item in standard_results:
+                            if item["url"] not in pop_urls and item["url"] not in seen_urls:
+                                seen_urls.add(item["url"])
+                                unique_standard.append(item)
+                        
+                        # Limit total standard results to exactly 54
+                        all_results = unique_standard[:54]
+                        
+                        PAGE_SIZE = 27
+                        start_idx = (page - 1) * PAGE_SIZE
+                        end_idx = page * PAGE_SIZE
+                        results = all_results[start_idx:end_idx]
+                        has_next = end_idx < len(all_results)
                         
                         prefetch_covers_background(popular_results)
                         prefetch_covers_background(results)
@@ -2714,11 +2963,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "success": True, 
                             "results": results, 
                             "popular": popular_results, 
-                            "has_next": False
+                            "has_next": has_next
                         }).encode())
                         return
                     else:
-                        raise Exception(f"HTTP status: {response.status_code}")
+                        raise Exception("Failed to scrape any Online-Fix games.")
                 else: # fitgirl
                     add_log(f"Fetching popular FitGirl repacks ({type_val}, page {page})...")
                     if type_val == "yearly":
@@ -2756,6 +3005,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         "summary": "Popular Repack"
                                     })
                         
+                        # Limit total FitGirl popular results to exactly 45 total (27 on page 1, 18 on page 2)
+                        all_results = all_results[:45]
                         PAGE_SIZE = 27
                         start_idx = (page - 1) * PAGE_SIZE
                         end_idx = page * PAGE_SIZE
@@ -2844,8 +3095,17 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             return
             
         try:
-            with open(file_to_serve, "rb") as f:
-                content = f.read()
+            if path == "/" or path == "/index.html":
+                with open(file_to_serve, "r", encoding="utf-8") as f:
+                    content_str = f.read()
+                import time
+                ts = str(int(time.time()))
+                content_str = content_str.replace("style.css?v=2.1", f"style.css?v={ts}")
+                content_str = content_str.replace("app.js?v=2.1", f"app.js?v={ts}")
+                content = content_str.encode("utf-8")
+            else:
+                with open(file_to_serve, "rb") as f:
+                    content = f.read()
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.end_headers()
@@ -2867,6 +3127,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     add_log(f"Download manager resumed/started with {workers_to_start} parallel workers.")
                     for _ in range(workers_to_start):
                         threading.Thread(target=download_worker, daemon=True).start()
+            save_session_state()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -3403,6 +3664,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     state["total_speed"] = 0
                     state["should_stop"] = True
                     add_log("Pausing downloads... Workers will exit shortly.")
+            save_session_state()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -3743,7 +4005,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                 for _ in range(10):
                                     curr = curr.next_sibling
                                     if not curr:
-                                        continue
+                                        break
                                     if isinstance(curr, str):
                                         continue
                                     if curr.name == 'ul':
@@ -3778,7 +4040,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                 for _ in range(10):
                                     curr = curr.next_sibling
                                     if not curr:
-                                        continue
+                                        break
                                     if isinstance(curr, str):
                                         continue
                                     if curr.name in ['h3', 'h4'] or "repack features" in curr.get_text().lower() or "screenshots" in curr.get_text().lower():
@@ -4010,7 +4272,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         if gdrive_url:
                             mirrors.append({
                                 "name": "Use Own Google Disk",
-                                "url": gdrive_url
+                                "url": gdrive_url,
+                                "num_files": 1
                             })
                             
                         if hoster_url:
@@ -4028,9 +4291,15 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     for opt in options:
                                         name = opt.text.strip()
                                         encoded_url = f"online-fix-hoster:{hoster_url}?mirror={urllib.parse.quote(name)}&referer={urllib.parse.quote(url)}"
+                                        data_links_str = opt.get('data-links', '[]')
+                                        try:
+                                            num_files = len(json.loads(data_links_str))
+                                        except Exception:
+                                            num_files = 0
                                         mirrors.append({
                                             "name": name,
-                                            "url": encoded_url
+                                            "url": encoded_url,
+                                            "num_files": num_files
                                         })
                             
                         # Scrape gameplay videos/trailers
@@ -4046,12 +4315,20 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         # Extract description and screenshots
                         description = ""
                         screenshots = []
+                        size_val = "Unknown"
+                        
                         story = soup.find(class_='full-story-content')
                         if story:
                             text = story.get_text()
                             match = re.search(r'(?:Информация о игре:|Информация об игре:)\s*(.*?)(?=(?:Файлы для игры:|Как запускать:|Скачать с|1\.|$))', text, re.DOTALL | re.IGNORECASE)
                             if match:
                                 description = match.group(1).strip()
+                                
+                            # Search for size inside story text
+                            size_match = re.search(r'(?:Размер|Size|Размер раздачи):\s*([0-9.,]+\s*(?:GB|MB|ГБ|МБ|Gb|Mb|гб|мб))', text, re.IGNORECASE)
+                            if size_match:
+                                size_val = size_match.group(1).strip()
+                                
                             # Online-Fix doesn't typically list screenshots in full-story-content,
                             # but we can check if there are any direct images inside the article content.
                             for img in story.find_all('img'):
@@ -4063,6 +4340,12 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         if img_url not in screenshots and img_url != cover_image:
                                             screenshots.append(img_url)
                             screenshots = screenshots[:10]
+                            
+                        # If size not found in story, search entire soup text as fallback
+                        if size_val == "Unknown":
+                            size_match = re.search(r'(?:Размер|Size|Размер раздачи):\s*([0-9.,]+\s*(?:GB|MB|ГБ|МБ|Gb|Mb|гб|мб))', soup.get_text(), re.IGNORECASE)
+                            if size_match:
+                                size_val = size_match.group(1).strip()
 
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
@@ -4072,8 +4355,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             "type": "fitgirl_page",
                             "title": title,
                             "version": version,
-                            "original_size": "Unknown",
-                            "repack_size": "Unknown",
+                            "original_size": size_val,
+                            "repack_size": size_val,
                             "cover_image": cover_image,
                             "mirrors": mirrors,
                             "videos": videos,
@@ -4303,6 +4586,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     state["gofile_proxy"] = data.get("gofile_proxy", False)
                     
                 initialize_queue_on_disk()
+                save_session_state()
                 
                 add_log(f"Configured download for: {game_title}")
                 add_log(f"Save directory: {state['download_dir']}")
@@ -4336,6 +4620,14 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 state["is_extracted"] = False
                 state["is_extracting"] = False
                 state["extraction_progress"] = 0
+            
+            # Clean up the session state file
+            try:
+                if os.path.exists(session_state_path):
+                    os.remove(session_state_path)
+            except Exception:
+                pass
+                
             add_log("[SYSTEM] Downloader session reset. Ready for new configuration.")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -4455,6 +4747,7 @@ if __name__ == "__main__":
         os.makedirs(os.path.join(os.getcwd(), "cover_cache"), exist_ok=True)
     except Exception:
         pass
+    load_session_state()
     if os.path.exists("warp_skipped.txt"):
         state["warp_status"] = "skipped"
     else:
