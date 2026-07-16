@@ -1,0 +1,44 @@
+# Project-scoped Grok MCP servers (portable — clone on any PC and open this repo in Grok).
+# Docs: https://github.com/xai-org (see Grok user-guide → MCP Servers)
+# Priority: .grok/config.toml (this file) > ~/.grok/config.toml
+
+[mcp]
+# Larger tool payloads for Playwright snapshots / screenshots
+max_output_bytes = 80000
+
+# ---------------------------------------------------------------------------
+# Playwright MCP — headless Chromium for UI self-checks
+# Used heavily for catalog/details/haze verification on this project.
+# Requires: Node.js 18+ and network on first run (npx downloads the package).
+# After first use, browsers install via: npx playwright install chromium
+# ---------------------------------------------------------------------------
+[mcp_servers.playwright]
+command = "npx"
+args = [
+    "-y",
+    "@playwright/mcp@latest",
+    "--headless",
+    "--browser",
+    "chromium",
+]
+enabled = true
+startup_timeout_sec = 120
+tool_timeout_sec = 180
+
+# ---------------------------------------------------------------------------
+# Optional: Telegram session MCP (Bebranoid) — machine-specific paths.
+# Copy to ~/.grok/config.toml on your PC and fix absolute paths.
+# Disabled here so clone works without that repo.
+# ---------------------------------------------------------------------------
+# [mcp_servers.bebranoid-telegram]
+# command = "node"
+# args = ["C:/path/to/Bebranoid/mcp-telegram-session/server.js"]
+# enabled = false
+# startup_timeout_sec = 15
+#
+# [mcp_servers.bebranoid-verify]
+# command = "node"
+# args = ["C:/path/to/Bebranoid/mcp-bebranoid-verify/server.js"]
+# enabled = false
+# startup_timeout_sec = 20
+# tool_timeout_sec = 180

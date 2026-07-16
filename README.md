@@ -26,14 +26,29 @@ It handles PrivateBin link decryption, Cloudflare bypasses, parallel multi-threa
    ```
 2. **Install Python dependencies**:
    ```bash
-   pip install requests curl_cffi privatebinapi
+   python -m venv .venv
+   .venv\Scripts\activate   # Windows
+   pip install requests curl_cffi privatebinapi beautifulsoup4
    ```
 3. **Run the application**:
    ```bash
    python main.py
+   # or: Run_Downloader.bat
    ```
 4. Open [http://localhost:8000](http://localhost:8000) in your browser.
 
-## Customization
+## Continue with Grok on another PC
 
-Currently configured for Call of Duty: Modern Warfare (2019), but designed to be refactored into a universal repack downloader.
+Project MCP config is committed at **`.grok/config.toml`** (Playwright headless).
+
+See full instructions: **[docs/MCP_SETUP.md](docs/MCP_SETUP.md)**
+
+Quick check:
+
+```bash
+npx playwright install chromium
+grok mcp list
+grok mcp doctor playwright
+```
+
+Agent notes: **[AGENTS.md](AGENTS.md)**

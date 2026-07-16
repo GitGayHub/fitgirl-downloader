@@ -1,13 +1,40 @@
 __pycache__/
+.venv/
+venv/
+*.log
+*.pyc
+
+# Local caches / session
 sizes_cache.json
 cover_cache/
 scratch/
-*.json
-*.html
-*.jpg
+session_state.json
+gdrive_accounts.json
 gdrive_chrome_profile/
 .playwright_profile/
-.venv/
-*.log
-story_text.txt
+.playwright-mcp/
 
+# Secrets / local dumps
+story_text.txt
+paste_text.txt
+warp_skipped.txt
+*_err.txt
+*_out.txt
+server_*.log
+steam_debug.log
+
+# QA artifacts (local only)
+_qa*.py
+_qa*.png
+_mcp*.png
+qa-*.png
+.playwright-mcp/
+
+# Machine-specific shortcut
+*.lnk
+
+# Optional local HTML dumps
+cod_mw2.html
+gow_api.json
+repack_content.html
+decrypted_script.js

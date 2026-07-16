@@ -130,10 +130,17 @@ const elDetailsVersionBadge = document.getElementById("details-version-badge");
 const elBtnOpenBrowser = document.getElementById("btn-open-browser");
 const elCatalogTitle = document.getElementById("catalog-title");
 
-// Haze Background Elements
-const elHazeBgImg1 = document.getElementById("haze-bg-img-1");
-const elHazeBgImg2 = document.getElementById("haze-bg-img-2");
-let activeHazeBuffer = 1;
+// Haze Background Elements — Harmonoid AnimatedMeshGradient (WebGL mesh_gradient 1:1)
+const elHazeRoot = document.getElementById("haze-background");
+const elHazeSrcImg = document.getElementById("haze-src-img");
+const elHazeMeshA = document.getElementById("haze-mesh-a");
+const elHazeMeshB = document.getElementById("haze-mesh-b");
+let activeHazeUrl = "";
+let hazeMeshActiveIsA = true;
+let lastHazePaletteKey = "";
+let hazeApplyGeneration = 0;
+let dynamicResetTimeout = null;
+let hazeAnimRaf = 0;
 
 // Proxy helper for blocked ISP domains
 function getOpenBrowserUrl(originalUrl) {
@@ -589,9 +596,39 @@ function updateUI(newState) {
             }
         }
         
-        // 4. Completed items count
+        // 4. Completed items count (finished only — not "progressed")
         const completedCount = newState.files.filter(f => f.status === "finished").length;
-        elQueueCompletedCount.innerText = `${completedCount} / ${newState.files.length} Completed`;
+        const failedCount = newState.files.filter(f => f.status === "failed").length;
+        elQueueCompletedCount.innerText = failedCount > 0
+            ? `${completedCount} / ${newState.files.length} done · ${failedCount} failed`
+            : `${completedCount} / ${newState.files.length} completed`;
+        
+        // Helpers: treat finished files as fully downloaded for UI math
+        const fileDownloadedBytes = (f) => {
+            if (!f) return 0;
+            if (f.status === "finished") {
+                return (f.size && f.size > 0) ? f.size : (f.downloaded || 0);
+            }
+            return f.downloaded || 0;
+        };
+        const fileProgressPct = (f) => {
+            if (!f) return 0;
+            if (f.status === "finished") return 100;
+            if (f.size > 0) return Math.min(100, Math.floor(((f.downloaded || 0) / f.size) * 100));
+            return Math.min(100, f.progress || 0);
+        };
+        const statusLabel = (s) => {
+            const map = {
+                waiting: "Waiting",
+                connecting: "Connecting",
+                downloading: "Downloading",
+                copying: "Copying",
+                finished: "Done",
+                failed: "Failed",
+                paused: "Paused"
+            };
+            return map[s] || s;
+        };
         
         // 5. Render queue list
         if (JSON.stringify(newState.files) !== JSON.stringify(appState.files)) {
@@ -645,10 +682,13 @@ function updateUI(newState) {
                         }
                     });
                     
-                    // Calculate group aggregates
+                    // Calculate group aggregates (finished parts count as full size)
                     const totalSize = groupItems.reduce((sum, item) => sum + (item.file.size || 0), 0);
-                    const totalDownloaded = groupItems.reduce((sum, item) => sum + (item.file.downloaded || 0), 0);
-                    const groupProgress = totalSize > 0 ? Math.min(100, Math.floor((totalDownloaded / totalSize) * 100)) : 0;
+                    const totalDownloaded = groupItems.reduce((sum, item) => sum + fileDownloadedBytes(item.file), 0);
+                    const finishedInGroup = groupItems.filter(item => item.file.status === "finished").length;
+                    const groupProgress = totalSize > 0
+                        ? Math.min(100, Math.floor((totalDownloaded / totalSize) * 100))
+                        : Math.floor((finishedInGroup / groupItems.length) * 100);
                     const groupSpeed = groupItems.reduce((sum, item) => sum + (item.file.speed || 0), 0);
                     
                     // Determine overall status
@@ -661,6 +701,8 @@ function updateUI(newState) {
                     else if (statuses.every(s => s === "failed" || s === "finished")) {
                         if (statuses.includes("failed")) overallStatus = "failed";
                         else overallStatus = "finished";
+                    } else if (statuses.includes("failed") && !statuses.includes("downloading") && !statuses.includes("connecting")) {
+                        overallStatus = "failed";
                     }
                     
                     let activeClass = (overallStatus === "downloading" || overallStatus === "connecting" || overallStatus === "copying") ? "active" : "";
@@ -670,21 +712,21 @@ function updateUI(newState) {
                     details.innerHTML = `
                         <summary class="queue-group-summary ${activeClass}">
                             <div class="summary-header">
-                                <span class="summary-toggle-icon">⏵</span>
-                                <div class="file-name" title="${baseName}">${baseName} (${groupItems.length} Parts)</div>
-                                <div class="file-badge game_part">Part Files</div>
+                                <span class="summary-toggle-icon">▸</span>
+                                <div class="file-name" title="${baseName}">${baseName}</div>
+                                <div class="file-badge game_part">${finishedInGroup}/${groupItems.length} parts</div>
                                 <div class="file-progress-container">
                                     <div class="progress-bar-bg">
-                                        <div class="progress-bar-fill" style="width: ${groupProgress}%"></div>
+                                        <div class="progress-bar-fill status-${overallStatus}" style="width: ${groupProgress}%"></div>
                                     </div>
                                     <div class="file-progress-text">
-                                        <span>${groupProgress}% (${formatBytes(totalDownloaded)} of ${sizeText})</span>
+                                        <span>${groupProgress}% · ${formatBytes(totalDownloaded)} / ${sizeText}</span>
                                         <span class="file-speed">${speedText}</span>
                                     </div>
                                 </div>
-                                <div class="file-status ${overallStatus}">${overallStatus}</div>
+                                <div class="file-status ${overallStatus}">${statusLabel(overallStatus)}</div>
                                 <div class="file-actions">
-                                    ${statuses.includes("failed") ? `<button class="btn btn-accent btn-retry-group">Retry Failed</button>` : ""}
+                                    ${statuses.includes("failed") ? `<button class="btn btn-accent btn-retry-group">Retry failed</button>` : ""}
                                 </div>
                             </div>
                         </summary>
@@ -710,19 +752,21 @@ function updateUI(newState) {
                         
                         const childSizeText = childFile.size > 0 ? formatBytes(childFile.size) : "Pending...";
                         const childSpeedText = childFile.status === "downloading" ? formatSpeed(childFile.speed) : "";
+                        const childPct = fileProgressPct(childFile);
+                        const childDl = fileDownloadedBytes(childFile);
                         
                         childItem.innerHTML = `
                             <div class="file-name" title="${childFile.filename}">${cleanFilename(childFile.filename)}</div>
                             <div class="file-progress-container">
                                 <div class="progress-bar-bg">
-                                    <div class="progress-bar-fill" style="width: ${childFile.progress}%"></div>
+                                    <div class="progress-bar-fill status-${childFile.status}" style="width: ${childPct}%"></div>
                                 </div>
                                 <div class="file-progress-text">
-                                    <span>${childFile.progress}% (${formatBytes(childFile.downloaded)} of ${childSizeText})</span>
+                                    <span>${childPct}% · ${formatBytes(childDl)} / ${childSizeText}</span>
                                     <span class="file-speed">${childSpeedText}</span>
                                 </div>
                             </div>
-                            <div class="file-status ${childFile.status}">${childFile.status}</div>
+                            <div class="file-status ${childFile.status}">${statusLabel(childFile.status)}</div>
                             <div class="file-actions">
                                 ${childFile.status === "failed" ? `<button class="btn btn-accent btn-retry" onclick="triggerRetry(${childIndex})">Retry</button>` : ""}
                             </div>
@@ -759,20 +803,22 @@ function updateUI(newState) {
                     
                     const sizeText = file.size > 0 ? formatBytes(file.size) : "Pending...";
                     const speedText = file.status === "downloading" ? formatSpeed(file.speed) : "";
+                    const pct = fileProgressPct(file);
+                    const dl = fileDownloadedBytes(file);
                     
                     item.innerHTML = `
                         <div class="file-name" title="${file.filename}">${cleanFilename(file.filename)}</div>
                         <div class="file-badge ${file.type}">${badgeText}</div>
                         <div class="file-progress-container">
                             <div class="progress-bar-bg">
-                                <div class="progress-bar-fill" style="width: ${file.progress}%"></div>
+                                <div class="progress-bar-fill status-${file.status}" style="width: ${pct}%"></div>
                             </div>
                             <div class="file-progress-text">
-                                <span>${file.progress}% (${formatBytes(file.downloaded)} of ${sizeText})</span>
+                                <span>${pct}% · ${formatBytes(dl)} / ${sizeText}</span>
                                 <span class="file-speed">${speedText}</span>
                             </div>
                         </div>
-                        <div class="file-status ${file.status}">${file.status}</div>
+                        <div class="file-status ${file.status}">${statusLabel(file.status)}</div>
                         <div class="file-actions">
                             ${file.status === "failed" ? `<button class="btn btn-accent btn-retry" onclick="triggerRetry(${index})">Retry</button>` : ""}
                         </div>
@@ -846,45 +892,62 @@ function initCheckedFiles(files) {
     });
 }
 
-// URL Analysis trigger
-elAnalyzeBtn.addEventListener("click", async () => {
-    const url = elUrlTextarea.value.trim();
-    if (!url) return;
-    
-    // Show spinner & disable button
-    elAnalyzeSpinner.style.display = "inline-block";
-    elAnalyzeBtnText.innerText = "Analyzing Link...";
-    elAnalyzeBtn.setAttribute("disabled", "true");
-    elAnalyzeError.style.display = "none";
-    resetSetupDashboard();
-    
+// ---- Details page cache (memory + localStorage) so revisiting games is instant ----
+const detailsPageCache = new Map();
+const DETAILS_CACHE_STORAGE_KEY = "fg_details_cache_v6";
+const DETAILS_CACHE_MAX = 40;
+
+(function hydrateDetailsCache() {
     try {
-        const response = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: url })
+        const raw = localStorage.getItem(DETAILS_CACHE_STORAGE_KEY);
+        if (!raw) return;
+        const obj = JSON.parse(raw);
+        Object.entries(obj || {}).forEach(([k, v]) => {
+            if (v && v.success) detailsPageCache.set(k, v);
         });
-        
-        const data = await response.json();
-        if (response.ok && data.success) {
-            if (data.type === "fitgirl_page") {
-                // Populate metadata sidebar
+    } catch (_) {}
+})();
+
+function persistDetailsCache() {
+    try {
+        const obj = {};
+        let n = 0;
+        for (const [k, v] of detailsPageCache) {
+            if (n++ >= DETAILS_CACHE_MAX) break;
+            obj[k] = v;
+        }
+        localStorage.setItem(DETAILS_CACHE_STORAGE_KEY, JSON.stringify(obj));
+    } catch (_) {}
+}
+
+function cacheKeyForUrl(url) {
+    return (url || "").trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function applyAnalyzeResult(url, data) {
+    // Shared apply path for network + cache hits
+    if (data.type === "fitgirl_page") {
+// Populate metadata sidebar
                 scrapedMetadata.original_size = data.original_size || "Unknown";
                 scrapedMetadata.repack_size = data.repack_size || "Unknown";
                 scrapedMetadata.cover_image = data.cover_image || "";
                 
                 elDetailsGameTitle.innerText = data.title || "Custom Repack";
-                if (data.version) {
-                    elDetailsVersionBadge.innerText = data.version;
-                    elDetailsVersionBadge.style.display = "inline-block";
-                } else {
+                // Version pill removed from UI (v9.7 etc. is confusing noise in the header)
+                if (elDetailsVersionBadge) {
                     elDetailsVersionBadge.style.display = "none";
+                    elDetailsVersionBadge.innerText = "";
                 }
                 
                 // Open in Browser URL mapping
                 if (elBtnOpenBrowser) {
                     elBtnOpenBrowser.href = getOpenBrowserUrl(url);
                     elBtnOpenBrowser.style.display = "inline-block";
+                }
+                const btnOpenTop = document.getElementById("btn-open-browser-top");
+                if (btnOpenTop) {
+                    btnOpenTop.href = getOpenBrowserUrl(url);
+                    btnOpenTop.style.display = "inline-flex";
                 }
                 
                 // Render Hero Banner backdrop
@@ -902,14 +965,44 @@ elAnalyzeBtn.addEventListener("click", async () => {
                     detailsSubtitle.innerText = data.developer || "FitGirl Repack";
                 }
                 
+                // Reset translation caches for this game
+                originalDesc = "";
+                translatedDesc = "";
+                isDescTranslated = false;
+                originalFeatures = [];
+                translatedFeatures = [];
+                isFeaturesTranslated = false;
+
                 // Render description / About the Game
                 const descSection = document.getElementById("details-desc-section");
                 if (descSection && elGameDescription) {
-                    if (data.description) {
-                        elGameDescription.innerHTML = data.description.replace(/\n/g, "<br>");
+                    const cleanDesc = (data.description || "").trim();
+                    if (cleanDesc) {
+                        originalDesc = cleanDesc;
+                        // prepareDetailsView hides this with display:none — always restore
+                        elGameDescription.style.display = "block";
+                        elGameDescription.innerHTML = cleanDesc.replace(/\n/g, "<br>");
                         descSection.style.display = "block";
+                        descSection.classList.add("active");
+                        // Auto-translate AFTER setting English source (don't mix features)
+                        if (typeof translateText === "function") {
+                            translateText(cleanDesc).then(translated => {
+                                // Only apply if still viewing same description
+                                if (originalDesc === cleanDesc && translated) {
+                                    translatedDesc = translated;
+                                    elGameDescription.style.display = "block";
+                                    elGameDescription.innerHTML = translated.replace(/\n/g, "<br>");
+                                    isDescTranslated = true;
+                                    const btn = document.getElementById("btn-translate-desc");
+                                    if (btn) btn.innerHTML = "<span>🇷🇺</span>";
+                                }
+                            }).catch(() => {});
+                        }
                     } else {
+                        elGameDescription.innerHTML = "";
+                        elGameDescription.style.display = "none";
                         descSection.style.display = "none";
+                        descSection.classList.remove("active");
                     }
                 }
                 
@@ -919,42 +1012,42 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 if (featuresSection && featuresList) {
                     if (data.repack_features && data.repack_features.length > 0) {
                         featuresList.innerHTML = "";
+                        originalFeatures = data.repack_features.slice();
                         data.repack_features.forEach(feat => {
                             const li = document.createElement("li");
                             li.innerText = feat;
                             featuresList.appendChild(li);
                         });
                         featuresSection.style.display = "block";
+                        // Keep features collapsed by default, but ensure list is visible when opened
+                        featuresList.style.display = "block";
                     } else {
+                        featuresList.innerHTML = "";
                         featuresSection.style.display = "none";
                     }
                 }
 
-                // Bind collapsible header toggle behaviors
+                // Description always open; Repack Features collapsed by default
                 const descHeader = document.getElementById("details-desc-header");
                 if (descHeader) {
                     descHeader.onclick = () => {
-                        const parent = descHeader.parentElement;
-                        parent.classList.toggle("active");
-                        const titleEl = descHeader.querySelector(".section-title");
-                        titleEl.innerText = parent.classList.contains("active") ? "− Game Description" : "+ Game Description";
+                        descHeader.parentElement.classList.toggle("active");
                     };
-                    descHeader.parentElement.classList.remove("active");
+                    if (data.description) {
+                        descHeader.parentElement.classList.add("active");
+                    }
                     const titleEl = descHeader.querySelector(".section-title");
-                    if (titleEl) titleEl.innerText = "+ Game Description";
+                    if (titleEl) titleEl.innerText = "Game Description";
                 }
                 
                 const featuresHeader = document.getElementById("details-features-header");
                 if (featuresHeader) {
                     featuresHeader.onclick = () => {
-                        const parent = featuresHeader.parentElement;
-                        parent.classList.toggle("active");
-                        const titleEl = featuresHeader.querySelector(".section-title");
-                        titleEl.innerText = parent.classList.contains("active") ? "− Repack Features" : "+ Repack Features";
+                        featuresHeader.parentElement.classList.toggle("active");
                     };
                     featuresHeader.parentElement.classList.remove("active");
                     const titleEl = featuresHeader.querySelector(".section-title");
-                    if (titleEl) titleEl.innerText = "+ Repack Features";
+                    if (titleEl) titleEl.innerText = "Repack Features";
                 }
 
                 // Bind Sticky Top Header Buttons
@@ -974,71 +1067,49 @@ elAnalyzeBtn.addEventListener("click", async () => {
 
                 // Render Screenshots & Videos Gallery
                 renderScreenshots(data.screenshots, data.videos);
+                if (elGameScreenshotsSection) elGameScreenshotsSection.classList.remove("is-loading-media");
+                const showcaseEl = document.getElementById("screenshot-main-showcase-container");
+                if (showcaseEl) showcaseEl.classList.remove("is-loading");
                 updateMiniBadge(appState);
                 
                 // Populate FitGirl website metadata fields
-                const rowFgGenres = document.getElementById("row-fg-genres");
-                const elFgGenres = document.getElementById("details-fg-genres");
-                if (rowFgGenres && elFgGenres) {
-                    if (data.genres_tags) {
-                        elFgGenres.innerText = data.genres_tags;
-                        rowFgGenres.style.display = "flex";
+                let metaVisibleCount = 0;
+                const showMetaRow = (row, el, value) => {
+                    if (!row || !el) return;
+                    if (value) {
+                        el.innerText = value;
+                        row.style.display = "grid";
+                        metaVisibleCount++;
                     } else {
-                        rowFgGenres.style.display = "none";
+                        row.style.display = "none";
                     }
-                }
-
-                const rowFgCompany = document.getElementById("row-fg-company");
-                const elFgCompany = document.getElementById("details-fg-company");
-                if (rowFgCompany && elFgCompany) {
-                    if (data.company) {
-                        elFgCompany.innerText = data.company;
-                        rowFgCompany.style.display = "flex";
-                    } else {
-                        rowFgCompany.style.display = "none";
-                    }
-                }
-
-                const rowFgLanguages = document.getElementById("row-fg-languages");
-                const elFgLanguages = document.getElementById("details-fg-languages");
-                if (rowFgLanguages && elFgLanguages) {
-                    if (data.languages) {
-                        elFgLanguages.innerText = data.languages;
-                        rowFgLanguages.style.display = "flex";
-                    } else {
-                        rowFgLanguages.style.display = "none";
-                    }
-                }
-
-                const rowFgOrigSize = document.getElementById("row-fg-orig-size");
-                const elFgOrigSize = document.getElementById("details-fg-orig-size");
-                if (rowFgOrigSize && elFgOrigSize) {
-                    if (data.original_size && data.original_size !== "Unknown") {
-                        elFgOrigSize.innerText = data.original_size;
-                        rowFgOrigSize.style.display = "flex";
-                    } else {
-                        rowFgOrigSize.style.display = "none";
-                    }
-                }
-
-                const rowFgRepackSize = document.getElementById("row-fg-repack-size");
-                const elFgRepackSize = document.getElementById("details-fg-repack-size");
-                if (rowFgRepackSize && elFgRepackSize) {
-                    if (data.repack_size && data.repack_size !== "Unknown") {
-                        elFgRepackSize.innerText = data.repack_size;
-                        rowFgRepackSize.style.display = "flex";
-                    } else {
-                        rowFgRepackSize.style.display = "none";
-                    }
-                }
+                };
+                showMetaRow(document.getElementById("row-fg-genres"), document.getElementById("details-fg-genres"), data.genres_tags);
+                showMetaRow(document.getElementById("row-fg-company"), document.getElementById("details-fg-company"), data.company);
+                showMetaRow(document.getElementById("row-fg-languages"), document.getElementById("details-fg-languages"), data.languages);
+                showMetaRow(
+                    document.getElementById("row-fg-orig-size"),
+                    document.getElementById("details-fg-orig-size"),
+                    (data.original_size && data.original_size !== "Unknown") ? data.original_size : ""
+                );
+                showMetaRow(
+                    document.getElementById("row-fg-repack-size"),
+                    document.getElementById("details-fg-repack-size"),
+                    (data.repack_size && data.repack_size !== "Unknown") ? data.repack_size : ""
+                );
+                const metaCard = document.querySelector(".details-meta-card");
+                if (metaCard) metaCard.style.display = metaVisibleCount > 0 ? "block" : "none";
                 
-                // Update sticky bottom download bar repack size
+                // Update sticky bottom download bar — ALWAYS page repack size on details (not old session file sum)
                 const detailsBottomBar = document.getElementById("details-bottom-bar");
                 const detailsBottomSize = document.getElementById("details-bottom-size");
-                if (detailsBottomBar && detailsBottomSize) {
-                    detailsBottomSize.innerText = scrapedMetadata.repack_size !== "Unknown" ? scrapedMetadata.repack_size : "Size Unknown";
-                    detailsBottomBar.style.display = "flex";
+                if (detailsBottomSize) {
+                    const rs = (data.repack_size && data.repack_size !== "Unknown")
+                        ? data.repack_size
+                        : (scrapedMetadata.repack_size !== "Unknown" ? scrapedMetadata.repack_size : "");
+                    detailsBottomSize.innerText = rs || "—";
                 }
+                if (detailsBottomBar) setDetailsDownloadBarVisible(true);
                 
                 const detailsCoverCard = document.getElementById("details-cover-card");
                 const detailsCoverImage = document.getElementById("details-cover-image");
@@ -1056,7 +1127,11 @@ elAnalyzeBtn.addEventListener("click", async () => {
                             detailsCoverImage.style.display = "block";
                         }
                         if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "none";
-                        if (detailsCoverCard) detailsCoverCard.style.display = "block";
+                        if (detailsCoverCard) {
+                            detailsCoverCard.style.display = "block";
+                            detailsCoverCard.classList.remove("is-loading");
+                            detailsCoverCard.classList.add("is-loaded");
+                        }
 
                         elSetupCover.onerror = () => {
                             elSetupCover.src = "";
@@ -1068,10 +1143,10 @@ elAnalyzeBtn.addEventListener("click", async () => {
                                 detailsCoverImage.style.display = "none";
                             }
                             if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
+                            if (detailsCoverCard) detailsCoverCard.classList.remove("is-loaded", "is-loading");
                             clearDynamicBackground();
                         };
                         setHazeBackground(cachedUrl);
-                        updateAccentFromImage(elSetupCover);
                     });
                 } else {
                     elSetupCover.src = "";
@@ -1083,7 +1158,10 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         detailsCoverImage.style.display = "none";
                     }
                     if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
-                    if (detailsCoverCard) detailsCoverCard.style.display = "none";
+                    if (detailsCoverCard) {
+                        detailsCoverCard.style.display = "none";
+                        detailsCoverCard.classList.remove("is-loaded", "is-loading");
+                    }
                     clearDynamicBackground();
                 }
 
@@ -1129,46 +1207,15 @@ elAnalyzeBtn.addEventListener("click", async () => {
                         elMirrorsContainer.appendChild(pill);
                     });
                     
-                    // Populate new premium modal mirrors list
+                    // Populate modal mirrors — decrypt paste only when user opens Download
                     populateModalMirrors(filteredMirrors);
-                    
-                    // Auto click first mirror pill
-                    elMirrorsContainer.querySelector(".mirror-pill").click();
+                    scrapedMirrors = filteredMirrors;
                 } else {
                     elAnalyzeError.style.display = "block";
                     elAnalyzeError.innerText = "No download mirror links found on this page. Try copying direct links instead.";
                 }
 
-                // Render description & screenshots
-                if (elGameDescription && data.description) {
-                    elGameDescription.innerText = "Translating description...";
-                    elGameDescription.style.display = "block";
-                    
-                    // Auto translate description to Russian on load
-                    translateText(data.description).then(translated => {
-                        translatedDesc = translated;
-                        originalDesc = data.description;
-                        elGameDescription.innerText = translated;
-                        isDescTranslated = true;
-                        if (btnTranslateDesc) {
-                            btnTranslateDesc.innerHTML = "<span>🇷🇺</span>";
-                        }
-                    }).catch(err => {
-                        console.error("Auto-translate description failed:", err);
-                        elGameDescription.innerText = data.description;
-                        isDescTranslated = false;
-                        if (btnTranslateDesc) {
-                            btnTranslateDesc.innerHTML = "<span>🇬🇧</span>";
-                        }
-                    });
-                } else if (elGameDescription) {
-                    elGameDescription.innerText = "";
-                    elGameDescription.style.display = "none";
-                }
-
-                renderScreenshots(data.screenshots, data.videos);
-
-                // Toggle media column visibility and columns
+                // Description + screenshots already rendered above once (avoid double translate / flash)
                 const elMediaColumnCard = document.getElementById("media-column-card");
                 const hasMedia = (data.videos && data.videos.length > 0) || (data.screenshots && data.screenshots.length > 0);
                 if (elMediaColumnCard) {
@@ -1195,33 +1242,144 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 elSetupDashboard.style.display = "grid";
                 elConfigCard.style.display = "block";
                 setViewState("details");
-            } else if (data.type === "files") {
-                displayConfigCard(data.title, data.files, url);
+            
+    } else if (data.type === "files") {
+        displayConfigCard(data.title, data.files, url);
+    } else if (data.type === "online_fix_page" || (data.mirrors && data.title)) {
+        if (data.title) elDetailsGameTitle.innerText = data.title;
+        scrapedMetadata.original_size = data.original_size || "Unknown";
+        scrapedMetadata.repack_size = data.repack_size || "Unknown";
+        scrapedMetadata.cover_image = data.cover_image || "";
+        if (data.description && elGameDescription) {
+            elGameDescription.innerHTML = String(data.description).replace(/\n/g, "<br>");
+            const descSection = document.getElementById("details-desc-section");
+            if (descSection) descSection.style.display = "block";
+        }
+        renderScreenshots(data.screenshots || [], data.videos || []);
+        if (data.mirrors && data.mirrors.length) {
+            scrapedMirrors = data.mirrors;
+            populateModalMirrors(data.mirrors);
+        }
+        const detailsBottomSize = document.getElementById("details-bottom-size");
+        if (detailsBottomSize) {
+            detailsBottomSize.innerText = (data.repack_size && data.repack_size !== "Unknown") ? data.repack_size : "—";
+        }
+        setDetailsDownloadBarVisible(true);
+        setViewState("details");
+    }
+}
+
+// URL Analysis trigger
+elAnalyzeBtn.addEventListener("click", async () => {
+    const url = elUrlTextarea.value.trim();
+    if (!url) return;
+
+    elAnalyzeSpinner.style.display = "inline-block";
+    elAnalyzeBtnText.innerText = "Analyzing Link...";
+    elAnalyzeBtn.setAttribute("disabled", "true");
+    elAnalyzeError.style.display = "none";
+    resetSetupDashboard();
+
+    const key = cacheKeyForUrl(url);
+    const finishUi = () => {
+        const elDetailsLoader = document.getElementById("details-page-loader");
+        if (elDetailsLoader) elDetailsLoader.style.display = "none";
+        elSetupDashboard.style.display = "grid";
+        elAnalyzeSpinner.style.display = "none";
+        elAnalyzeBtnText.innerText = "Analyze Link";
+        elAnalyzeBtn.removeAttribute("disabled");
+    };
+
+    // Instant cache hit (already-opened games)
+    if (detailsPageCache.has(key)) {
+        try {
+            applyAnalyzeResult(url, detailsPageCache.get(key));
+        } catch (e) {
+            console.warn("Cache apply failed, refetching", e);
+            detailsPageCache.delete(key);
+        } finally {
+            finishUi();
+        }
+        if (detailsPageCache.has(key)) return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 50000);
+
+    try {
+        const response = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: url }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        const data = await response.json();
+        if (response.ok && data.success) {
+            detailsPageCache.set(key, data);
+            if (detailsPageCache.size > DETAILS_CACHE_MAX) {
+                const first = detailsPageCache.keys().next().value;
+                detailsPageCache.delete(first);
             }
+            persistDetailsCache();
+            applyAnalyzeResult(url, data);
         } else {
             elAnalyzeError.style.display = "block";
             elAnalyzeError.innerText = data.error || "Failed to analyze link. Check logs.";
             if (viewState === "details") {
-                alert("Failed to load game details: " + (data.error || "Check logs."));
-                setViewState("catalog");
+                const msg = data.error || "Check logs.";
+                if (typeof Swal !== "undefined") {
+                    Swal.fire({
+                        icon: "error",
+                        title: /timed out|timeout|curl:\s*\(28\)/i.test(msg) ? "Site too slow / timed out" : "Failed to load game",
+                        html: `<p style="text-align:left;font-size:0.88rem;word-break:break-word">${msg}</p>`,
+                        showCancelButton: true,
+                        confirmButtonText: "Retry",
+                        cancelButtonText: "Back to catalog",
+                        background: "rgba(14,14,22,0.97)",
+                        color: "#eee",
+                        confirmButtonColor: "#8b5cf6"
+                    }).then(res => {
+                        if (res.isConfirmed) elAnalyzeBtn.click();
+                        else setViewState("catalog");
+                    });
+                } else {
+                    alert("Failed to load game details: " + msg);
+                    setViewState("catalog");
+                }
             }
         }
     } catch (e) {
+        clearTimeout(timeoutId);
         console.error("Error analyzing:", e);
+        const isAbort = e && e.name === "AbortError";
         elAnalyzeError.style.display = "block";
-        elAnalyzeError.innerText = "Connection error. Make sure Python server is running.";
+        elAnalyzeError.innerText = isAbort
+            ? "Timeout loading page (50s). Try again or enable VPN."
+            : "Connection error. Make sure Python server is running.";
         if (viewState === "details") {
-            alert("Connection error while loading game details.");
-            setViewState("catalog");
+            if (typeof Swal !== "undefined") {
+                Swal.fire({
+                    icon: "error",
+                    title: isAbort ? "Timeout" : "Connection error",
+                    text: isAbort ? "The repack page took too long." : "Could not reach server or site.",
+                    showCancelButton: true,
+                    confirmButtonText: "Retry",
+                    cancelButtonText: "Back to catalog",
+                    background: "rgba(14,14,22,0.97)",
+                    color: "#eee",
+                    confirmButtonColor: "#8b5cf6"
+                }).then(res => {
+                    if (res.isConfirmed) elAnalyzeBtn.click();
+                    else setViewState("catalog");
+                });
+            } else {
+                setViewState("catalog");
+            }
         }
     } finally {
-        const elDetailsLoader = document.getElementById("details-page-loader");
-        if (elDetailsLoader) elDetailsLoader.style.display = "none";
-        elSetupDashboard.style.display = "grid";
-        
-        elAnalyzeSpinner.style.display = "none";
-        elAnalyzeBtnText.innerText = "Analyze Link";
-        elAnalyzeBtn.removeAttribute("disabled");
+        finishUi();
     }
 });
 
@@ -1261,52 +1419,82 @@ async function loadMirrorLinks(mirrorUrl, mirrorName) {
     if (elChecklistLoadingSpinner) elChecklistLoadingSpinner.style.display = "flex";
     if (elActiveMirrorBadge) elActiveMirrorBadge.style.display = "none";
     
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-        controller.abort();
-    }, 20000); // 20s timeout
-    
-    try {
-        const response = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: mirrorUrl }),
-            signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        const data = await response.json();
-        if (response.ok && data.success) {
-            rawFilesList = data.files;
-            initCheckedFiles(data.files);
-            
-            configureRussianSorting(data.files);
-            
-            // Show mirror badge and update label
-            if (elActiveMirrorName) elActiveMirrorName.innerText = mirrorName;
-            if (elActiveMirrorBadge) elActiveMirrorBadge.style.display = "inline-block";
-            
-            if (elConfirmQueueBtn) {
-                elConfirmQueueBtn.removeAttribute("disabled");
-                elConfirmQueueBtn.innerText = "Confirm and Start Download";
+    const MIRROR_TIMEOUT_MS = 75000; // PrivateBin + CF can be slow
+    const maxAttempts = 2;
+    let lastErr = null;
+    let loaded = false;
+
+    for (let attempt = 1; attempt <= maxAttempts && !loaded; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), MIRROR_TIMEOUT_MS);
+        try {
+            if (elChecklistLoadingSpinner) {
+                const p = elChecklistLoadingSpinner.querySelector("p");
+                if (p) p.innerText = attempt > 1 ? `Decrypting mirror… retry ${attempt}/${maxAttempts}` : "Decrypting mirror paste…";
             }
-            
-            updateChecklistSorted();
-        } else {
-            alert("Error loading mirror links: " + (data.error || "Unknown error"));
+            const response = await fetch("/api/analyze", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: mirrorUrl }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            const data = await response.json();
+            if (response.ok && data.success) {
+                rawFilesList = data.files || [];
+                initCheckedFiles(rawFilesList);
+                configureRussianSorting(rawFilesList);
+                if (elActiveMirrorName) elActiveMirrorName.innerText = mirrorName;
+                if (elActiveMirrorBadge) elActiveMirrorBadge.style.display = "inline-block";
+                if (elConfirmQueueBtn) {
+                    elConfirmQueueBtn.removeAttribute("disabled");
+                    elConfirmQueueBtn.innerText = "Confirm and Start Download";
+                }
+                // Wider step-2 shell when files are ready
+                const card = document.getElementById("download-config-card");
+                if (card) card.classList.add("step-files-wide");
+                updateChecklistSorted();
+                loaded = true;
+            } else {
+                lastErr = data.error || "Unknown error";
+            }
+        } catch (e) {
+            clearTimeout(timeoutId);
+            console.error("Error loading mirror:", e);
+            lastErr = e.name === "AbortError"
+                ? "Timeout loading mirror links. The paste host is slow or blocked."
+                : (e.message || "Failed to load mirror. Check internet / VPN.");
         }
-    } catch (e) {
-        clearTimeout(timeoutId);
-        console.error("Error loading mirror:", e);
-        if (e.name === 'AbortError') {
-            alert("Timeout loading mirror links. Please try another mirror or check server status.");
-        } else {
-            alert("Failed to load mirror. Check internet connection.");
-        }
-    } finally {
-        if (elChecklistLoadingSpinner) elChecklistLoadingSpinner.style.display = "none";
     }
+
+    if (!loaded) {
+        const errMsg = String(lastErr || "Unknown error");
+        const isDns = /could not resolve|resolve host|getaddrinfo|curl:\s*\(6\)/i.test(errMsg);
+        const isTimeout = /timeout|timed out|abort/i.test(errMsg);
+        if (typeof Swal !== "undefined") {
+            Swal.fire({
+                icon: isTimeout ? "warning" : "error",
+                title: isDns ? "Mirror host unreachable" : (isTimeout ? "Mirror timed out" : "Mirror failed"),
+                html: isDns
+                    ? `<p style="text-align:left;margin:0 0 8px">Cannot reach paste host (DNS / ISP block).</p>
+                       <p style="text-align:left;margin:0;color:var(--text-muted);font-size:0.85rem">Try another hoster, enable WARP/VPN, then retry.</p>`
+                    : `<p style="text-align:left;word-break:break-word;font-size:0.88rem">${errMsg}</p>
+                       <p style="text-align:left;margin-top:8px;color:var(--text-muted);font-size:0.82rem">Go Back and pick another mirror (e.g. Filehoster / fuckingfast).</p>`,
+                showCancelButton: true,
+                confirmButtonText: "Retry",
+                cancelButtonText: "OK",
+                background: "rgba(16,16,28,0.96)",
+                color: "#eee",
+                confirmButtonColor: "#9b59b6"
+            }).then(res => {
+                if (res.isConfirmed) loadMirrorLinks(mirrorUrl, mirrorName);
+            });
+        } else {
+            alert("Error loading mirror links: " + errMsg);
+        }
+    }
+
+    if (elChecklistLoadingSpinner) elChecklistLoadingSpinner.style.display = "none";
 }
 
 // Display config card for direct files/PrivateBin
@@ -1371,12 +1559,9 @@ function displayConfigCard(title, files, url = "") {
     const metacriticCard = document.getElementById("details-metacritic-card");
     if (metacriticCard) metacriticCard.style.display = "none";
     
-    const detailsBottomBar = document.getElementById("details-bottom-bar");
     const detailsBottomSize = document.getElementById("details-bottom-size");
-    if (detailsBottomBar && detailsBottomSize) {
-        detailsBottomSize.innerText = "Direct Link";
-        detailsBottomBar.style.display = "flex";
-    }
+    if (detailsBottomSize) detailsBottomSize.innerText = "Direct Link";
+    setDetailsDownloadBarVisible(true);
     
     clearDynamicBackground();
     
@@ -1675,9 +1860,15 @@ function updateSelectionPill() {
         </span>
     `;
     
-    // Update sticky bottom size text dynamically based on checked files
+    // Only override bottom size while the download config modal is open for THIS game's files.
+    // Never let a previous session's rawFilesList overwrite the page repack size (caused 384GB bugs).
     const detailsBottomSize = document.getElementById("details-bottom-size");
-    if (detailsBottomSize && rawFilesList && rawFilesList.length > 0) {
+    const downloadModal = document.getElementById("download-config-modal");
+    const modalOpen = downloadModal && (
+        downloadModal.classList.contains("active")
+        || (downloadModal.style.display && downloadModal.style.display !== "none")
+    );
+    if (detailsBottomSize && modalOpen && rawFilesList && rawFilesList.length > 0) {
         let totalSelectedSize = 0;
         rawFilesList.forEach(f => {
             if (checkedFiles.has(f.filename) && f.size) {
@@ -1686,8 +1877,8 @@ function updateSelectionPill() {
         });
         if (totalSelectedSize > 0) {
             detailsBottomSize.innerText = formatBytes(totalSelectedSize);
-        } else {
-            detailsBottomSize.innerText = "0 Bytes";
+        } else if (scrapedMetadata.repack_size && scrapedMetadata.repack_size !== "Unknown") {
+            detailsBottomSize.innerText = scrapedMetadata.repack_size;
         }
     }
 }
@@ -1988,94 +2179,98 @@ function updateMiniBadge(newState) {
     
     if (newState.is_configured && viewState !== "downloading") {
         elMiniBadge.style.display = "flex";
+        elMiniBadge.classList.add("dl-island", "is-compact-island");
         
         const elMiniTitle = document.getElementById("mini-game-title");
         const elMiniEta = document.getElementById("mini-game-eta");
         const elMiniStatus = document.getElementById("mini-game-status");
         const elMiniProgressBarFill = document.getElementById("mini-progress-bar-fill");
+        const elMiniPct = document.getElementById("mini-game-pct");
         
         if (elMiniTitle) elMiniTitle.innerText = newState.game_title || "Downloading";
         
-        // Check if there is an active downloading task or install/extract
         const isDownloading = newState.files && newState.files.some(f => f.status === "downloading");
+        const speedText = isDownloading
+            ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed)
+            : "0 MB/s";
         
-        // speed and progress
-        const speedText = isDownloading ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed) : "0.0 MB/s";
-        
-        // Format downloaded / total size
         const totalBytes = newState.files ? newState.files.reduce((acc, f) => acc + (f.size || 0), 0) : 0;
-        const downloadedBytes = newState.files ? newState.files.reduce((acc, f) => acc + (f.downloaded || 0), 0) : 0;
-        const totalSizeText = formatBytes(totalBytes);
+        const downloadedBytes = newState.files ? newState.files.reduce((acc, f) => {
+            if (f.status === "finished" && f.size > 0) return acc + f.size;
+            return acc + (f.downloaded || 0);
+        }, 0) : 0;
+        const doneCount = newState.files ? newState.files.filter(f => f.status === "finished").length : 0;
+        const fileCount = newState.files ? newState.files.length : 0;
+        const totalSizeText = totalBytes > 0 ? formatBytes(totalBytes) : "—";
         const downloadedSizeText = formatBytes(downloadedBytes);
+        const pct = (typeof newState.total_progress === "number" && newState.total_progress > 0)
+            ? Math.round(newState.total_progress)
+            : (totalBytes > 0 ? Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)) : 0);
         
+        // Status line: compact size + optional speed when active
         if (elMiniStatus) {
-            elMiniStatus.innerText = `${speedText} | ${downloadedSizeText} / ${totalSizeText}`;
+            elMiniStatus.innerText = isDownloading
+                ? `${downloadedSizeText} / ${totalSizeText} · ${speedText}`
+                : `${downloadedSizeText} / ${totalSizeText}`;
         }
         
-        // ETA calculation
+        // State chip: Paused / Left / Complete
         if (elMiniEta) {
+            let stateLabel = "…";
+            let stateClass = "is-idle";
             if (newState.is_running && isDownloading && smoothedSpeed > 0) {
-                const remainingBytes = totalBytes - downloadedBytes;
+                const remainingBytes = Math.max(0, totalBytes - downloadedBytes);
                 const etaSeconds = Math.max(0, remainingBytes / smoothedSpeed);
-                elMiniEta.innerText = "Remaining: " + formatTime(etaSeconds);
+                stateLabel = formatTime(etaSeconds);
+                stateClass = "is-running";
+            } else if (pct >= 100 && fileCount > 0 && doneCount === fileCount) {
+                stateLabel = "Done";
+                stateClass = "is-done";
             } else if (!newState.is_running) {
-                elMiniEta.innerText = "Paused";
+                stateLabel = "Paused";
+                stateClass = "is-paused";
             } else {
-                elMiniEta.innerText = "Checking files...";
+                stateLabel = "Sync";
+                stateClass = "is-running";
             }
+            elMiniEta.innerText = stateLabel;
+            elMiniEta.className = "floating-bar-eta " + stateClass;
+        }
+        
+        if (elMiniPct) {
+            elMiniPct.innerText = `${pct}%`;
         }
         
         if (elMiniProgressBarFill) {
-            elMiniProgressBarFill.style.width = `${newState.total_progress}%`;
+            elMiniProgressBarFill.style.width = `${pct}%`;
         }
 
-        // Update the play/pause button state in mini-badge
         const playPauseBtn = document.getElementById("mini-btn-play-pause");
         if (playPauseBtn) {
-            playPauseBtn.innerHTML = newState.is_running ? `
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                </svg>
-            ` : `
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
-                </svg>
-            `;
+            playPauseBtn.setAttribute("aria-label", newState.is_running ? "Pause" : "Resume");
+            playPauseBtn.title = newState.is_running ? "Pause" : "Resume";
+            playPauseBtn.innerHTML = newState.is_running
+                ? `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M7 5h3v14H7V5zm7 0h3v14h-3V5z"/></svg>`
+                : `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
         }
-        // Dynamic positioning of the floating badge based on active game view
+
         const elDetailsGameTitle = document.getElementById("details-game-title");
-        const isViewingActiveGame = viewState === "details" && 
-                                    elDetailsGameTitle && 
-                                    elDetailsGameTitle.innerText === newState.game_title;
+        const isViewingActiveGame = viewState === "details" &&
+            elDetailsGameTitle &&
+            elDetailsGameTitle.innerText === newState.game_title;
         
-        const detailsBottomBar = document.getElementById("details-bottom-bar");
+        // Clean island positioning — no inline size wars
+        elMiniBadge.style.cssText = "display:flex; top:14px; bottom:auto; left:50%; transform:translateX(-50%);";
         
         if (isViewingActiveGame) {
-            // Move to bottom, covering the download trigger button
-            elMiniBadge.style.top = "auto";
-            elMiniBadge.style.bottom = "24px";
-            elMiniBadge.style.transform = "translateX(-50%)";
-            
-            if (detailsBottomBar) {
-                detailsBottomBar.style.display = "none";
-            }
-        } else {
-            // Move to top (dynamic island)
-            elMiniBadge.style.top = "24px";
-            elMiniBadge.style.bottom = "auto";
-            elMiniBadge.style.transform = "translateX(-50%)";
-            
-            if (viewState === "details" && detailsBottomBar) {
-                detailsBottomBar.style.display = "flex";
-            }
+            setDetailsDownloadBarVisible(false);
+        } else if (viewState === "details") {
+            setDetailsDownloadBarVisible(true);
         }
     } else {
         elMiniBadge.style.display = "none";
-        
-        // Show details bottom bar if we are not downloading this game anymore
-        const detailsBottomBar = document.getElementById("details-bottom-bar");
-        if (viewState === "details" && detailsBottomBar) {
-            detailsBottomBar.style.display = "flex";
+        if (viewState === "details") {
+            setDetailsDownloadBarVisible(true);
         }
     }
 }
@@ -2144,17 +2339,387 @@ function syncViewState() {
         elCatalogContainer.classList.remove("hidden-view");
         elGameDetailsContainer.classList.add("hidden-view");
         clearDynamicBackground();
-        const detailsBottomBar = document.getElementById("details-bottom-bar");
-        if (detailsBottomBar) detailsBottomBar.style.display = "none";
+        setDetailsDownloadBarVisible(false);
     } else if (bgState === "details") {
         elCatalogContainer.classList.add("hidden-view");
         elGameDetailsContainer.classList.remove("hidden-view");
     }
 }
 
-let dynamicResetTimeout = null;
+/**
+ * Relative luminance (sRGB) — Flutter Color.computeLuminance().
+ */
+function colorLuminance(c) {
+    const lin = (v) => {
+        v /= 255;
+        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+}
 
-// Haze Background Swap (Harmonoid style - double-buffered cross-fade)
+/* ============================================================
+   Harmonoid AnimatedMeshGradient — WebGL port of mesh_gradient
+   shader: lib/shaders/animated_mesh_gradient.frag
+   options: frequency=5, amplitude=30, speed=2, grain=0
+   ticker: time += 0.01 each frame (same as Flutter Ticker)
+   ============================================================ */
+const MESH_VERT = `
+attribute vec2 a_pos;
+void main() {
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+// Exact algorithm from mesh_gradient animated_mesh_gradient.frag (Flutter → WebGL)
+const MESH_FRAG = `
+precision highp float;
+uniform vec2 uSize;
+uniform float uTime;
+uniform float uFrequency;
+uniform float uAmplitude;
+uniform float uSpeed;
+uniform float uGrain;
+uniform vec3 uColor1;
+uniform vec3 uColor2;
+uniform vec3 uColor3;
+uniform vec3 uColor4;
+
+float S(float a, float b, float t) {
+  return smoothstep(a, b, t);
+}
+
+mat2 Rot(float a) {
+  float s = sin(a);
+  float c = cos(a);
+  return mat2(c, -s, s, c);
+}
+
+vec2 hash(vec2 p) {
+  p = vec2(dot(p, vec2(2127.1, 81.17)), dot(p, vec2(1269.5, 283.37)));
+  return fract(sin(p) * 43758.5453);
+}
+
+float noise(in vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float n = mix(
+    mix(dot(-1.0 + 2.0 * hash(i + vec2(0.0, 0.0)), f - vec2(0.0, 0.0)),
+        dot(-1.0 + 2.0 * hash(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+    mix(dot(-1.0 + 2.0 * hash(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+        dot(-1.0 + 2.0 * hash(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x),
+    u.y);
+  return 0.5 + 0.5 * n;
+}
+
+float grainNoise(vec2 p) {
+  return fract(sin(dot(p * -1.0, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize;
+  float ratio = uSize.x / uSize.y;
+  vec2 tuv = uv;
+  tuv -= 0.5;
+
+  float degree = noise(vec2(uTime * 0.1, tuv.x * tuv.y));
+  tuv.y *= 1.0 / ratio;
+  float deg = radians((degree - 0.5) * 720.0 + 180.0);
+  tuv *= Rot(deg);
+  tuv.y *= ratio;
+
+  float frequency = uFrequency;
+  float amplitude = uAmplitude;
+  float speed = uTime * uSpeed;
+
+  tuv.x += sin(tuv.y * frequency + speed) / amplitude;
+  tuv.y += sin(tuv.x * frequency * 1.5 + speed) / (amplitude * 0.5);
+
+  vec3 layer1 = mix(uColor1, uColor2, S(-0.3, 0.2, (tuv * Rot(radians(-5.0))).x));
+  vec3 layer2 = mix(uColor3, uColor4, S(-0.3, 0.2, (tuv * Rot(radians(-5.0))).x));
+  vec3 finalComp = mix(layer1, layer2, S(0.5, -0.3, tuv.y));
+  vec3 grainedComp = finalComp + (finalComp * grainNoise(uv) * uGrain);
+  gl_FragColor = vec4(grainedComp, 1.0);
+}`;
+
+function createMeshRenderer(canvas) {
+    if (!canvas || !canvas.getContext) return null;
+    const gl = canvas.getContext("webgl", {
+        alpha: false,
+        antialias: false,
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: false
+    });
+    if (!gl) {
+        console.warn("[haze] WebGL unavailable");
+        return null;
+    }
+
+    function compile(type, src) {
+        const sh = gl.createShader(type);
+        gl.shaderSource(sh, src);
+        gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+            console.error("[haze] shader compile", gl.getShaderInfoLog(sh));
+            return null;
+        }
+        return sh;
+    }
+
+    const vs = compile(gl.VERTEX_SHADER, MESH_VERT);
+    const fs = compile(gl.FRAGMENT_SHADER, MESH_FRAG);
+    if (!vs || !fs) return null;
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error("[haze] program link", gl.getProgramInfoLog(prog));
+        return null;
+    }
+
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,  1, -1,  -1, 1,
+        -1,  1,  1, -1,   1, 1
+    ]), gl.STATIC_DRAW);
+
+    const aPos = gl.getAttribLocation(prog, "a_pos");
+    const u = {
+        size: gl.getUniformLocation(prog, "uSize"),
+        time: gl.getUniformLocation(prog, "uTime"),
+        frequency: gl.getUniformLocation(prog, "uFrequency"),
+        amplitude: gl.getUniformLocation(prog, "uAmplitude"),
+        speed: gl.getUniformLocation(prog, "uSpeed"),
+        grain: gl.getUniformLocation(prog, "uGrain"),
+        c1: gl.getUniformLocation(prog, "uColor1"),
+        c2: gl.getUniformLocation(prog, "uColor2"),
+        c3: gl.getUniformLocation(prog, "uColor3"),
+        c4: gl.getUniformLocation(prog, "uColor4")
+    };
+
+    // Default AnimatedMeshGradientOptions()
+    const options = { frequency: 5, amplitude: 30, speed: 2, grain: 0 };
+    let colors = [
+        [0.2, 0.08, 0.24],
+        [0.43, 0.17, 0.47],
+        [0.14, 0.09, 0.24],
+        [0.31, 0.13, 0.38]
+    ];
+    let time = 0;
+    let running = false;
+    let raf = 0;
+
+    function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = Math.max(2, Math.floor(window.innerWidth * dpr));
+        const h = Math.max(2, Math.floor(window.innerHeight * dpr));
+        if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+        }
+        gl.viewport(0, 0, canvas.width, canvas.height);
+    }
+
+    function draw() {
+        resize();
+        gl.useProgram(prog);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+        gl.uniform2f(u.size, canvas.width, canvas.height);
+        gl.uniform1f(u.time, time);
+        gl.uniform1f(u.frequency, options.frequency);
+        gl.uniform1f(u.amplitude, options.amplitude);
+        gl.uniform1f(u.speed, options.speed);
+        gl.uniform1f(u.grain, options.grain);
+        gl.uniform3fv(u.c1, colors[0]);
+        gl.uniform3fv(u.c2, colors[1]);
+        gl.uniform3fv(u.c3, colors[2]);
+        gl.uniform3fv(u.c4, colors[3]);
+
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+
+    function loop() {
+        if (!running) return;
+        // Flutter Ticker: _delta += 0.01 each frame
+        time += 0.01;
+        draw();
+        raf = requestAnimationFrame(loop);
+    }
+
+    return {
+        setColors(rgbList) {
+            // rgb 0-255 → 0-1 like painter color.red/255
+            colors = rgbList.map(c => [
+                Math.min(1, Math.max(0, c.r / 255)),
+                Math.min(1, Math.max(0, c.g / 255)),
+                Math.min(1, Math.max(0, c.b / 255))
+            ]);
+            while (colors.length < 4) colors.push(colors[colors.length - 1] || [0, 0, 0]);
+            colors = colors.slice(0, 4);
+            draw();
+        },
+        start() {
+            if (running) return;
+            running = true;
+            raf = requestAnimationFrame(loop);
+        },
+        stop() {
+            running = false;
+            if (raf) cancelAnimationFrame(raf);
+            raf = 0;
+        },
+        draw,
+        resize
+    };
+}
+
+// Two mesh renderers for AnimatedSwitcher crossfade
+let meshRendererA = null;
+let meshRendererB = null;
+
+function ensureMeshRenderers() {
+    if (!meshRendererA && elHazeMeshA) {
+        meshRendererA = createMeshRenderer(elHazeMeshA);
+        if (meshRendererA) meshRendererA.start();
+    }
+    if (!meshRendererB && elHazeMeshB) {
+        meshRendererB = createMeshRenderer(elHazeMeshB);
+        if (meshRendererB) meshRendererB.start();
+    }
+    return !!(meshRendererA && meshRendererB);
+}
+
+/**
+ * Harmonoid NowPlayingColorPaletteNotifier:
+ * palette.where((e) => e.computeLuminance() < 0.5)
+ * then order colors for AnimatedMeshGradient exactly as now_playing_background.dart
+ */
+function extractPaletteFromImage(imgElement, maxColors = 8) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(imgElement, 0, 0, 32, 32);
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+    const buckets = new Map();
+
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 180) continue;
+        const r0 = data[i], g0 = data[i + 1], b0 = data[i + 2];
+        const maxc = Math.max(r0, g0, b0);
+        const minc = Math.min(r0, g0, b0);
+        if (maxc < 18 || minc > 245) continue;
+        const r = r0 >> 3, g = g0 >> 3, b = b0 >> 3;
+        const key = (r << 10) | (g << 5) | b;
+        buckets.set(key, (buckets.get(key) || 0) + 1);
+    }
+
+    const sorted = [...buckets.entries()].sort((a, b) => b[1] - a[1]);
+    const raw = [];
+    const tooClose = (a, b) => {
+        const dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
+        return (dr * dr + dg * dg + db * db) < 1400;
+    };
+    for (const [key] of sorted) {
+        if (raw.length >= maxColors) break;
+        const col = {
+            r: ((key >> 10) & 31) * 8 + 4,
+            g: ((key >> 5) & 31) * 8 + 4,
+            b: (key & 31) * 8 + 4
+        };
+        if (raw.some(c => tooClose(c, col))) continue;
+        raw.push(col);
+    }
+
+    // Harmonoid: luminance < 0.5 only (darker half of palette)
+    let dark = raw.filter(c => colorLuminance(c) < 0.5);
+    if (!dark.length) dark = raw.slice();
+    if (!dark.length) {
+        dark = [
+            { r: 80, g: 30, b: 100 },
+            { r: 160, g: 50, b: 90 },
+            { r: 40, g: 50, b: 120 },
+            { r: 110, g: 35, b: 85 }
+        ];
+    }
+
+    // Keep dark character but ensure mesh is vividly visible (not black void).
+    // Harmonoid paints full-screen mesh; near-black swatches look like "no animation".
+    dark = dark.map(c => {
+        let { r, g, b } = c;
+        // floor so nothing collapses to black
+        r = Math.max(r, 40);
+        g = Math.max(g, 28);
+        b = Math.max(b, 45);
+        // boost saturation + mid lift
+        const avg = (r + g + b) / 3;
+        r = Math.min(255, Math.round((r - avg) * 1.35 + avg * 1.25 + 28));
+        g = Math.min(255, Math.round((g - avg) * 1.35 + avg * 1.2 + 20));
+        b = Math.min(255, Math.round((b - avg) * 1.35 + avg * 1.25 + 30));
+        return { r, g, b };
+    });
+
+    // now_playing_background.dart switch on palette.length
+    const p = dark;
+    if (p.length === 1) return [p[0], p[0], p[0], p[0]];
+    if (p.length === 2) return [p[1], p[0], p[1], p[0]]; // reversed[0], [0], reversed[0], [0]
+    if (p.length === 3) return [p[2], p[0], p[2], p[1]];
+    // else: reversed[0], [0], reversed[1], [1]
+    return [p[p.length - 1], p[0], p[p.length - 2], p[1]];
+}
+
+function paletteKey(colors) {
+    return colors.map(c => `${c.r},${c.g},${c.b}`).join("|");
+}
+
+/**
+ * Apply palette with Harmonoid AnimatedSwitcher crossfade + live WebGL mesh.
+ */
+function applyHazePalette(colors) {
+    const key = paletteKey(colors);
+    if (key === lastHazePaletteKey && elHazeRoot && elHazeRoot.classList.contains("haze-active")) {
+        return;
+    }
+    lastHazePaletteKey = key;
+    ensureMeshRenderers();
+
+    if (!elHazeRoot || !elHazeMeshA || !elHazeMeshB) {
+        console.warn("[haze] DOM missing");
+        return;
+    }
+    elHazeRoot.classList.remove("haze-idle");
+    elHazeRoot.classList.add("haze-active");
+
+    const nextCanvas = hazeMeshActiveIsA ? elHazeMeshB : elHazeMeshA;
+    const prevCanvas = hazeMeshActiveIsA ? elHazeMeshA : elHazeMeshB;
+    const nextR = hazeMeshActiveIsA ? meshRendererB : meshRendererA;
+    const prevR = hazeMeshActiveIsA ? meshRendererA : meshRendererB;
+
+    if (nextR) nextR.setColors(colors);
+    // Also keep prev rendering so crossfade shows motion on both
+    if (prevR && !prevR._hasColors) prevR.setColors(colors);
+    if (nextR) nextR._hasColors = true;
+
+    void nextCanvas.offsetWidth;
+    nextCanvas.classList.add("is-active");
+    prevCanvas.classList.remove("is-active");
+    hazeMeshActiveIsA = !hazeMeshActiveIsA;
+
+    const p = colors[0];
+    const s = colors[1] || colors[0];
+    animateCSSColorVariables(`rgb(${p.r}, ${p.g}, ${p.b})`, `rgb(${s.r}, ${s.g}, ${s.b})`, 1100);
+
+    // Soft body tint — mesh canvas paints the real background
+    document.body.style.transition = "background-color 1.2s ease";
+    document.body.style.backgroundColor = `rgb(${Math.floor(p.r * 0.15)},${Math.floor(p.g * 0.12)},${Math.floor(p.b * 0.18)})`;
+    elHazeRoot.style.backgroundColor = "#000";
+}
+
 function setHazeBackground(coverUrl) {
     if (dynamicResetTimeout) {
         clearTimeout(dynamicResetTimeout);
@@ -2164,32 +2729,58 @@ function setHazeBackground(coverUrl) {
         clearDynamicBackground();
         return;
     }
-    
-    const currentImg = activeHazeBuffer === 1 ? elHazeBgImg1 : elHazeBgImg2;
-    const nextImg = activeHazeBuffer === 1 ? elHazeBgImg2 : elHazeBgImg1;
-    
-    if (currentImg.src === coverUrl && currentImg.style.opacity === "1") return;
+    const stableKey = coverUrl.split("?")[0];
+    if (activeHazeUrl === stableKey && elHazeRoot && elHazeRoot.classList.contains("haze-active") && lastHazePaletteKey) {
+        return;
+    }
+    activeHazeUrl = stableKey;
+    const gen = ++hazeApplyGeneration;
+    ensureMeshRenderers();
 
-    nextImg.onload = () => {
-        nextImg.style.opacity = "1";
-        currentImg.style.opacity = "0";
-        activeHazeBuffer = activeHazeBuffer === 1 ? 2 : 1;
+    const fallback = [
+        { r: 90, g: 35, b: 100 },
+        { r: 160, g: 55, b: 90 },
+        { r: 40, g: 50, b: 110 },
+        { r: 120, g: 40, b: 80 }
+    ];
+
+    const applyFromImg = (img) => {
+        if (gen !== hazeApplyGeneration) return;
+        try {
+            applyHazePalette(extractPaletteFromImage(img));
+        } catch (e) {
+            console.warn("[haze] palette extract failed", e);
+            applyHazePalette(fallback);
+        }
     };
-    nextImg.src = coverUrl;
+
+    const img = new Image();
+    if (/^https?:/i.test(coverUrl) || coverUrl.startsWith("/")) {
+        img.crossOrigin = "anonymous";
+    }
+    img.onload = () => applyFromImg(img);
+    img.onerror = () => {
+        if (gen !== hazeApplyGeneration) return;
+        applyHazePalette(fallback);
+    };
+    img.src = coverUrl;
 }
 
-// Smoothly animate theme colors transition
 function animateCSSColorVariables(targetPrimary, targetSecondary, duration = 400) {
-    const startPrimary = getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim() || '#a83279';
-    const startSecondary = getComputedStyle(document.documentElement).getPropertyValue('--color-secondary').trim() || '#9b59b6';
-    
+    if (hazeAnimRaf) {
+        cancelAnimationFrame(hazeAnimRaf);
+        hazeAnimRaf = 0;
+    }
+    const startPrimary = getComputedStyle(document.documentElement).getPropertyValue("--color-primary").trim() || "#a83279";
+    const startSecondary = getComputedStyle(document.documentElement).getPropertyValue("--color-secondary").trim() || "#9b59b6";
+
     function parseRgb(colorStr) {
         if (colorStr.startsWith("rgb")) {
             const m = colorStr.match(/\d+/g);
-            if (m) return { r: parseInt(m[0]), g: parseInt(m[1]), b: parseInt(m[2]) };
+            if (m) return { r: parseInt(m[0], 10), g: parseInt(m[1], 10), b: parseInt(m[2], 10) };
         } else if (colorStr.startsWith("#")) {
             let hex = colorStr.slice(1);
-            if (hex.length === 3) hex = hex.split('').map(x => x + x).join('');
+            if (hex.length === 3) hex = hex.split("").map(x => x + x).join("");
             return {
                 r: parseInt(hex.slice(0, 2), 16),
                 g: parseInt(hex.slice(2, 4), 16),
@@ -2198,60 +2789,76 @@ function animateCSSColorVariables(targetPrimary, targetSecondary, duration = 400
         }
         return { r: 168, g: 50, b: 121 };
     }
-    
+
     const fromP = parseRgb(startPrimary);
     const fromS = parseRgb(startSecondary);
     const toP = parseRgb(targetPrimary);
     const toS = parseRgb(targetSecondary);
-    
+    if (Math.abs(fromP.r - toP.r) < 3 && Math.abs(fromP.g - toP.g) < 3 && Math.abs(fromP.b - toP.b) < 3) return;
+
     const startTime = performance.now();
-    
     function update(time) {
-        const elapsed = time - startTime;
-        const progress = Math.min(elapsed / duration, 1);
-        
+        const progress = Math.min((time - startTime) / duration, 1);
         const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-        
         const rP = Math.round(fromP.r + (toP.r - fromP.r) * ease);
         const gP = Math.round(fromP.g + (toP.g - fromP.g) * ease);
         const bP = Math.round(fromP.b + (toP.b - fromP.b) * ease);
-        
         const rS = Math.round(fromS.r + (toS.r - fromS.r) * ease);
         const gS = Math.round(fromS.g + (toS.g - fromS.g) * ease);
         const bS = Math.round(fromS.b + (toS.b - fromS.b) * ease);
-        
-        const primary = `rgb(${rP}, ${gP}, ${bP})`;
-        const secondary = `rgb(${rS}, ${gS}, ${bS})`;
-        const glow = `rgba(${rP}, ${gP}, ${bP}, 0.35)`;
-        const secondaryGlow = `rgba(${rS}, ${gS}, ${bS}, 0.28)`;
-        const border = `rgba(${rS}, ${gS}, ${bS}, 0.15)`;
-        
-        document.documentElement.style.setProperty('--color-primary', primary);
-        document.documentElement.style.setProperty('--color-secondary', secondary);
-        document.documentElement.style.setProperty('--color-primary-glow', glow);
-        document.documentElement.style.setProperty('--color-secondary-glow', secondaryGlow);
-        document.documentElement.style.setProperty('--border-glow', border);
-        
-        if (progress < 1) {
-            requestAnimationFrame(update);
-        }
+        document.documentElement.style.setProperty("--color-primary", `rgb(${rP}, ${gP}, ${bP})`);
+        document.documentElement.style.setProperty("--color-secondary", `rgb(${rS}, ${gS}, ${bS})`);
+        document.documentElement.style.setProperty("--color-primary-glow", `rgba(${rP}, ${gP}, ${bP}, 0.35)`);
+        document.documentElement.style.setProperty("--color-secondary-glow", `rgba(${rS}, ${gS}, ${bS}, 0.28)`);
+        document.documentElement.style.setProperty("--border-glow", `rgba(${rS}, ${gS}, ${bS}, 0.15)`);
+        if (progress < 1) hazeAnimRaf = requestAnimationFrame(update);
+        else hazeAnimRaf = 0;
     }
-    
-    requestAnimationFrame(update);
+    hazeAnimRaf = requestAnimationFrame(update);
 }
 
 function clearDynamicBackground() {
-    if (dynamicResetTimeout) {
-        clearTimeout(dynamicResetTimeout);
-    }
+    if (dynamicResetTimeout) clearTimeout(dynamicResetTimeout);
+    hazeApplyGeneration++;
+    activeHazeUrl = "";
+    animateCSSColorVariables("#a83279", "#9b59b6", 1800);
+    ensureMeshRenderers();
+
+    const idleColors = [
+        { r: 48, g: 22, b: 58 },
+        { r: 110, g: 44, b: 120 },
+        { r: 36, g: 24, b: 62 },
+        { r: 78, g: 34, b: 98 }
+    ];
+
+    const nextCanvas = hazeMeshActiveIsA ? elHazeMeshB : elHazeMeshA;
+    const prevCanvas = hazeMeshActiveIsA ? elHazeMeshA : elHazeMeshB;
+    const nextR = hazeMeshActiveIsA ? meshRendererB : meshRendererA;
+    if (nextR) nextR.setColors(idleColors);
+    void nextCanvas?.offsetWidth;
+    nextCanvas?.classList.add("is-active");
+    prevCanvas?.classList.remove("is-active");
+    hazeMeshActiveIsA = !hazeMeshActiveIsA;
+
+    document.body.style.transition = "background-color 1.8s ease";
+    document.body.style.backgroundColor = "#05040a";
+
     dynamicResetTimeout = setTimeout(() => {
-        if (elHazeBgImg1) elHazeBgImg1.style.opacity = "0";
-        if (elHazeBgImg2) elHazeBgImg2.style.opacity = "0";
-        // Smoothly animate back to neutral purple
-        animateCSSColorVariables('#a83279', '#9b59b6', 1200);
+        lastHazePaletteKey = "";
+        if (elHazeRoot) {
+            elHazeRoot.classList.remove("haze-active");
+            elHazeRoot.classList.add("haze-idle");
+        }
+        if (elHazeSrcImg) {
+            elHazeSrcImg.removeAttribute("src");
+            elHazeSrcImg.removeAttribute("data-haze-src");
+        }
         dynamicResetTimeout = null;
-    }, 500);
+    }, 200);
 }
+
+// Kill duplicate declarations if any existed later in file for haze vars
+// (lastHazePaletteKey / hazeApplyGeneration / dynamicResetTimeout re-declared near old block)
 
 // Canvas Dynamic Accent Extraction for individual game cards
 function applyCardDynamicAccent(imgElement, cardElement) {
@@ -2382,107 +2989,10 @@ function applyCardDynamicAccent(imgElement, cardElement) {
     }
 }
 
-// Canvas Dynamic Accent Extraction
+// Accent colors come only from haze palette (single path — no double-extract flicker)
 function updateAccentFromImage(imgElement) {
-    if (dynamicResetTimeout) {
-        clearTimeout(dynamicResetTimeout);
-        dynamicResetTimeout = null;
-    }
-    if (!imgElement || !imgElement.src || imgElement.style.display === "none") {
-        return;
-    }
-
-    const extract = () => {
-        try {
-            const canvas = document.createElement("canvas");
-            canvas.width = 16;
-            canvas.height = 16;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(imgElement, 0, 0, 16, 16);
-            
-            const imageData = ctx.getImageData(0, 0, 16, 16);
-            const data = imageData.data;
-            
-            let rSum = 0, gSum = 0, bSum = 0, count = 0;
-            let bestColor = null;
-            let maxSaturation = -1;
-            
-            for (let i = 0; i < data.length; i += 4) {
-                const r = data[i];
-                const g = data[i+1];
-                const b = data[i+2];
-                const a = data[i+3];
-                
-                if (a < 200) continue;
-                
-                // RGB to HSL
-                const rNorm = r / 255;
-                const gNorm = g / 255;
-                const bNorm = b / 255;
-                const max = Math.max(rNorm, gNorm, bNorm);
-                const min = Math.min(rNorm, gNorm, bNorm);
-                let h = 0, s = 0, l = (max + min) / 2;
-                
-                if (max !== min) {
-                    const d = max - min;
-                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-                    switch (max) {
-                        case rNorm: h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0); break;
-                        case gNorm: h = (bNorm - rNorm) / d + 2; break;
-                        case bNorm: h = (rNorm - gNorm) / d + 4; break;
-                    }
-                    h /= 6;
-                }
-                
-                // Keep S > 25% and L in [30%, 75%] for a nice vibrant accent
-                if (l >= 0.3 && l <= 0.75 && s >= 0.25) {
-                    const energy = s * l;
-                    if (energy > maxSaturation) {
-                        maxSaturation = energy;
-                        bestColor = { r, g, b };
-                    }
-                }
-                
-                rSum += r;
-                gSum += g;
-                bSum += b;
-                count++;
-            }
-            
-            let rgb = bestColor;
-            if (!rgb && count > 0) {
-                rgb = {
-                    r: Math.floor(rSum / count),
-                    g: Math.floor(gSum / count),
-                    b: Math.floor(bSum / count)
-                };
-            }
-            
-            if (rgb) {
-                const accent = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
-                const glow = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.35)`;
-                const border = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)`;
-                
-                // Calculate secondary color
-                const factor = 1.2;
-                const r2 = Math.min(255, Math.floor(rgb.r * factor));
-                const g2 = Math.min(255, Math.floor(rgb.g * factor));
-                const b2 = Math.min(255, Math.floor(rgb.b * factor));
-                const secondaryAccent = `rgb(${r2}, ${g2}, ${b2})`;
-
-                // Smoothly animate colors to dynamic values
-                animateCSSColorVariables(accent, secondaryAccent, 1200);
-            }
-        } catch (e) {
-            console.error("Color extraction exception:", e);
-        }
-    };
-
-    if (imgElement.complete) {
-        extract();
-    } else {
-        imgElement.onload = extract;
-    }
+    if (!imgElement || !imgElement.src) return;
+    setHazeBackground(imgElement.src);
 }
 
 // Catalog Pagination and State Controls
@@ -2491,10 +3001,147 @@ let activeTab = "popular-month";
 let searchQuery = "";
 let activeProvider = "fitgirl";
 
-// Frontend page cache
+// Adaptive catalog layout (cols × full rows = page size, no empty slots)
+let catalogLayout = { cols: 6, rows: 3, pageSize: 18, gap: 12 };
+// Full-list cache so we can re-slice when viewport / page size changes
+const catalogFullCache = new Map();
 const catalogPagesCache = new Map();
-function getCatalogCacheKey(provider, page, query, tab) {
-    return `${provider}_${page}_${query || ''}_${tab || ''}`;
+
+function getCatalogCacheKey(provider, page, query, tab, pageSize) {
+    return `${provider}_${page}_${query || ''}_${tab || ''}_ps${pageSize || 0}`;
+}
+function getCatalogFullKey(provider, query, tab) {
+    return `full_${provider}_${query || ''}_${tab || ''}`;
+}
+
+/**
+ * Height-first catalog density:
+ * pick 3 or 4 rows that EXACTLY fill available height, then derive cols from card width.
+ * Incomplete last page rows are centered via flex + fixed --catalog-card-w.
+ */
+function computeCatalogLayout() {
+    const wrapper = document.getElementById("games-grid-section") || elGamesGridContainer?.parentElement;
+    if (!wrapper) {
+        return { cols: 6, rows: 3, pageSize: 18, gap: 12, cardW: 150 };
+    }
+
+    const gap = 12;
+    const rect = wrapper.getBoundingClientRect();
+    const availW = Math.max(240, (wrapper.clientWidth || rect.width || window.innerWidth) - 24);
+    const pills = document.getElementById("browse-nav-pills");
+    const pillsVisible = pills && pills.style.display !== "none";
+    const topChrome = pillsVisible ? 100 : 62;
+    const botChrome = 78;
+    const availH = Math.max(200, (wrapper.clientHeight || rect.height || window.innerHeight * 0.75) - topChrome - botChrome);
+
+    const cardRatio = 4.15 / 3; // h/w
+    let best = null;
+
+    // Prefer 4 rows if cards stay readable; else 3. Size card HEIGHT to fill availH exactly.
+    for (const rows of [4, 3, 2]) {
+        const cardH = (availH - gap * (rows - 1)) / rows;
+        const cardW = cardH / cardRatio;
+        if (cardW < 108 || cardW > 220) continue;
+
+        // How many full columns fit at this card width
+        let cols = Math.floor((availW + gap) / (cardW + gap));
+        cols = Math.max(3, Math.min(10, cols));
+
+        // Recenter: use exact cardW from height (may leave side gutters — flex centers them)
+        // If leftover width is huge, bump cols and slightly shrink width while keeping near-full height
+        let useW = cardW;
+        let useH = cardH;
+        const widthIfCols = (availW - gap * (cols - 1)) / cols;
+        if (widthIfCols < cardW * 0.92) {
+            // cramped — reduce cols
+            cols = Math.max(3, cols - 1);
+        } else if (widthIfCols > cardW * 1.08 && cols < 10) {
+            // can fit one more col with still-decent size
+            const tryCols = cols + 1;
+            const tryW = (availW - gap * (tryCols - 1)) / tryCols;
+            const tryH = tryW * cardRatio;
+            const usedH = tryH * rows + gap * (rows - 1);
+            if (tryW >= 115 && usedH <= availH + 8) {
+                cols = tryCols;
+                useW = tryW;
+                useH = tryH;
+            } else {
+                useW = Math.min(cardW, widthIfCols);
+                useH = useW * cardRatio;
+            }
+        } else {
+            // Prefer height-fill: keep cardH, cardW from height
+            useW = cardW;
+            useH = cardH;
+        }
+
+        const usedH = useH * rows + gap * (rows - 1);
+        const leftover = Math.max(0, availH - usedH);
+        const score =
+            (rows >= 3 ? 300 : 80) +
+            (rows === 4 ? 40 : 0) +
+            (useW >= 130 && useW <= 190 ? 50 : 0) -
+            leftover * 2.2 - // heavily punish empty bottom
+            Math.abs(useW - 155) * 0.15;
+
+        if (!best || score > best.score) {
+            best = {
+                cols,
+                rows,
+                pageSize: cols * rows,
+                gap,
+                cardW: Math.floor(useW * 10) / 10,
+                cardH: useH,
+                leftover,
+                score
+            };
+        }
+    }
+
+    if (!best) {
+        const cols = Math.max(3, Math.min(8, Math.floor(availW / 140)));
+        const rows = 3;
+        const cardW = (availW - gap * (cols - 1)) / cols;
+        best = { cols, rows, pageSize: cols * rows, gap, cardW, score: 0 };
+    }
+
+    return {
+        cols: best.cols,
+        rows: best.rows,
+        pageSize: best.pageSize,
+        gap: best.gap,
+        cardW: best.cardW
+    };
+}
+
+function applyCatalogLayout() {
+    const layout = computeCatalogLayout();
+    catalogLayout = layout;
+    if (elGamesGridContainer) {
+        elGamesGridContainer.style.setProperty("--catalog-cols", String(layout.cols));
+        elGamesGridContainer.style.setProperty("--catalog-gap", `${layout.gap}px`);
+        elGamesGridContainer.style.setProperty("--catalog-card-w", `${layout.cardW}px`);
+    }
+    return layout;
+}
+
+/** Viewport-fixed Download dock helpers (element lives on <body>). */
+function setDetailsDownloadBarVisible(visible) {
+    const bar = document.getElementById("details-bottom-bar");
+    if (!bar) return;
+    // Ensure bar is a direct body child so fixed = viewport (not trapped by transform/overflow)
+    if (bar.parentElement !== document.body) {
+        document.body.appendChild(bar);
+    }
+    if (visible) {
+        bar.classList.add("is-visible");
+        bar.style.setProperty("display", "flex", "important");
+        bar.setAttribute("aria-hidden", "false");
+    } else {
+        bar.classList.remove("is-visible");
+        bar.style.setProperty("display", "none", "important");
+        bar.setAttribute("aria-hidden", "true");
+    }
 }
 
 const GAMEPAD_SVG = `
@@ -2530,31 +3177,34 @@ function createGameCard(game) {
     
     if (coverUrl) {
         getCachedImageUrl(coverUrl).then(cachedUrl => {
+            // Card may already be detached if user switched provider quickly
+            if (!card.isConnected) return;
             const coverArea = card.querySelector(".card-cover-area");
-            if (coverArea) {
-                const img = document.createElement("img");
-                img.className = "card-cover";
-                img.src = cachedUrl;
-                img.alt = "Cover";
-                img.onload = () => {
-                    applyCardDynamicAccent(img, card);
-                };
-                if (img.complete) {
-                    applyCardDynamicAccent(img, card);
-                }
-                img.onerror = () => {
-                    coverArea.innerHTML = `<div class="card-cover-placeholder">${GAMEPAD_SVG}</div>`;
-                };
-                coverArea.innerHTML = "";
-                coverArea.appendChild(img);
-            }
+            if (!coverArea) return;
+            const img = document.createElement("img");
+            img.className = "card-cover";
+            img.src = cachedUrl;
+            img.alt = "";
+            img.draggable = false;
+            img.decoding = "async";
+            img.onload = () => {
+                if (card.isConnected) applyCardDynamicAccent(img, card);
+            };
+            img.onerror = () => {
+                if (!coverArea.isConnected) return;
+                coverArea.innerHTML = `<div class="card-cover-placeholder">${GAMEPAD_SVG}</div>`;
+            };
+            // Replace placeholder without wiping if already has same image
+            const existing = coverArea.querySelector("img.card-cover");
+            if (existing && existing.src === cachedUrl) return;
+            coverArea.replaceChildren(img);
         });
     }
     
     card.addEventListener("click", () => {
         elUrlTextarea.value = game.url;
         setViewState("details");
-        showDetailsLoadingState(game.title);
+        showDetailsLoadingState(game.title, game.cover_image || "");
         elAnalyzeBtn.click();
     });
     
@@ -2563,21 +3213,20 @@ function createGameCard(game) {
 
 function renderGamesList(results, popularList) {
     elGamesGridContainer.innerHTML = "";
+    elGamesGridContainer.classList.remove("is-onlinefix-home");
+    // Reset inline layout overrides
+    elGamesGridContainer.style.display = "";
+    elGamesGridContainer.style.flexDirection = "";
+    elGamesGridContainer.style.gap = "";
+    
     if (!results || results.length === 0) {
         elGamesGridContainer.innerHTML = `<div class="no-results-message">No repacks found.</div>`;
         return;
     }
     
-    // Reset display mode for default grid
-    elGamesGridContainer.style.display = "";
-    elGamesGridContainer.style.flexDirection = "";
-    elGamesGridContainer.style.gap = "";
-    
-    // If Online-Fix and we have a popularList, and we're not performing a search query
+    // Online-Fix home: popular marquee + square latest grid
     if (activeProvider === "onlinefix" && popularList && popularList.length > 0 && !searchQuery) {
-        elGamesGridContainer.style.display = "flex";
-        elGamesGridContainer.style.flexDirection = "column";
-        elGamesGridContainer.style.gap = "20px";
+        elGamesGridContainer.classList.add("is-onlinefix-home");
         
         const popSection = document.createElement("div");
         popSection.className = "popular-section";
@@ -2589,6 +3238,7 @@ function renderGamesList(results, popularList) {
         `;
         
         const scrollTrack = popSection.querySelector(".popular-slider-scroll");
+        // Duplicate for seamless marquee
         const doubleList = [...popularList, ...popularList];
         doubleList.forEach(game => {
             scrollTrack.appendChild(createGameCard(game));
@@ -2597,14 +3247,12 @@ function renderGamesList(results, popularList) {
         elGamesGridContainer.appendChild(popSection);
         
         const staticTitle = document.createElement("h3");
-        staticTitle.className = "section-title";
-        staticTitle.style.marginTop = "20px";
-        staticTitle.style.marginBottom = "15px";
+        staticTitle.className = "section-title of-latest-title";
         staticTitle.innerText = "Latest Releases";
         elGamesGridContainer.appendChild(staticTitle);
         
         const staticGrid = document.createElement("div");
-        staticGrid.className = "games-grid static-grid";
+        staticGrid.className = "of-latest-grid";
         results.forEach(game => {
             staticGrid.appendChild(createGameCard(game));
         });
@@ -2616,18 +3264,27 @@ function renderGamesList(results, popularList) {
     }
 }
 
-function showDetailsLoadingState(gameTitle) {
+function showDetailsLoadingState(gameTitle, coverUrl = "") {
     elDetailsGameTitle.innerText = gameTitle || "Loading Game...";
     elDetailsVersionBadge.style.display = "none";
     if (elBtnOpenBrowser) elBtnOpenBrowser.style.display = "none";
+    const btnOpenTop = document.getElementById("btn-open-browser-top");
+    if (btnOpenTop) btnOpenTop.style.display = "none";
     elMetadataOriginalSize.innerText = "--";
     elMetadataRepackSize.innerText = "--";
     
-    const detailsBottomBar = document.getElementById("details-bottom-bar");
     const detailsBottomSize = document.getElementById("details-bottom-size");
     if (detailsBottomSize) detailsBottomSize.innerText = "--";
-    if (detailsBottomBar) detailsBottomBar.style.display = "none";
+    setDetailsDownloadBarVisible(false);
     
+    // Reset metadata rows + hide empty meta card
+    ["row-fg-genres", "row-fg-company", "row-fg-languages", "row-fg-orig-size", "row-fg-repack-size"].forEach(id => {
+        const row = document.getElementById(id);
+        if (row) row.style.display = "none";
+    });
+    const metaCard = document.querySelector(".details-meta-card");
+    if (metaCard) metaCard.style.display = "none";
+
     const elVideoContainer = document.getElementById("details-video-container");
     const elVideoIframe = document.getElementById("video-iframe");
     if (elVideoIframe) elVideoIframe.src = "";
@@ -2636,101 +3293,288 @@ function showDetailsLoadingState(gameTitle) {
     elSetupCover.src = "";
     elSetupCover.style.display = "none";
     elSetupCoverPlaceholder.style.display = "flex";
-    clearDynamicBackground();
+
+    const detailsCoverCard = document.getElementById("details-cover-card");
+    const detailsCoverImage = document.getElementById("details-cover-image");
+    const detailsCoverPlaceholder = document.getElementById("details-cover-placeholder");
+
+    // Single clean skeleton cover — never leave is-loaded from previous game (caused double-card flash)
+    if (detailsCoverCard) {
+        detailsCoverCard.classList.remove("is-loaded");
+        detailsCoverCard.classList.add("is-loading");
+        detailsCoverCard.style.display = "block";
+    }
+    if (detailsCoverImage) {
+        detailsCoverImage.removeAttribute("src");
+        detailsCoverImage.src = "";
+        detailsCoverImage.style.display = "none";
+    }
+    if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
+
+    if (coverUrl && detailsCoverCard && detailsCoverImage) {
+        const proxied = coverUrl.startsWith("/api/") ? coverUrl : `/api/proxy_image?url=${encodeURIComponent(coverUrl)}`;
+        getCachedImageUrl(proxied).then(cachedUrl => {
+            // Abort if user already navigated away
+            if (!detailsCoverCard.isConnected || detailsCoverCard.classList.contains("is-loaded") && detailsCoverImage.src && !detailsCoverImage.src.includes("blob:") && detailsCoverImage.getAttribute("data-loading") !== proxied) {
+                // still allow if we're the pending load
+            }
+            detailsCoverImage.setAttribute("data-loading", proxied);
+            detailsCoverImage.onload = () => {
+                if (detailsCoverImage.getAttribute("data-loading") !== proxied) return;
+                detailsCoverImage.style.display = "block";
+                if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "none";
+                detailsCoverCard.classList.remove("is-loading");
+                detailsCoverCard.classList.add("is-loaded");
+                setHazeBackground(cachedUrl);
+            };
+            detailsCoverImage.onerror = () => {
+                if (detailsCoverImage.getAttribute("data-loading") !== proxied) return;
+                detailsCoverImage.style.display = "none";
+                if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
+                detailsCoverCard.classList.remove("is-loading", "is-loaded");
+            };
+            detailsCoverImage.src = cachedUrl;
+        });
+    } else {
+        if (detailsCoverCard) {
+            detailsCoverCard.style.display = "block";
+            detailsCoverCard.classList.remove("is-loaded");
+            detailsCoverCard.classList.add("is-loading");
+        }
+        clearDynamicBackground();
+    }
     
-    if (elGameDescription) elGameDescription.style.display = "none";
-    if (elGameScreenshotsSection) elGameScreenshotsSection.style.display = "none";
+    if (elGameDescription) {
+        elGameDescription.style.display = "none";
+        elGameDescription.innerHTML = "";
+    }
+    const descSection = document.getElementById("details-desc-section");
+    const featuresSection = document.getElementById("details-features-section");
+    if (descSection) {
+        descSection.style.display = "none";
+        descSection.classList.remove("active");
+    }
+    if (featuresSection) {
+        featuresSection.style.display = "none";
+        featuresSection.classList.remove("active");
+    }
+    // Hard-reset media so previous game never flashes
+    const elMainScreenshotImg = document.getElementById("screenshot-main-img");
+    const elMainVideoIframe = document.getElementById("screenshot-main-video");
+    const elMainDirectVideo = document.getElementById("screenshot-main-direct-video");
+    if (elMainScreenshotImg) {
+        elMainScreenshotImg.removeAttribute("src");
+        elMainScreenshotImg.src = "";
+        elMainScreenshotImg.style.display = "none";
+        elMainScreenshotImg.onclick = null;
+    }
+    if (elMainDirectVideo) {
+        try {
+            elMainDirectVideo.pause();
+            elMainDirectVideo.removeAttribute("src");
+            elMainDirectVideo.load();
+        } catch (_) {}
+        elMainDirectVideo.style.display = "none";
+        elMainDirectVideo.controls = false;
+    }
+    if (elMainVideoIframe) {
+        elMainVideoIframe.src = "";
+        elMainVideoIframe.style.display = "none";
+    }
+    if (elGameScreenshotsSection) {
+        elGameScreenshotsSection.style.display = "block";
+        elGameScreenshotsSection.classList.add("is-loading-media");
+        const showcase = document.getElementById("screenshot-main-showcase-container");
+        if (showcase) {
+            showcase.classList.add("preview-empty", "is-loading");
+            showcase.classList.remove("has-media");
+        }
+        const thumbs = document.getElementById("game-screenshots-container");
+        if (thumbs) thumbs.innerHTML = "";
+    }
     
     elConfigCard.style.display = "none";
     elMirrorSelectSection.style.display = "none";
     
+    const detailsRoot = document.getElementById("game-details-container");
     let elDetailsLoader = document.getElementById("details-page-loader");
     if (!elDetailsLoader) {
         elDetailsLoader = document.createElement("div");
         elDetailsLoader.id = "details-page-loader";
-        elDetailsLoader.className = "section-loader";
+        elDetailsLoader.className = "details-inline-loader";
         elDetailsLoader.innerHTML = `
-            <div class="spinner"></div>
-            <p style="margin-top: 10px; font-weight: 500; color: var(--text-muted);">Fetching game mirrors & files...</p>
+            <span class="spinner" style="width:18px;height:18px;border-width:2px;"></span>
+            <span>Loading repack details…</span>
         `;
-        elSetupDashboard.parentElement.appendChild(elDetailsLoader);
+        if (detailsRoot) detailsRoot.appendChild(elDetailsLoader);
     }
     elDetailsLoader.style.display = "flex";
     elSetupDashboard.style.display = "none";
+}
+
+function updateCatalogPagination(hasNext) {
+    if (hasNext) elBtnNextPage.removeAttribute("disabled");
+    else elBtnNextPage.setAttribute("disabled", "true");
+    elBtnPrevPage.disabled = (currentPage === 1);
+    elPageIndicator.innerText = currentPage;
+}
+
+function renderCatalogPageFromFull(full) {
+    const layout = applyCatalogLayout();
+    const pageSize = layout.pageSize;
+    const start = (currentPage - 1) * pageSize;
+    const pageItems = (full.results || []).slice(start, start + pageSize);
+    const hasNext = start + pageSize < (full.results || []).length;
+    renderGamesList(pageItems, full.popular);
+    updateCatalogPagination(hasNext);
+    return pageItems.length;
+}
+
+async function fetchCatalogFullList() {
+    const fullKey = getCatalogFullKey(activeProvider, searchQuery, activeTab);
+    if (catalogFullCache.has(fullKey)) {
+        return catalogFullCache.get(fullKey);
+    }
+
+    let response;
+    if (searchQuery) {
+        // Search is server-paged; fetch current server page only (still apply adaptive cols)
+        response = await fetch("/api/search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                query: searchQuery,
+                provider: activeProvider,
+                page: currentPage
+            })
+        });
+        const data = await response.json();
+        if (!data.success) throw new Error(data.error || "search failed");
+        // For search we do not full-cache across pages (server defines pages)
+        return {
+            results: data.results || [],
+            popular: data.popular,
+            has_next: !!data.has_next,
+            serverPaged: true
+        };
+    }
+
+    const type = (activeTab === "popular-year" ? "yearly" : "monthly");
+    // Request a large page so we get the full popular list once, then client-slice
+    response = await fetch(
+        `/api/popular?provider=${activeProvider}&type=${type}&page=1&page_size=100`
+    );
+    const data = await response.json();
+    if (!data.success) throw new Error(data.error || "popular failed");
+
+    // If API still paginates, pull remaining pages into one list
+    let all = Array.isArray(data.results) ? data.results.slice() : [];
+    let page = 2;
+    let hasNext = !!data.has_next;
+    while (hasNext && page <= 8) {
+        const r2 = await fetch(
+            `/api/popular?provider=${activeProvider}&type=${type}&page=${page}&page_size=100`
+        );
+        const d2 = await r2.json();
+        if (!d2.success || !d2.results?.length) break;
+        all = all.concat(d2.results);
+        hasNext = !!d2.has_next;
+        page += 1;
+    }
+
+    const full = { results: all, popular: data.popular, serverPaged: false };
+    catalogFullCache.set(fullKey, full);
+    return full;
 }
 
 async function loadCatalogGames() {
     elGamesLoader.style.display = "flex";
     elGamesGridContainer.innerHTML = "";
     elSearchResultsTitle.style.display = "none";
-    
-    const cacheKey = getCatalogCacheKey(activeProvider, currentPage, searchQuery, activeTab);
+
+    const layout = applyCatalogLayout();
+    const pageSize = layout.pageSize;
+
+    if (searchQuery) {
+        elSearchResultsTitle.style.display = "block";
+        elSearchResultsTitle.innerText = `Search results for: "${searchQuery}"`;
+    }
+
+    // Page-slice cache (depends on pageSize so resize invalidates naturally via key)
+    const cacheKey = getCatalogCacheKey(activeProvider, currentPage, searchQuery, activeTab, pageSize);
     if (catalogPagesCache.has(cacheKey)) {
         const cached = catalogPagesCache.get(cacheKey);
+        applyCatalogLayout();
         renderGamesList(cached.results, cached.popular);
-        if (cached.has_next) {
-            elBtnNextPage.removeAttribute("disabled");
-        } else {
-            elBtnNextPage.setAttribute("disabled", "true");
-        }
+        updateCatalogPagination(cached.has_next);
         elGamesLoader.style.display = "none";
-        elBtnPrevPage.disabled = (currentPage === 1);
-        elPageIndicator.innerText = currentPage;
-        if (searchQuery) {
-            elSearchResultsTitle.style.display = "block";
-            elSearchResultsTitle.innerText = `Search results for: "${searchQuery}"`;
-        }
         return;
     }
-    
+
     try {
-        let response;
-        if (searchQuery) {
-            elSearchResultsTitle.style.display = "block";
-            elSearchResultsTitle.innerText = `Search results for: "${searchQuery}"`;
-            
-            response = await fetch("/api/search", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    query: searchQuery,
-                    provider: activeProvider,
-                    page: currentPage
-                })
-            });
-        } else {
-            const type = (activeTab === "popular-year" ? "yearly" : "monthly");
-            response = await fetch(`/api/popular?provider=${activeProvider}&type=${type}&page=${currentPage}`);
-        }
-        
-        const data = await response.json();
-        if (data.success) {
-            catalogPagesCache.set(cacheKey, {
-                results: data.results,
-                popular: data.popular,
-                has_next: data.has_next
-            });
-            renderGamesList(data.results, data.popular);
-            
-            // Toggle pagination next button based on has_next returned from server
-            if (data.has_next) {
-                elBtnNextPage.removeAttribute("disabled");
-            } else {
-                elBtnNextPage.setAttribute("disabled", "true");
+        const full = await fetchCatalogFullList();
+
+        if (full.serverPaged) {
+            // Search: show server page, still force even full rows when possible
+            applyCatalogLayout();
+            let items = full.results || [];
+            // Trim to full rows only when we have a next page (avoid empty holes)
+            if (full.has_next && items.length >= layout.cols) {
+                const fullCount = Math.floor(items.length / layout.cols) * layout.cols;
+                if (fullCount >= layout.cols * 2) items = items.slice(0, fullCount);
             }
+            catalogPagesCache.set(cacheKey, {
+                results: items,
+                popular: full.popular,
+                has_next: !!full.has_next
+            });
+            renderGamesList(items, full.popular);
+            updateCatalogPagination(!!full.has_next);
         } else {
-            elGamesGridContainer.innerHTML = `<div class="error-text">Failed to load catalog repacks: ${data.error}</div>`;
+            const start = (currentPage - 1) * pageSize;
+            const pageItems = (full.results || []).slice(start, start + pageSize);
+            const hasNext = start + pageSize < (full.results || []).length;
+            catalogPagesCache.set(cacheKey, {
+                results: pageItems,
+                popular: full.popular,
+                has_next: hasNext
+            });
+            renderGamesList(pageItems, full.popular);
+            updateCatalogPagination(hasNext);
         }
     } catch (e) {
         console.error("Load catalog games exception:", e);
         elGamesGridContainer.innerHTML = `<div class="error-text">Connection error loading catalog repacks.</div>`;
     } finally {
         elGamesLoader.style.display = "none";
-        
-        // Update pagination buttons state
         elBtnPrevPage.disabled = (currentPage === 1);
         elPageIndicator.innerText = currentPage;
     }
+}
+
+// Recompute grid density on resize / zoom so first page stays 3–4 full rows
+let catalogResizeTimer = null;
+let lastCatalogLayoutKey = "";
+function onCatalogViewportChange() {
+    if (viewState !== "catalog") return;
+    clearTimeout(catalogResizeTimer);
+    catalogResizeTimer = setTimeout(() => {
+        const layout = computeCatalogLayout();
+        const key = `${layout.cols}x${layout.rows}`;
+        if (key === lastCatalogLayoutKey) {
+            applyCatalogLayout();
+            return;
+        }
+        lastCatalogLayoutKey = key;
+        // Page size changed — drop page slices and re-render from full cache
+        catalogPagesCache.clear();
+        currentPage = 1;
+        loadCatalogGames();
+    }, 180);
+}
+window.addEventListener("resize", onCatalogViewportChange);
+if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", onCatalogViewportChange);
 }
 
 // Navigation event listeners
@@ -2754,19 +3598,99 @@ elPillPopularYear.addEventListener("click", () => {
     loadCatalogGames();
 });
 
-elSearchInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-        e.preventDefault();
-        const q = elSearchInput.value.trim();
+function runCatalogSearch(q) {
+    const query = (q || "").trim();
+    if (!query) return;
+    searchQuery = query;
+    if (elSearchInput) elSearchInput.value = query;
+    currentPage = 1;
+    elPillPopularMonth.classList.remove("active");
+    elPillPopularYear.classList.remove("active");
+    loadCatalogGames();
+}
+
+function openSearchOverlay() {
+    const overlay = document.getElementById("search-overlay");
+    const input = document.getElementById("search-overlay-input");
+    if (!overlay) return;
+    overlay.classList.add("open");
+    overlay.setAttribute("aria-hidden", "false");
+    document.body.classList.add("search-open");
+    if (input) {
+        input.value = searchQuery || (elSearchInput ? elSearchInput.value : "") || "";
+        setTimeout(() => input.focus(), 60);
+        const clearBtn = document.getElementById("btn-search-overlay-clear");
+        if (clearBtn) clearBtn.style.display = input.value ? "flex" : "none";
+    }
+}
+
+function closeSearchOverlay() {
+    const overlay = document.getElementById("search-overlay");
+    if (!overlay) return;
+    overlay.classList.remove("open");
+    overlay.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("search-open");
+}
+
+const elBtnOpenSearch = document.getElementById("btn-open-search");
+const elSearchOverlayInput = document.getElementById("search-overlay-input");
+const elSearchOverlayBackdrop = document.getElementById("search-overlay-backdrop");
+const elBtnSearchOverlayGo = document.getElementById("btn-search-overlay-go");
+const elBtnSearchOverlayClear = document.getElementById("btn-search-overlay-clear");
+
+if (elBtnOpenSearch) elBtnOpenSearch.addEventListener("click", openSearchOverlay);
+if (elSearchOverlayBackdrop) elSearchOverlayBackdrop.addEventListener("click", closeSearchOverlay);
+if (elBtnSearchOverlayGo) {
+    elBtnSearchOverlayGo.addEventListener("click", () => {
+        const q = elSearchOverlayInput ? elSearchOverlayInput.value.trim() : "";
         if (q) {
-            searchQuery = q;
-            currentPage = 1;
-            elPillPopularMonth.classList.remove("active");
-            elPillPopularYear.classList.remove("active");
-            loadCatalogGames();
+            closeSearchOverlay();
+            runCatalogSearch(q);
         }
+    });
+}
+if (elBtnSearchOverlayClear) {
+    elBtnSearchOverlayClear.addEventListener("click", () => {
+        if (elSearchOverlayInput) {
+            elSearchOverlayInput.value = "";
+            elSearchOverlayInput.focus();
+        }
+        elBtnSearchOverlayClear.style.display = "none";
+    });
+}
+if (elSearchOverlayInput) {
+    elSearchOverlayInput.addEventListener("input", () => {
+        if (elBtnSearchOverlayClear) {
+            elBtnSearchOverlayClear.style.display = elSearchOverlayInput.value ? "flex" : "none";
+        }
+    });
+    elSearchOverlayInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            const q = elSearchOverlayInput.value.trim();
+            if (q) {
+                closeSearchOverlay();
+                runCatalogSearch(q);
+            }
+        } else if (e.key === "Escape") {
+            closeSearchOverlay();
+        }
+    });
+}
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && document.body.classList.contains("search-open")) {
+        closeSearchOverlay();
     }
 });
+
+if (elSearchInput) {
+    elSearchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            runCatalogSearch(elSearchInput.value);
+        }
+    });
+}
 
 elBtnPrevPage.addEventListener("click", () => {
     if (currentPage > 1) {
@@ -3306,23 +4230,29 @@ function switchProvider(newProvider) {
     const elCatalogGoToSiteText = document.getElementById("catalog-go-to-site-text");
     
     if (activeProvider === "onlinefix") {
-        if (elGoToSiteBtn && elGoToSiteText) {
+        if (elGoToSiteBtn) {
             elGoToSiteBtn.href = "https://online-fix.me/";
-            elGoToSiteText.innerText = "Go to Online-Fix";
+            elGoToSiteBtn.title = "Open Online-Fix";
         }
-        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+        if (elGoToSiteText) elGoToSiteText.innerText = "Online-Fix";
+        if (elCatalogGoToSiteBtn) {
             elCatalogGoToSiteBtn.href = "https://online-fix.me/";
-            elCatalogGoToSiteText.innerText = "Go to Online-Fix";
+            elCatalogGoToSiteBtn.title = "Open Online-Fix";
+            elCatalogGoToSiteBtn.style.display = "";
         }
+        if (elCatalogGoToSiteText) elCatalogGoToSiteText.innerText = "Online-Fix";
     } else {
-        if (elGoToSiteBtn && elGoToSiteText) {
+        if (elGoToSiteBtn) {
             elGoToSiteBtn.href = "https://fitgirl-repacks.site/";
-            elGoToSiteText.innerText = "Go to FitGirl";
+            elGoToSiteBtn.title = "Open FitGirl";
         }
-        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+        if (elGoToSiteText) elGoToSiteText.innerText = "FitGirl";
+        if (elCatalogGoToSiteBtn) {
             elCatalogGoToSiteBtn.href = "https://fitgirl-repacks.site/";
-            elCatalogGoToSiteText.innerText = "Go to FitGirl";
+            elCatalogGoToSiteBtn.title = "Open FitGirl";
+            elCatalogGoToSiteBtn.style.display = "";
         }
+        if (elCatalogGoToSiteText) elCatalogGoToSiteText.innerText = "FitGirl";
     }
     
     if (elChangeProviderBtn) {
@@ -3519,23 +4449,29 @@ function initSettings() {
     const elCatalogGoToSiteText = document.getElementById("catalog-go-to-site-text");
     
     if (activeProvider === "onlinefix") {
-        if (elGoToSiteBtn && elGoToSiteText) {
+        if (elGoToSiteBtn) {
             elGoToSiteBtn.href = "https://online-fix.me/";
-            elGoToSiteText.innerText = "Go to Online-Fix";
+            elGoToSiteBtn.title = "Open Online-Fix";
         }
-        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+        if (elGoToSiteText) elGoToSiteText.innerText = "Online-Fix";
+        if (elCatalogGoToSiteBtn) {
             elCatalogGoToSiteBtn.href = "https://online-fix.me/";
-            elCatalogGoToSiteText.innerText = "Go to Online-Fix";
+            elCatalogGoToSiteBtn.title = "Open Online-Fix";
+            elCatalogGoToSiteBtn.style.display = "";
         }
+        if (elCatalogGoToSiteText) elCatalogGoToSiteText.innerText = "Online-Fix";
     } else {
-        if (elGoToSiteBtn && elGoToSiteText) {
+        if (elGoToSiteBtn) {
             elGoToSiteBtn.href = "https://fitgirl-repacks.site/";
-            elGoToSiteText.innerText = "Go to FitGirl";
+            elGoToSiteBtn.title = "Open FitGirl";
         }
-        if (elCatalogGoToSiteBtn && elCatalogGoToSiteText) {
+        if (elGoToSiteText) elGoToSiteText.innerText = "FitGirl";
+        if (elCatalogGoToSiteBtn) {
             elCatalogGoToSiteBtn.href = "https://fitgirl-repacks.site/";
-            elCatalogGoToSiteText.innerText = "Go to FitGirl";
+            elCatalogGoToSiteBtn.title = "Open FitGirl";
+            elCatalogGoToSiteBtn.style.display = "";
         }
+        if (elCatalogGoToSiteText) elCatalogGoToSiteText.innerText = "FitGirl";
     }
 }
 
@@ -3550,11 +4486,32 @@ if (elChecklistContainer) {
 // Start Application logic
 initSettings();
 syncViewState();
+// Boot idle Harmonoid mesh (AnimatedMeshGradient continuously running)
+try {
+    ensureMeshRenderers();
+    const idle = [
+        { r: 48, g: 22, b: 58 },
+        { r: 110, g: 44, b: 120 },
+        { r: 36, g: 24, b: 62 },
+        { r: 78, g: 34, b: 98 }
+    ];
+    if (meshRendererA) meshRendererA.setColors(idle);
+    if (meshRendererB) meshRendererB.setColors(idle);
+    elHazeMeshA?.classList.add("is-active");
+    elHazeMeshB?.classList.remove("is-active");
+    window.addEventListener("resize", () => {
+        meshRendererA?.resize();
+        meshRendererB?.resize();
+        meshRendererA?.draw();
+        meshRendererB?.draw();
+    });
+} catch (e) {
+    console.warn("[haze] boot failed", e);
+}
 loadCatalogGames();
 
 // Render Screenshots Showcase + Grid Gallery
 function renderScreenshots(screenshotsList, videosList) {
-    console.log("renderScreenshots called with:", {screenshotsList, videosList});
     const elScreenshotsSection = document.getElementById("game-screenshots-section");
     const elScreenshotsContainer = document.getElementById("game-screenshots-container");
     const elMainScreenshotImg = document.getElementById("screenshot-main-img");
@@ -3562,36 +4519,248 @@ function renderScreenshots(screenshotsList, videosList) {
     const elMainDirectVideo = document.getElementById("screenshot-main-direct-video");
     const elMainScreenshotShowcase = document.getElementById("screenshot-main-showcase-container");
 
-    function playVideo(videoUrl) {
-        let playUrl = videoUrl;
-        if (playUrl.includes("steamstatic") && playUrl.includes(".webm")) {
-            playUrl = playUrl.replace(/\.webm($|\?)/, ".mp4$1");
+    // Drop torrent-stats / tracker banners / other junk
+    const junkShotRe = /torrent-stats|torrentstats|kitty-kode|statspics|tracker-stats|favicon|gravatar|wp-includes|emoji/i;
+    screenshotsList = (screenshotsList || []).filter(u => u && !junkShotRe.test(u));
+    // Prefer full riotpixels (no .240p)
+    screenshotsList = screenshotsList.map(u =>
+        u.replace(/\.(jpg|jpeg|png|webp)\.(?:240p|400p|720p)\.(?:jpg|jpeg|png|webp)$/i, ".$1")
+         .replace(/\.(?:240p|400p|720p)\.(jpg|jpeg|png|webp)$/i, ".$1")
+    );
+    videosList = (videosList || []).filter(Boolean);
+
+    function normalizeVideoUrl(videoUrl) {
+        // Keep microtrailer.webm / steam trailers as-is.
+        // Rewriting to movie_max.mp4 caused 404 and silent autoplay failure.
+        let playUrl = (videoUrl || "").trim();
+        if (playUrl.startsWith("//")) playUrl = "https:" + playUrl;
+        return playUrl;
+    }
+
+    function isDirectVideo(url) {
+        const u = (url || "").toLowerCase();
+        return u.includes(".webm") || u.includes(".mp4") || u.includes(".ogg") || u.includes("/store_trailers/");
+    }
+
+    function isYouTube(url) {
+        return /youtube\.com|youtu\.be/i.test(url || "");
+    }
+
+    function youtubeId(url) {
+        if (!url) return "";
+        const m = url.match(/(?:embed\/|v=|youtu\.be\/|shorts\/)([A-Za-z0-9_-]{6,})/);
+        return m ? m[1] : "";
+    }
+
+    function youtubeEmbedUrl(url) {
+        const id = youtubeId(url);
+        if (!id) return url;
+        // muted autoplay so browsers allow it
+        return `https://www.youtube.com/embed/${id}?autoplay=1&mute=1&rel=0&modestbranding=1&playsinline=1`;
+    }
+
+    function youtubePoster(url) {
+        const id = youtubeId(url);
+        return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : "";
+    }
+
+    /**
+     * Full width of media card; height from real image AR (no crop, no side gutters).
+     */
+    function fitShowcaseToSize(nw, nh) {
+        if (!elMainScreenshotShowcase || !nw || !nh) return;
+        const ar = nw / nh;
+        const parent = elMainScreenshotShowcase.parentElement;
+        const maxW = Math.max(320, (parent && parent.clientWidth) || 900);
+        // Cap height so page doesn't explode, but prefer full width
+        const maxH = Math.min(window.innerHeight * 0.56, 720);
+        let w = maxW;
+        let h = w / ar;
+        if (h > maxH) {
+            h = maxH;
+            w = h * ar;
         }
-        
-        const isDirect = playUrl.includes(".webm") || playUrl.includes(".mp4") || playUrl.includes(".ogg") || playUrl.includes("/store_trailers/");
+        elMainScreenshotShowcase.style.setProperty("--ss-ar", `${nw} / ${nh}`);
+        elMainScreenshotShowcase.style.setProperty("width", Math.round(w) + "px", "important");
+        elMainScreenshotShowcase.style.setProperty("height", Math.round(h) + "px", "important");
+        elMainScreenshotShowcase.style.setProperty("max-width", "100%", "important");
+        elMainScreenshotShowcase.style.setProperty("aspect-ratio", `${nw} / ${nh}`, "important");
+        elMainScreenshotShowcase.style.marginLeft = w < maxW - 2 ? "auto" : "0";
+        elMainScreenshotShowcase.style.marginRight = w < maxW - 2 ? "auto" : "0";
+    }
+
+    function fitShowcaseToNaturalSize(imgEl) {
+        if (!imgEl) return;
+        fitShowcaseToSize(imgEl.naturalWidth, imgEl.naturalHeight);
+    }
+
+    function showMainScreenshot(proxiedSrc) {
+        if (!elMainScreenshotImg) return;
+        stopVideo();
+        elMainScreenshotImg.alt = "";
+        // contain inside AR-matched box = full frame, no crop
+        elMainScreenshotImg.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;object-position:center;background:#0a0a12;border:none;cursor:zoom-in;";
+        elMainScreenshotImg.onload = () => {
+            fitShowcaseToNaturalSize(elMainScreenshotImg);
+            if (elMainScreenshotShowcase) {
+                elMainScreenshotShowcase.classList.remove("preview-empty", "is-loading");
+                elMainScreenshotShowcase.classList.add("has-media");
+            }
+            requestAnimationFrame(() => fitShowcaseToNaturalSize(elMainScreenshotImg));
+        };
+        elMainScreenshotImg.onerror = () => {
+            elMainScreenshotImg.style.display = "none";
+            if (elMainScreenshotShowcase) elMainScreenshotShowcase.classList.add("preview-empty");
+        };
+        elMainScreenshotImg.src = proxiedSrc;
+        elMainScreenshotImg.onclick = () => openScreenshotModal(proxiedSrc);
+        if (elMainScreenshotShowcase && !elMainScreenshotShowcase._ssResizeBound) {
+            elMainScreenshotShowcase._ssResizeBound = true;
+            window.addEventListener("resize", () => {
+                if (elMainScreenshotImg && elMainScreenshotImg.naturalWidth) {
+                    fitShowcaseToNaturalSize(elMainScreenshotImg);
+                }
+            });
+        }
+    }
+
+    function fallbackToFirstScreenshot() {
+        if (!screenshotsList || !screenshotsList.length) {
+            if (elMainScreenshotShowcase) elMainScreenshotShowcase.classList.add("preview-empty");
+            return;
+        }
+        const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
+        showMainScreenshot(firstScreenshotUrl);
+        if (elScreenshotsContainer) {
+            const firstImg = elScreenshotsContainer.querySelector("img.ss-thumb");
+            if (firstImg) {
+                elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img").forEach(i => i.classList.remove("active"));
+                firstImg.classList.add("active");
+            }
+        }
+    }
+
+    /** Capture a mid-frame from a direct video as a data URL poster (best-effort). */
+    function captureVideoPoster(videoUrl) {
+        return new Promise((resolve) => {
+            const playUrl = normalizeVideoUrl(videoUrl);
+            if (!isDirectVideo(playUrl)) {
+                resolve(youtubePoster(videoUrl) || "");
+                return;
+            }
+            const v = document.createElement("video");
+            v.muted = true;
+            v.playsInline = true;
+            v.preload = "auto";
+            // Don't set crossOrigin — many CDNs lack CORS; canvas may taint, then we fallback
+            let settled = false;
+            const finish = (url) => {
+                if (settled) return;
+                settled = true;
+                try { v.removeAttribute("src"); v.load(); } catch (_) {}
+                resolve(url || "");
+            };
+            const timer = setTimeout(() => finish(""), 7000);
+            v.addEventListener("loadedmetadata", () => {
+                try {
+                    const dur = v.duration;
+                    const t = (isFinite(dur) && dur > 0)
+                        ? Math.max(0.35, Math.min(dur * 0.5, dur - 0.15))
+                        : 1.2;
+                    v.currentTime = t;
+                } catch (_) {
+                    clearTimeout(timer);
+                    finish("");
+                }
+            });
+            v.addEventListener("seeked", () => {
+                try {
+                    const canvas = document.createElement("canvas");
+                    const vw = v.videoWidth || 640;
+                    const vh = v.videoHeight || 360;
+                    const scale = Math.min(1, 960 / Math.max(vw, 1));
+                    canvas.width = Math.max(1, Math.round(vw * scale));
+                    canvas.height = Math.max(1, Math.round(vh * scale));
+                    const ctx = canvas.getContext("2d");
+                    ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+                    clearTimeout(timer);
+                    finish(canvas.toDataURL("image/jpeg", 0.84));
+                } catch (_) {
+                    clearTimeout(timer);
+                    finish("");
+                }
+            });
+            v.addEventListener("error", () => {
+                clearTimeout(timer);
+                finish("");
+            });
+            v.src = playUrl;
+        });
+    }
+
+    function playVideo(videoUrl) {
+        let playUrl = normalizeVideoUrl(videoUrl);
+        const isDirect = isDirectVideo(playUrl);
         
         if (isDirect) {
             if (elMainDirectVideo) {
-                elMainDirectVideo.src = playUrl;
-                elMainDirectVideo.preload = "auto";
+                // Reset hard so re-click / autoplay always restarts
+                try {
+                    elMainDirectVideo.pause();
+                    elMainDirectVideo.removeAttribute("src");
+                    elMainDirectVideo.load();
+                } catch (_) {}
                 elMainDirectVideo.muted = true;
                 elMainDirectVideo.defaultMuted = true;
+                elMainDirectVideo.setAttribute("muted", "");
                 elMainDirectVideo.autoplay = true;
                 elMainDirectVideo.loop = true;
                 elMainDirectVideo.playsInline = true;
-                elMainDirectVideo.style.display = "block";
-                
-                // Attempt programmatical playback with auto-retry on interaction
-                elMainDirectVideo.play().catch(e => {
-                    console.log("Direct video autoplay blocked, setting up user interaction retry:", e);
-                    const runPlay = () => {
-                        elMainDirectVideo.play().catch(err => console.log("Subsequent play failed:", err));
-                        document.removeEventListener("click", runPlay);
-                        document.removeEventListener("keydown", runPlay);
-                    };
-                    document.addEventListener("click", runPlay);
-                    document.addEventListener("keydown", runPlay);
-                });
+                elMainDirectVideo.setAttribute("playsinline", "");
+                elMainDirectVideo.controls = true;
+                elMainDirectVideo.preload = "auto";
+                elMainDirectVideo.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;object-position:center;background:#0a0a12;border:none;z-index:2;";
+                elMainDirectVideo.onloadedmetadata = () => {
+                    fitShowcaseToSize(elMainDirectVideo.videoWidth || 16, elMainDirectVideo.videoHeight || 9);
+                    if (elMainScreenshotShowcase) {
+                        elMainScreenshotShowcase.classList.remove("preview-empty", "is-loading");
+                        elMainScreenshotShowcase.classList.add("has-media");
+                    }
+                    elMainDirectVideo.play().catch(() => {
+                        // retry muted play once
+                        elMainDirectVideo.muted = true;
+                        elMainDirectVideo.play().catch(() => {});
+                    });
+                };
+                elMainDirectVideo.oncanplay = () => {
+                    elMainDirectVideo.play().catch(() => {});
+                };
+                elMainDirectVideo.onerror = () => {
+                    // If rewritten mp4 failed, try webm sibling once
+                    if (/\.mp4($|\?)/i.test(playUrl)) {
+                        const webm = playUrl.replace(/\.mp4/i, ".webm");
+                        elMainDirectVideo.onerror = () => {
+                            stopVideo();
+                            fallbackToFirstScreenshot();
+                        };
+                        elMainDirectVideo.src = webm;
+                        elMainDirectVideo.play().catch(() => {});
+                        return;
+                    }
+                    if (/movie_max|movie480/i.test(playUrl) && /microtrailer/i.test(videoUrl || "")) {
+                        elMainDirectVideo.onerror = () => {
+                            stopVideo();
+                            fallbackToFirstScreenshot();
+                        };
+                        elMainDirectVideo.src = videoUrl;
+                        elMainDirectVideo.play().catch(() => {});
+                        return;
+                    }
+                    stopVideo();
+                    fallbackToFirstScreenshot();
+                };
+                elMainDirectVideo.src = playUrl;
+                elMainDirectVideo.play().catch(() => {});
             }
             if (elMainVideoIframe) {
                 elMainVideoIframe.src = "";
@@ -3599,104 +4768,131 @@ function renderScreenshots(screenshotsList, videosList) {
             }
         } else {
             if (elMainVideoIframe) {
-                elMainVideoIframe.src = videoUrl;
-                elMainVideoIframe.style.display = "block";
+                elMainVideoIframe.src = isYouTube(videoUrl) ? youtubeEmbedUrl(videoUrl) : videoUrl;
+                elMainVideoIframe.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;border:none;background:#08080f;z-index:2;";
+                fitShowcaseToSize(16, 9);
             }
             if (elMainDirectVideo) {
-                elMainDirectVideo.src = "";
+                elMainDirectVideo.removeAttribute("src");
                 elMainDirectVideo.style.display = "none";
             }
+            if (elMainScreenshotShowcase) {
+                elMainScreenshotShowcase.classList.remove("preview-empty", "is-loading");
+                elMainScreenshotShowcase.classList.add("has-media");
+            }
         }
-        if (elMainScreenshotImg) {
-            elMainScreenshotImg.style.display = "none";
-        }
+        if (elMainScreenshotImg) elMainScreenshotImg.style.display = "none";
+        if (elMainScreenshotShowcase) elMainScreenshotShowcase.classList.remove("preview-empty");
     }
 
     function stopVideo() {
         if (elMainDirectVideo) {
             elMainDirectVideo.pause();
-            elMainDirectVideo.src = "";
+            elMainDirectVideo.controls = false;
+            elMainDirectVideo.removeAttribute("src");
+            elMainDirectVideo.load();
             elMainDirectVideo.style.display = "none";
+            elMainDirectVideo.onerror = null;
+            elMainDirectVideo.onloadedmetadata = null;
         }
         if (elMainVideoIframe) {
             elMainVideoIframe.src = "";
             elMainVideoIframe.style.display = "none";
+            elMainVideoIframe.onerror = null;
         }
     }
 
     if (elScreenshotsSection && elScreenshotsContainer) {
         elScreenshotsContainer.innerHTML = "";
+        if (elMainScreenshotShowcase) elMainScreenshotShowcase.classList.remove("preview-empty");
         
         const hasVideos = videosList && videosList.length > 0;
         const hasScreenshots = screenshotsList && screenshotsList.length > 0;
 
         if (hasVideos || hasScreenshots) {
-            // Setup default main preview
-            if (hasVideos) {
-                playVideo(videosList[0]);
-            } else if (hasScreenshots) {
-                const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
-                if (elMainScreenshotImg) {
-                    elMainScreenshotImg.src = firstScreenshotUrl;
-                    elMainScreenshotImg.style.display = "block";
-                    elMainScreenshotImg.onclick = () => {
-                        openScreenshotModal(elMainScreenshotImg.src);
-                    };
-                }
-                stopVideo();
-            }
+            if (elMainScreenshotShowcase) elMainScreenshotShowcase.style.display = "block";
 
-            if (elMainScreenshotShowcase) {
-                elMainScreenshotShowcase.style.display = "block";
-            }
-
-            // 1. Render Video Thumbnails
+            // Thumbs first so autoplay can mark trailer as active
+            // 1) Trailer thumbs ALWAYS first
             if (hasVideos) {
-                videosList.forEach((videoUrl, idx) => {
+                videosList.forEach((videoUrl, vIdx) => {
                     const thumbWrapper = document.createElement("div");
-                    thumbWrapper.className = "video-thumbnail-wrapper" + (idx === 0 ? " active" : "");
+                    thumbWrapper.className = "video-thumbnail-wrapper" + (vIdx === 0 ? " active" : "");
+                    const ytPoster = youtubePoster(videoUrl);
+                    const fallbackPoster = ytPoster || (hasScreenshots
+                        ? `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`
+                        : "");
                     thumbWrapper.innerHTML = `
+                        <img class="video-thumb-poster" alt="" draggable="false" ${fallbackPoster ? `src="${fallbackPoster}"` : ""}>
                         <div class="video-thumbnail-overlay">
                             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                                 <path d="M8 5v14l11-7z"/>
                             </svg>
                         </div>
-                        <span style="font-size: 0.65rem; font-weight: 700; color: #fff; text-transform: uppercase;">Trailer</span>
+                        <span class="video-thumb-label">Trailer</span>
                     `;
+                    // Mid-frame (~50%) capture for direct trailers → small thumb poster
+                    if (isDirectVideo(videoUrl) || /microtrailer|store_trailers|\.mp4|\.webm/i.test(videoUrl)) {
+                        captureVideoPoster(videoUrl).then((posterUrl) => {
+                            if (!posterUrl || !thumbWrapper.isConnected) return;
+                            const img = thumbWrapper.querySelector(".video-thumb-poster");
+                            if (img) img.src = posterUrl;
+                        });
+                    }
                     
                     thumbWrapper.addEventListener("click", () => {
                         playVideo(videoUrl);
-                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img").forEach(i => i.classList.remove("active"));
+                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img.ss-thumb").forEach(i => i.classList.remove("active"));
                         thumbWrapper.classList.add("active");
                     });
                     elScreenshotsContainer.appendChild(thumbWrapper);
                 });
             }
 
-            // 2. Render Screenshot Thumbnails
+            // 2) Screenshot thumbs after trailer
             if (hasScreenshots) {
-                screenshotsList.forEach((src, idx) => {
+                screenshotsList.forEach((src) => {
                     const img = document.createElement("img");
                     const proxiedSrc = `/api/proxy_image?url=${encodeURIComponent(src)}`;
+                    img.className = "ss-thumb";
                     img.src = proxiedSrc;
-                    img.alt = "Screenshot thumbnail";
-                    if (!hasVideos && idx === 0) img.className = "active";
+                    img.alt = "";
+                    img.loading = "lazy";
+                    img.draggable = false;
+                    img.onerror = () => { img.style.display = "none"; };
                     
                     img.addEventListener("click", () => {
                         stopVideo();
-                        if (elMainScreenshotImg) {
-                            elMainScreenshotImg.src = proxiedSrc;
-                            elMainScreenshotImg.style.display = "block";
-                            elMainScreenshotImg.onclick = () => {
-                                openScreenshotModal(proxiedSrc);
-                            };
-                        }
-                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img").forEach(i => i.classList.remove("active"));
+                        showMainScreenshot(proxiedSrc);
+                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img.ss-thumb").forEach(i => i.classList.remove("active"));
                         img.classList.add("active");
                     });
                     elScreenshotsContainer.appendChild(img);
                 });
             }
+
+            // Main stage: trailer autoplays when present; else first screenshot
+            if (hasVideos) {
+                playVideo(videosList[0]);
+            } else if (hasScreenshots) {
+                const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
+                showMainScreenshot(firstScreenshotUrl);
+                const firstImg = elScreenshotsContainer.querySelector("img.ss-thumb");
+                if (firstImg) firstImg.classList.add("active");
+            } else if (scrapedMetadata.cover_image) {
+                const coverProxied = scrapedMetadata.cover_image.startsWith("/api/")
+                    ? scrapedMetadata.cover_image
+                    : `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
+                showMainScreenshot(coverProxied);
+            } else {
+                stopVideo();
+                if (elMainScreenshotShowcase) {
+                    elMainScreenshotShowcase.classList.remove("is-loading");
+                    elMainScreenshotShowcase.classList.add("preview-empty");
+                    elMainScreenshotShowcase.setAttribute("data-empty", "no-preview");
+                }
+            }
+
             elScreenshotsSection.style.display = "block";
         } else {
             elScreenshotsSection.style.display = "none";
@@ -3884,6 +5080,7 @@ const elModalStep2Container = document.getElementById("modal-step-2");
 
 function setModalStep(step) {
     modalStep = step;
+    const card = document.getElementById("download-config-card");
     if (step === 1) {
         if (elModalStep1Container) elModalStep1Container.style.display = "block";
         if (elModalStep2Container) elModalStep2Container.style.display = "none";
@@ -3891,6 +5088,7 @@ function setModalStep(step) {
         if (elModalNextIcon) elModalNextIcon.style.display = "inline-block";
         if (elModalStartIcon) elModalStartIcon.style.display = "none";
         if (elModalBtnText) elModalBtnText.innerText = "Next";
+        if (card) card.classList.remove("step-files-wide");
     } else if (step === 2) {
         if (elModalStep1Container) elModalStep1Container.style.display = "none";
         if (elModalStep2Container) elModalStep2Container.style.display = "block";
@@ -3898,6 +5096,7 @@ function setModalStep(step) {
         if (elModalNextIcon) elModalNextIcon.style.display = "none";
         if (elModalStartIcon) elModalStartIcon.style.display = "inline-block";
         if (elModalBtnText) elModalBtnText.innerText = "Confirm & Start Download";
+        if (card) card.classList.add("step-files-wide");
     }
 }
 
@@ -3928,7 +5127,7 @@ if (elModalBtnBack) {
 
 // Bind Modal Next / Start Download
 if (elModalStartDownloadBtn && downloadConfigModal) {
-    elModalStartDownloadBtn.addEventListener("click", () => {
+    elModalStartDownloadBtn.addEventListener("click", async () => {
         try {
             const gameTitle = elModalGameNameInput ? elModalGameNameInput.value.trim() : "";
             const downloadDir = elModalSaveDirInput ? elModalSaveDirInput.value.trim() : "";
@@ -3941,6 +5140,20 @@ if (elModalStartDownloadBtn && downloadConfigModal) {
                 if (!downloadDir) {
                     alert("Please select a save directory first!");
                     return;
+                }
+                // Decrypt selected mirror only now (not on page open)
+                if (!rawFilesList || rawFilesList.length === 0) {
+                    const selected = document.querySelector(".modal-mirror-row.selected");
+                    if (selected) {
+                        const mUrl = selected.getAttribute("data-url");
+                        const mName = selected.getAttribute("data-name") || "Mirror";
+                        elModalStartDownloadBtn.setAttribute("disabled", "true");
+                        try {
+                            await loadMirrorLinks(mUrl, mName);
+                        } finally {
+                            elModalStartDownloadBtn.removeAttribute("disabled");
+                        }
+                    }
                 }
                 setModalStep(2);
             } else {
@@ -4106,3 +5319,24 @@ if (elDownloadBackdrop) {
         setViewState("catalog");
     });
 }
+
+// Boot idle Harmonoid mesh so background is never a flat void
+(function initIdleHazeMesh() {
+    try {
+        if (typeof applyHazePalette === "function") {
+            // soft default until cover loads
+            applyHazePalette([
+                { r: 70, g: 28, b: 95 },
+                { r: 130, g: 45, b: 120 },
+                { r: 35, g: 18, b: 60 },
+                { r: 95, g: 40, b: 100 }
+            ]);
+            if (elHazeRoot) {
+                elHazeRoot.classList.add("haze-idle");
+                elHazeRoot.classList.remove("haze-active");
+            }
+            lastHazePaletteKey = ""; // allow first real cover to apply
+            activeHazeUrl = "";
+        }
+    } catch (e) { console.warn("idle haze", e); }
+})();

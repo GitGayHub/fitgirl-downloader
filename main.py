@@ -59,6 +59,13 @@ BLOCK_IPS = {
     "139.7.146.129",  # Vodafone Germany / CUII
 }
 
+# Hosts that frequently fail local DNS / get censored — always pin via DoH RESOLVE
+FORCE_DOH_HOSTS = {
+    "paste.fitgirl-repacks.site",
+    "fitgirl-repacks.site",
+    "www.fitgirl-repacks.site",
+}
+
 _doh_cache = {}
 original_getaddrinfo = socket.getaddrinfo
 
@@ -69,26 +76,63 @@ def resolve_doh(host):
         return _doh_cache[host]
     
     # Query DoH endpoints directly via their IP addresses to bypass local DNS resolution for the DNS service
-    for url, ip_or_domain in [("https://1.1.1.1/dns-query", "1.1.1.1"), ("https://8.8.8.8/resolve", "8.8.8.8")]:
+    doh_queries = [
+        ("https://1.1.1.1/dns-query", {"name": host, "type": "A"}, {"accept": "application/dns-json"}),
+        ("https://8.8.8.8/resolve", {"name": host, "type": "A"}, {}),
+        ("https://9.9.9.9:5053/dns-query", {"name": host, "type": "A"}, {"accept": "application/dns-json"}),
+    ]
+    for url, params, headers in doh_queries:
         try:
-            if ip_or_domain == "1.1.1.1":
-                r = requests.get(url, params={"name": host, "type": "A"}, headers={"accept": "application/dns-json"}, verify=False, timeout=5)
-            else:
-                r = requests.get(url, params={"name": host, "type": "A"}, verify=False, timeout=5)
+            r = requests.get(url, params=params, headers=headers or None, verify=False, timeout=5)
             data = r.json()
             if "Answer" in data:
                 for ans in data["Answer"]:
                     if ans.get("type") == 1:  # A record
                         ip = ans.get("data")
-                        _doh_cache[host] = ip
-                        return ip
+                        if ip and not ip.startswith("0."):
+                            _doh_cache[host] = ip
+                            return ip
         except Exception:
             pass
     return None
 
+def _needs_doh(host):
+    if not host:
+        return False
+    if host in FORCE_DOH_HOSTS:
+        return True
+    try:
+        res = original_getaddrinfo(host, 443)
+        if res:
+            first_ip = res[0][4][0]
+            if first_ip in BLOCK_IPS:
+                return True
+        return False
+    except Exception:
+        return True
+
+def _set_session_resolve(session, host, doh_ip):
+    """
+    curl_cffi 0.15 accepts curl_options only on Session (self.curl_options),
+    NOT as a Session.request() keyword argument.
+    """
+    if not session or not host or not doh_ip:
+        return
+    if not hasattr(session, "curl_options") or session.curl_options is None:
+        session.curl_options = {}
+    # copy so we don't mutate a shared frozen dict
+    opts = dict(session.curl_options)
+    opts[CurlOpt.RESOLVE] = [f"{host}:443:{doh_ip}", f"{host}:80:{doh_ip}"]
+    session.curl_options = opts
+
 def patched_getaddrinfo(host, port, *args, **kwargs):
-    if host in ("1.1.1.1", "8.8.8.8", "cloudflare-dns.com", "dns.google"):
+    if host in ("1.1.1.1", "8.8.8.8", "9.9.9.9", "cloudflare-dns.com", "dns.google"):
         return original_getaddrinfo(host, port, *args, **kwargs)
+
+    if host in FORCE_DOH_HOSTS:
+        doh_ip = resolve_doh(host)
+        if doh_ip:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port or 0))]
         
     try:
         res = original_getaddrinfo(host, port, *args, **kwargs)
@@ -97,49 +141,54 @@ def patched_getaddrinfo(host, port, *args, **kwargs):
             if first_ip in BLOCK_IPS:
                 doh_ip = resolve_doh(host)
                 if doh_ip:
-                    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port))]
+                    return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port or 0))]
         return res
     except Exception:
         doh_ip = resolve_doh(host)
         if doh_ip:
-            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port))]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (doh_ip, port or 0))]
         raise
 
 socket.getaddrinfo = patched_getaddrinfo
 
-# Monkey patch curl_cffi Session.request to dynamically insert CurlOpt.RESOLVE when needed
+# Monkey patch curl_cffi Session.request — set RESOLVE on session, never as request kwarg
 original_cf_request = cf_requests.Session.request
 
 def patched_cf_request(self, method, url, *args, **kwargs):
+    # Guard: older code / callers may still pass curl_options into request()
+    kwargs.pop("curl_options", None)
+
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname
     
-    if host:
-        need_doh = False
-        try:
-            res = socket.getaddrinfo(host, 443)
-            if res and res[0][4][0] in BLOCK_IPS:
-                need_doh = True
-        except Exception:
-            need_doh = True
-            
-        if need_doh:
-            doh_ip = resolve_doh(host)
-            if doh_ip:
-                if not hasattr(self, "curl_options") or self.curl_options is None:
-                    self.curl_options = {}
-                self.curl_options[CurlOpt.RESOLVE] = [f"{host}:443:{doh_ip}", f"{host}:80:{doh_ip}"]
+    if host and _needs_doh(host):
+        doh_ip = resolve_doh(host)
+        if doh_ip:
+            _set_session_resolve(self, host, doh_ip)
                 
     try:
         return original_cf_request(self, method, url, *args, **kwargs)
     except Exception as e:
+        err_text = str(e).lower()
+        if host and ("could not resolve" in err_text or "resolve host" in err_text or "getaddrinfo" in err_text or "curl: (6)" in err_text):
+            # Bust cache and force a fresh DoH resolve on DNS failures
+            _doh_cache.pop(host, None)
+            doh_ip = resolve_doh(host)
+            if doh_ip:
+                _set_session_resolve(self, host, doh_ip)
+                return original_cf_request(self, method, url, *args, **kwargs)
+            raise Exception(
+                f"Cannot resolve host '{host}'. Local DNS failed and DoH fallback found no IP. "
+                f"Try another mirror, enable VPN/WARP, or check your network. Original: {e}"
+            ) from e
         if host:
             doh_ip = resolve_doh(host)
             if doh_ip:
-                if not hasattr(self, "curl_options") or self.curl_options is None:
-                    self.curl_options = {}
-                self.curl_options[CurlOpt.RESOLVE] = [f"{host}:443:{doh_ip}", f"{host}:80:{doh_ip}"]
-                return original_cf_request(self, method, url, *args, **kwargs)
+                _set_session_resolve(self, host, doh_ip)
+                try:
+                    return original_cf_request(self, method, url, *args, **kwargs)
+                except Exception:
+                    pass
         raise e
 
 cf_requests.Session.request = patched_cf_request
@@ -264,8 +313,38 @@ def load_session_state():
                 state["total_progress"] = data.get("total_progress", 0)
                 state["active_mirror"] = data.get("active_mirror", "")
                 state["average_download_speed"] = data.get("average_download_speed", 5000000.0)
+                state["original_size"] = data.get("original_size", state.get("original_size", ""))
+
+                # Ensure path = base / Game / Cloud (per-provider folders)
+                try:
+                    gt = safe_folder_name(state.get("game_title") or "")
+                    base = state.get("base_download_dir") or state.get("default_download_dir") or ""
+                    mirror = safe_folder_name(state.get("active_mirror") or "")
+                    if gt and base:
+                        game_root = os.path.abspath(os.path.join(base, gt))
+                        expected = os.path.join(game_root, mirror) if mirror else game_root
+                        cur = os.path.abspath(state.get("download_dir") or "")
+                        # If session pointed at flat game root but we have an active mirror → use mirror subfolder
+                        if mirror and (not cur or cur == game_root or os.path.basename(cur) != mirror):
+                            # keep if already under a different known provider subfolder matching basename
+                            if cur and os.path.dirname(cur) == game_root and os.path.basename(cur):
+                                pass  # already Game/Something — trust it
+                            else:
+                                state["download_dir"] = expected
+                        elif not cur:
+                            state["download_dir"] = expected
+                except Exception:
+                    pass
                 
             add_log("[SYSTEM] Previous session state restored successfully.")
+            # Immediately rebuild real progress from disk so UI island is accurate on startup
+            if state.get("is_configured") and state.get("download_dir") and state.get("files"):
+                try:
+                    initialize_queue_on_disk()
+                    save_session_state()
+                    add_log(f"[SYSTEM] Download folder: {state['download_dir']}")
+                except Exception as scan_err:
+                    print(f"Disk progress scan after session load failed: {scan_err}")
     except Exception as e:
         print(f"Error loading session state: {e}")
 
@@ -1517,26 +1596,212 @@ def safe_folder_name(name):
         return ""
     return re.sub(r'[:\/\\\*\?"<>\|]', '', name).strip()
 
+
+def _strip_bonus_soundtrack_section(text):
+    """Remove Included Bonus Soundtracks / OST dump from Game Description."""
+    if not text:
+        return text
+    # Cut from soundtrack header to end (or next major section if any)
+    patterns = [
+        r"(?is)\n?\s*included\s+bonus\s+soundtracks?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*bonus\s+soundtracks?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*included\s+bonus\s+osts?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*включ[её]нные\s+бонусные\s+саундтреки\s*:?\s*\n.*$",
+    ]
+    out = text
+    for pat in patterns:
+        out = re.sub(pat, "", out)
+    # Also drop trailing lone soundtrack-ish bullet lines if header was mid-block
+    lines = out.split("\n")
+    cleaned = []
+    skip_mode = False
+    for ln in lines:
+        low = ln.strip().lower().rstrip(":")
+        if re.match(
+            r"^(included\s+)?bonus\s+(soundtracks?|osts?)|включ[её]нные\s+бонусные\s+саундтреки$",
+            low,
+        ):
+            skip_mode = True
+            continue
+        if skip_mode:
+            # stop skipping if a real new section starts
+            if low in ("game features", "особенности игры", "pc features", "features") or (
+                ln.strip().endswith(":") and len(ln.strip()) < 48 and "soundtrack" not in low
+            ):
+                skip_mode = False
+                cleaned.append(ln)
+            # otherwise drop OST bullets / names
+            continue
+        cleaned.append(ln)
+    out = "\n".join(cleaned).strip()
+    # Collapse excessive blank lines
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out
+
+
+def _merge_folder_files(src_dir, dst_dir):
+    """Move archive files from src_dir (recursively) into dst_dir (keep larger copy)."""
+    import shutil
+    if not src_dir or not dst_dir or not os.path.isdir(src_dir):
+        return
+    if os.path.abspath(src_dir) == os.path.abspath(dst_dir):
+        return
+    os.makedirs(dst_dir, exist_ok=True)
+    for root, _dirs, files in os.walk(src_dir):
+        for name in files:
+            low = name.lower()
+            if not low.endswith((".rar", ".bin", ".zip", ".7z", ".exe", ".iso")):
+                continue
+            src = os.path.join(root, name)
+            dst = os.path.join(dst_dir, name)
+            try:
+                if os.path.exists(dst):
+                    if os.path.getsize(src) > os.path.getsize(dst):
+                        os.replace(src, dst)
+                    else:
+                        try:
+                            os.remove(src)
+                        except Exception:
+                            pass
+                else:
+                    shutil.move(src, dst)
+            except Exception:
+                pass
+    # prune empty dirs under src
+    for root, dirs, files in os.walk(src_dir, topdown=False):
+        for d in dirs:
+            p = os.path.join(root, d)
+            try:
+                if not os.listdir(p):
+                    os.rmdir(p)
+            except Exception:
+                pass
+
+
+def _consolidate_provider_subfolders(game_dir):
+    """Merge legacy per-mirror subfolders (Rootz/Gofile/FileDitch/…) into game_dir.
+
+    Older builds saved as:  C:\\Games\\Game\\Rootz\\part01.rar
+    New layout is flat:     C:\\Games\\Game\\part01.rar
+    """
+    if not game_dir:
+        return
+    game_dir = os.path.abspath(game_dir)
+    os.makedirs(game_dir, exist_ok=True)
+
+    # 1) Subfolders inside the game dir
+    try:
+        for name in list(os.listdir(game_dir)):
+            sub = os.path.join(game_dir, name)
+            if not os.path.isdir(sub):
+                continue
+            # Skip obvious non-provider dirs (extracted game content later)
+            if name.lower() in ("_redist", "redist", "crack", "support"):
+                continue
+            # Only consolidate if it looks like a hoster dump (has .rar/.bin)
+            try:
+                entries = os.listdir(sub)
+            except Exception:
+                continue
+            if not any(
+                e.lower().endswith((".rar", ".bin", ".zip", ".7z", ".exe"))
+                for e in entries
+            ):
+                continue
+            _merge_folder_files(sub, game_dir)
+            try:
+                if not os.listdir(sub):
+                    os.rmdir(sub)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 2) Sibling typos like "Forza Horizon 6 Gofile" next to "Forza Horizon 6"
+    parent = os.path.dirname(game_dir)
+    base = os.path.basename(game_dir)
+    if parent and base and os.path.isdir(parent):
+        try:
+            for name in os.listdir(parent):
+                if name == base:
+                    continue
+                # "Game Title Gofile" / "Game Title - Rootz"
+                if not name.startswith(base):
+                    continue
+                suffix = name[len(base):].strip(" -_")
+                if not suffix:
+                    continue
+                sibling = os.path.join(parent, name)
+                if os.path.isdir(sibling):
+                    _merge_folder_files(sibling, game_dir)
+                    try:
+                        if not os.listdir(sibling):
+                            os.rmdir(sibling)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 
 def initialize_queue_on_disk():
+    """Scan download folder and rebuild accurate progress for the floating bar / UI."""
     with state_lock:
         if not state["download_dir"]:
             return
-        os.makedirs(state["download_dir"], exist_ok=True)
+        try:
+            os.makedirs(state["download_dir"], exist_ok=True)
+        except Exception:
+            return
         for f in state["files"]:
+            # Restore expected size from sizes_cache when session lost it
+            if (not f.get("size") or f["size"] <= 0) and f.get("filename") in sizes_cache:
+                try:
+                    f["size"] = int(sizes_cache[f["filename"]])
+                except Exception:
+                    pass
+
             file_path = os.path.join(state["download_dir"], f["filename"])
             if os.path.exists(file_path):
-                size_on_disk = os.path.getsize(file_path)
-                expected_size = f["size"] if f["size"] > 0 else get_expected_size(f["filename"], f["type"])
+                try:
+                    size_on_disk = os.path.getsize(file_path)
+                except Exception:
+                    size_on_disk = 0
+                expected_size = f["size"] if f.get("size", 0) > 0 else get_expected_size(f["filename"], f.get("type", "game_part"))
+                if expected_size <= 0:
+                    expected_size = size_on_disk
                 f["downloaded"] = size_on_disk
-                f["progress"] = min(100, int((size_on_disk / expected_size) * 100)) if expected_size > 0 else 0
-                if size_on_disk >= expected_size:
+                f["size"] = max(int(expected_size or 0), size_on_disk)
+                if f["size"] > 0:
+                    f["progress"] = min(100, int((size_on_disk / f["size"]) * 100))
+                else:
+                    f["progress"] = 0
+                # Treat complete / nearly complete as finished
+                if f["size"] > 0 and size_on_disk >= f["size"] * 0.995:
                     f["status"] = "finished"
-                    f["size"] = size_on_disk
-                    save_size_to_cache(f["filename"], size_on_disk)
+                    f["progress"] = 100
+                    f["speed"] = 0
+                    save_size_to_cache(f["filename"], f["size"])
+                elif f.get("status") == "finished" and size_on_disk < f["size"] * 0.995:
+                    # File incomplete but was marked finished — resume-ready
+                    f["status"] = "waiting"
+                    f["speed"] = 0
+            else:
+                # No file on disk
+                if f.get("status") == "finished":
+                    f["status"] = "waiting"
+                if f.get("status") in ("downloading", "connecting"):
+                    f["status"] = "waiting"
+                f["downloaded"] = 0
+                f["progress"] = 0
+                f["speed"] = 0
         recalculate_total_progress()
+        add_log(
+            f"[SYSTEM] Disk scan: {state['total_progress']}% "
+            f"({sum(1 for x in state['files'] if x.get('status')=='finished')}/{len(state['files'])} files done)"
+        )
 
 def download_worker():
     """Background thread worker to download files concurrently."""
@@ -2183,13 +2448,21 @@ def recalculate_total_progress():
             state["total_progress"] = 0
             state["active_index"] = -1
             return
-        total_bytes = sum(f["size"] if f["size"] > 0 else get_expected_size(f["filename"], f["type"]) for f in state["files"])
-        downloaded_bytes = sum(f["downloaded"] for f in state["files"])
+        total_bytes = 0
+        downloaded_bytes = 0
+        for f in state["files"]:
+            size = f["size"] if f["size"] > 0 else get_expected_size(f["filename"], f["type"])
+            total_bytes += size
+            # Finished parts always count as fully downloaded (disk may already have full file)
+            if f.get("status") == "finished":
+                downloaded_bytes += size
+            else:
+                downloaded_bytes += f.get("downloaded", 0) or 0
         state["total_progress"] = int((downloaded_bytes / total_bytes) * 100) if total_bytes > 0 else 0
         
         active_idx = -1
         for idx, f in enumerate(state["files"]):
-            if f["status"] in ["connecting", "downloading"]:
+            if f["status"] in ["connecting", "downloading", "copying"]:
                 active_idx = idx
                 break
         state["active_index"] = active_idx
@@ -2884,6 +3157,12 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 provider = query_params.get("provider", ["fitgirl"])[0]
                 type_val = query_params.get("type", ["monthly"])[0]
                 page = int(query_params.get("page", ["1"])[0])
+                try:
+                    page_size = int(query_params.get("page_size", ["27"])[0])
+                except (TypeError, ValueError):
+                    page_size = 27
+                # Allow large page_size so UI can fetch full popular list and client-slice
+                page_size = max(4, min(120, page_size))
                 
                 results = []
                 has_next = False
@@ -2947,7 +3226,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         # Limit total standard results to exactly 54
                         all_results = unique_standard[:54]
                         
-                        PAGE_SIZE = 27
+                        PAGE_SIZE = page_size
                         start_idx = (page - 1) * PAGE_SIZE
                         end_idx = page * PAGE_SIZE
                         results = all_results[start_idx:end_idx]
@@ -3005,9 +3284,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         "summary": "Popular Repack"
                                     })
                         
-                        # Limit total FitGirl popular results to exactly 45 total (27 on page 1, 18 on page 2)
-                        all_results = all_results[:45]
-                        PAGE_SIZE = 27
+                        # Cap FitGirl popular list; UI may request full list via page_size
+                        all_results = all_results[:60]
+                        PAGE_SIZE = page_size
                         start_idx = (page - 1) * PAGE_SIZE
                         end_idx = page * PAGE_SIZE
                         results = all_results[start_idx:end_idx]
@@ -3087,6 +3366,9 @@ class APIRequestHandler(BaseHTTPRequestHandler):
         elif path == "/style.css":
             file_to_serve = os.path.join(os.path.dirname(__file__), "web", "style.css")
             content_type = "text/css"
+        elif path == "/details-fix.css":
+            file_to_serve = os.path.join(os.path.dirname(__file__), "web", "details-fix.css")
+            content_type = "text/css"
         elif path == "/app.js":
             file_to_serve = os.path.join(os.path.dirname(__file__), "web", "app.js")
             content_type = "application/javascript"
@@ -3102,12 +3384,17 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 ts = str(int(time.time()))
                 content_str = content_str.replace("style.css?v=2.1", f"style.css?v={ts}")
                 content_str = content_str.replace("app.js?v=2.1", f"app.js?v={ts}")
+                for ver in ("2.1", "3.9", "4.0"):
+                    content_str = content_str.replace(f"style.css?v={ver}", f"style.css?v={ts}")
+                    content_str = content_str.replace(f"app.js?v={ver}", f"app.js?v={ts}")
+                    content_str = content_str.replace(f"details-fix.css?v={ver}", f"details-fix.css?v={ts}")
                 content = content_str.encode("utf-8")
             else:
                 with open(file_to_serve, "rb") as f:
                     content = f.read()
             self.send_response(200)
             self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(content)
         except Exception as e:
@@ -3890,8 +4177,36 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 # FitGirl repack page URL
                 if "fitgirl-repacks.site" in url and "paste.fitgirl-repacks.site" not in url:
                     add_log(f"Scraping repack page: {url}")
-                    response = cf_requests.get(url, impersonate="chrome120", timeout=20, verify=False)
-                    if response.status_code == 200:
+                    # Retries + longer timeout — FitGirl often slow / flaky behind CF
+                    response = None
+                    scrape_err = None
+                    fg_host = urllib.parse.urlparse(url).hostname or "fitgirl-repacks.site"
+                    for attempt in range(3):
+                        try:
+                            _doh_cache.pop(fg_host, None)
+                            fg_ip = resolve_doh(fg_host)
+                            session_kwargs = {}
+                            if fg_ip:
+                                session_kwargs["curl_options"] = {
+                                    CurlOpt.RESOLVE: [f"{fg_host}:443:{fg_ip}", f"{fg_host}:80:{fg_ip}"]
+                                }
+                                add_log(f"FitGirl page DNS via DoH: {fg_host} -> {fg_ip}")
+                            with cf_requests.Session(**session_kwargs) as fg_sess:
+                                response = fg_sess.get(
+                                    url,
+                                    impersonate="chrome120",
+                                    timeout=45,
+                                    verify=False,
+                                )
+                            if response is not None and response.status_code == 200:
+                                break
+                            scrape_err = f"HTTP {getattr(response, 'status_code', '?')}"
+                            add_log(f"FitGirl scrape attempt {attempt + 1}/3: {scrape_err}")
+                        except Exception as se:
+                            scrape_err = se
+                            add_log(f"FitGirl scrape attempt {attempt + 1}/3 failed: {se}")
+                            time.sleep(0.8 * (attempt + 1))
+                    if response is not None and response.status_code == 200:
                         soup = BeautifulSoup(response.text, 'html.parser')
                         title_el = soup.find('h1', class_='entry-title')
                         raw_title = title_el.get_text(strip=True) if title_el else "Unknown Game"
@@ -3957,162 +4272,451 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     filtered.append(m)
                             mirrors = filtered
                                         
-                        # Scrape gameplay videos/trailers
-                        videos = []
-                        if content_el:
-                            for iframe in content_el.find_all('iframe'):
-                                src = iframe.get('src', '')
-                                if "youtube" in src or "youtu.be" in src:
-                                    if src.startswith('//'):
-                                        src = 'https:' + src
-                                    if src not in videos:
-                                        videos.append(src)
-
-                        # Extract description and screenshots
+                        # Extract description / features / screenshots (FitGirl page structure)
                         description = ""
                         screenshots = []
+                        videos = []
                         genres_tags = ""
                         company = ""
                         languages = ""
                         repack_features_list = []
-                        
-                        if content_el:
-                            # 1. Scrape FitGirl-specific metadata lines
-                            for p in content_el.find_all('p', recursive=True):
+
+                        # Broken FitGirl HTML often closes .entry-content (and even <article>)
+                        # early, so Screenshots / Repack Features / Game Description become
+                        # siblings under #primary — prefer that wider root first.
+                        parse_root = (
+                            soup.find(id="primary")
+                            or soup.find("article")
+                            or content_el
+                            or soup
+                        )
+
+                        # Junk image hosts / torrent stats banners (green text stats)
+                        _SHOT_BLOCKLIST = (
+                            "torrent-stats.info", "torrentstats", "kitty-kode", "statspics",
+                            "tracker-stats", "opentrackr", "favicon", "gravatar", "emoji",
+                            "smiley", "avatar", "wp-includes", "wp-content/plugins", "spinner",
+                            "loading.gif", "badge", "pixel.gif", "1x1",
+                        )
+
+                        def _normalize_shot_url(candidate):
+                            if not candidate:
+                                return ""
+                            candidate = candidate.strip()
+                            if candidate.startswith("//"):
+                                candidate = "https:" + candidate
+                            if candidate.startswith("/"):
+                                candidate = urllib.parse.urljoin(url, candidate)
+                            elif not candidate.startswith("http"):
+                                candidate = urllib.parse.urljoin(url, candidate)
+                            # RiotPixels thumbs: xxx.jpg.240p.jpg → full xxx.jpg (not xxx.jpg.jpg)
+                            candidate = re.sub(
+                                r'\.(jpg|jpeg|png|webp)\.(?:240p|400p|720p)\.(?:jpg|jpeg|png|webp)$',
+                                r'.\1',
+                                candidate,
+                                flags=re.IGNORECASE,
+                            )
+                            # Fallback: bare .240p.jpg suffix without prior ext
+                            candidate = re.sub(
+                                r'\.(?:240p|400p|720p)\.(jpg|jpeg|png|webp)$',
+                                r'.\1',
+                                candidate,
+                                flags=re.IGNORECASE,
+                            )
+                            return clean_cover_url(candidate)
+
+                        def _is_junk_shot(u):
+                            if not u:
+                                return True
+                            lu = u.lower()
+                            if any(b in lu for b in _SHOT_BLOCKLIST):
+                                return True
+                            if re.search(r'-\d{2,3}x\d{2,3}\.(jpg|jpeg|png|webp)$', lu):
+                                return True
+                            if not (
+                                lu.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif'))
+                                or 'riotpixels.net/data/' in lu
+                                or 'steamstatic' in lu
+                                or 'imageban' in lu
+                                or 'imgur' in lu
+                            ):
+                                return True
+                            return False
+
+                        def _prefer_video_url(src):
+                            """Keep playable Steam microtrailer.webm as-is.
+
+                            movie_max.mp4 siblings often 404 on FitGirl embeds — do NOT
+                            rewrite microtrailer → movie_max (that broke autoplay).
+                            """
+                            if not src:
+                                return ""
+                            src = src.strip()
+                            if src.startswith("//"):
+                                src = "https:" + src
+                            return src
+
+                        def _extract_features_from(root):
+                            found = []
+                            if not root:
+                                return found
+                            for el in root.find_all(["h3", "h4"]):
+                                if "repack features" not in el.get_text(strip=True).lower():
+                                    continue
+                                # Prefer the next UL (may skip text nodes / <br>)
+                                ul = el.find_next_sibling("ul")
+                                if not ul:
+                                    curr = el
+                                    for _ in range(16):
+                                        curr = curr.next_sibling
+                                        if not curr:
+                                            break
+                                        if isinstance(curr, str):
+                                            continue
+                                        if getattr(curr, "name", None) == "ul":
+                                            ul = curr
+                                            break
+                                        if getattr(curr, "name", None) in ("h3", "h4"):
+                                            break
+                                if ul:
+                                    # FitGirl often omits </li>; BS nests subsequent <li> inside
+                                    # the first one. Take only direct text of each <li>.
+                                    for li in ul.find_all("li"):
+                                        parts = []
+                                        for c in li.contents:
+                                            if getattr(c, "name", None) in ("ul", "ol", "li"):
+                                                continue
+                                            parts.append(
+                                                c.get_text(" ", strip=True)
+                                                if hasattr(c, "get_text")
+                                                else str(c).strip()
+                                            )
+                                        item = re.sub(r"\s+", " ", " ".join(p for p in parts if p)).strip()
+                                        if item and item not in found:
+                                            found.append(item)
+                                break
+                            return found
+
+                        def _extract_description_from(root):
+                            if not root:
+                                return ""
+                            game_desc_paragraphs = []
+
+                            def _chunks_from_body(body):
+                                """Extract readable Game Description from FitGirl spoiler body.
+
+                                FitGirl often mixes:
+                                  - bare text nodes (first paragraph)
+                                  - <p> paragraphs
+                                  - <b>Game Features</b> + <ul><li>…</li>
+                                Never discard a longer full-text extraction for a
+                                short p-only fallback (that was the CoD MW2 bug).
+                                """
+                                if not body:
+                                    return []
+
+                                def _is_junk_desc(t):
+                                    tl = (t or "").lower()
+                                    return any(
+                                        x in tl
+                                        for x in (
+                                            "paste.fitgirl",
+                                            "click to show direct",
+                                            "filehoster:",
+                                            "download mirrors",
+                                        )
+                                    )
+
+                                def _norm(t):
+                                    return re.sub(r"\s+", " ", (t or "")).strip()
+
+                                def _li_text(li):
+                                    parts = []
+                                    for c in li.contents:
+                                        if getattr(c, "name", None) in ("ul", "ol", "li"):
+                                            continue
+                                        parts.append(
+                                            c.get_text(" ", strip=True)
+                                            if hasattr(c, "get_text")
+                                            else str(c).strip()
+                                        )
+                                    item = _norm(" ".join(p for p in parts if p))
+                                    if not item:
+                                        item = _norm(li.get_text(" ", strip=True))
+                                    return item
+
+                                structured = []
+
+                                def _emit(t, bullet=False):
+                                    t = _norm(t)
+                                    if not t or _is_junk_desc(t):
+                                        return
+                                    if bullet and not t.startswith("•"):
+                                        t = "• " + t
+                                    structured.append(t)
+
+                                # Walk direct children first (preserves order)
+                                for child in list(body.children):
+                                    if isinstance(child, str):
+                                        t = _norm(child)
+                                        if len(t) >= 12:
+                                            _emit(t)
+                                        continue
+                                    name = getattr(child, "name", None)
+                                    if name in (None, "script", "style", "br"):
+                                        continue
+                                    if name in ("ul", "ol"):
+                                        for li in child.find_all("li"):
+                                            item = _li_text(li)
+                                            if item and len(item) >= 3:
+                                                _emit(item, bullet=True)
+                                        continue
+                                    if name in ("p", "div", "blockquote", "section"):
+                                        # Leading non-list content (headers / paragraphs)
+                                        lead = []
+                                        for c in child.contents:
+                                            if getattr(c, "name", None) in ("ul", "ol"):
+                                                break
+                                            if isinstance(c, str):
+                                                lead.append(c)
+                                            elif getattr(c, "name", None) not in ("script", "style"):
+                                                lead.append(
+                                                    c.get_text(" ", strip=True)
+                                                    if hasattr(c, "get_text")
+                                                    else ""
+                                                )
+                                        lead_t = _norm(" ".join(lead))
+                                        if lead_t:
+                                            _emit(lead_t)
+                                        for ul in child.find_all(["ul", "ol"], recursive=False):
+                                            for li in ul.find_all("li"):
+                                                item = _li_text(li)
+                                                if item and len(item) >= 3:
+                                                    _emit(item, bullet=True)
+                                        # nested lists deeper
+                                        if not child.find(["ul", "ol"], recursive=False) and not lead_t:
+                                            t = _norm(child.get_text(" ", strip=True))
+                                            if t:
+                                                _emit(t)
+                                        continue
+                                    if name in ("h3", "h4", "h5", "h6", "strong", "b"):
+                                        t = _norm(child.get_text(" ", strip=True))
+                                        if t:
+                                            _emit(t)
+                                        continue
+                                    # generic block
+                                    t = _norm(child.get_text(" ", strip=True))
+                                    if t and len(t) >= 20:
+                                        _emit(t)
+
+                                # Dedup
+                                chunks = []
+                                seen = set()
+                                for t in structured:
+                                    key = t[:96].lower()
+                                    if key in seen:
+                                        continue
+                                    seen.add(key)
+                                    chunks.append(t)
+
+                                # Full plain-text baseline
+                                frag_html = re.sub(
+                                    r"<br\s*/?>",
+                                    "\n",
+                                    body.decode_contents() if hasattr(body, "decode_contents") else str(body),
+                                    flags=re.I,
+                                )
+                                frag = BeautifulSoup(frag_html, "html.parser")
+                                raw = frag.get_text("\n", strip=True)
+                                raw_clean = _norm(raw.replace("\n", " "))
+                                chunks_len = sum(len(c) for c in chunks)
+
+                                # If structured walk lost content (classic p-only miss of
+                                # leading text node), rebuild from full text lines.
+                                if raw and (not chunks or len(raw_clean) > chunks_len + 60):
+                                    lines = [_norm(ln) for ln in raw.split("\n") if _norm(ln)]
+                                    rebuilt = []
+                                    for ln in lines:
+                                        if _is_junk_desc(ln):
+                                            continue
+                                        low = ln.rstrip(":").lower()
+                                        if low in (
+                                            "game features",
+                                            "included bonus soundtracks",
+                                            "features",
+                                            "pc features",
+                                            "about this game",
+                                        ) or (ln.endswith(":") and len(ln) < 60):
+                                            rebuilt.append(ln)
+                                        elif len(ln) > 24 and " – " in ln[:80]:
+                                            rebuilt.append("• " + ln if not ln.startswith("•") else ln)
+                                        else:
+                                            rebuilt.append(ln)
+                                    if sum(len(x) for x in rebuilt) >= chunks_len:
+                                        chunks = rebuilt
+
+                                if not chunks and raw_clean:
+                                    chunks = [raw_clean]
+                                return chunks
+
+                            for spoiler in root.select("div.su-spoiler"):
+                                title_el = spoiler.select_one(".su-spoiler-title")
+                                title_txt = title_el.get_text(" ", strip=True).lower() if title_el else ""
+                                if "game description" not in title_txt:
+                                    continue
+                                body = spoiler.select_one(".su-spoiler-content") or spoiler
+                                game_desc_paragraphs = _chunks_from_body(body)
+                                break
+
+                            if not game_desc_paragraphs:
+                                for el in root.find_all(["h3", "h4", "strong", "b", "span", "div"]):
+                                    label = el.get_text(" ", strip=True).lower()
+                                    if label != "game description" and not (
+                                        el.get("class") and "su-spoiler-title" in (el.get("class") or [])
+                                        and "game description" in label
+                                    ):
+                                        continue
+                                    parent = el.find_parent("div", class_=re.compile(r"su-spoiler"))
+                                    if parent:
+                                        body = parent.select_one(".su-spoiler-content") or parent
+                                        game_desc_paragraphs = _chunks_from_body(body)
+                                    break
+
+                            return "\n\n".join(game_desc_paragraphs).strip()
+
+                        if parse_root:
+                            # 1. Metadata lines (entry-content preferred — top of post)
+                            meta_root = content_el or parse_root
+                            for p in meta_root.find_all("p", recursive=True):
                                 text = p.get_text()
                                 if "genres/tags:" in text.lower() or "genre/tag:" in text.lower():
-                                    match = re.search(r'(?:genres/tags|genre/tag|genres):\s*(.*)', text, re.IGNORECASE)
+                                    match = re.search(r"(?:genres/tags|genre/tag|genres):\s*(.*)", text, re.IGNORECASE)
                                     if match:
                                         genres_tags = match.group(1).strip()
                                 if "compan" in text.lower():
-                                    match = re.search(r'(?:companies|company):\s*(.*)', text, re.IGNORECASE)
+                                    match = re.search(r"(?:companies|company):\s*(.*)", text, re.IGNORECASE)
                                     if match:
                                         company = match.group(1).strip()
                                 if "languages:" in text.lower() or "language:" in text.lower():
-                                    match = re.search(r'(?:languages|language):\s*(.*)', text, re.IGNORECASE)
+                                    match = re.search(r"(?:languages|language):\s*(.*)", text, re.IGNORECASE)
                                     if match:
                                         languages = match.group(1).strip()
 
-                            # 2. Extract Repack Features list
-                            repack_header = None
-                            for el in content_el.find_all(['h3', 'h4', 'p', 'strong', 'div']):
-                                el_text = el.get_text().lower()
-                                if "repack features" in el_text:
-                                    repack_header = el
+                            # 2. Repack Features
+                            repack_features_list = _extract_features_from(parse_root)
+                            if not repack_features_list and content_el is not parse_root:
+                                repack_features_list = _extract_features_from(content_el)
+
+                            # 3. Game Description
+                            description = _extract_description_from(parse_root)
+                            if not description and content_el is not parse_root:
+                                description = _extract_description_from(content_el)
+                            # Drop "Included Bonus Soundtracks" and similar repack-extra lists
+                            # (they belong in features / selective download, not story text)
+                            if description:
+                                description = _strip_bonus_soundtrack_section(description)
+
+                            # 4. Screenshots — ONLY under h3 "Screenshots...", never torrent-stats / mirror images
+                            def _add_shot(candidate):
+                                cleaned = _normalize_shot_url(candidate)
+                                if _is_junk_shot(cleaned):
+                                    return
+                                if cleaned == cover_image or cleaned in screenshots:
+                                    return
+                                screenshots.append(cleaned)
+
+                            shot_header = None
+                            for el in parse_root.find_all(["h3", "h4"]):
+                                if "screenshot" in el.get_text(strip=True).lower():
+                                    shot_header = el
                                     break
-                            if repack_header:
-                                curr = repack_header
-                                for _ in range(10):
+                            if shot_header:
+                                curr = shot_header
+                                for _ in range(40):
                                     curr = curr.next_sibling
                                     if not curr:
                                         break
                                     if isinstance(curr, str):
                                         continue
-                                    if curr.name == 'ul':
-                                        repack_features_list = []
-                                        for li in curr.find_all('li'):
-                                            parts = []
-                                            for c in li.contents:
-                                                if getattr(c, 'name', None) in ['li', 'ul', 'ol']:
-                                                    continue
-                                                if hasattr(c, 'get_text'):
-                                                    parts.append(c.get_text())
-                                                else:
-                                                    parts.append(str(c))
-                                            item_text = "".join(parts).strip()
-                                            if item_text:
-                                                repack_features_list.append(item_text)
+                                    name = getattr(curr, "name", None)
+                                    if name in ("h3", "h4"):
                                         break
-                                    if curr.name == 'p' and (curr.find('br') or len(curr.get_text()) > 100):
-                                        repack_features_list = [line.strip() for line in curr.get_text().split('\n') if line.strip()]
-                                        break
-
-                            # 3. Extract Game Description paragraphs
-                            game_desc_paragraphs = []
-                            desc_header = None
-                            for el in content_el.find_all(['h3', 'h4', 'p', 'strong', 'div']):
-                                el_text = el.get_text().lower()
-                                if "game description" in el_text:
-                                    desc_header = el
-                                    break
-                            if desc_header:
-                                curr = desc_header
-                                for _ in range(10):
-                                    curr = curr.next_sibling
-                                    if not curr:
-                                        break
-                                    if isinstance(curr, str):
+                                    if not name:
                                         continue
-                                    if curr.name in ['h3', 'h4'] or "repack features" in curr.get_text().lower() or "screenshots" in curr.get_text().lower():
-                                        break
-                                    if curr.name == 'p':
-                                        p_text = curr.get_text(strip=True)
-                                        if p_text:
-                                            game_desc_paragraphs.append(p_text)
+                                    # Trailers often sit inside the screenshots <p> as <video>
+                                    for video in curr.find_all("video") if hasattr(curr, "find_all") else []:
+                                        source = video.find("source")
+                                        video_src = source.get("src", "") if source else video.get("src", "")
+                                        video_src = _prefer_video_url(video_src)
+                                        if video_src and video_src not in videos:
+                                            videos.append(video_src)
+                                    for a in curr.find_all("a") if hasattr(curr, "find_all") else []:
+                                        href = a.get("href", "")
+                                        # Don't treat riotpixels gallery page links as shots
+                                        if href and not re.search(r"/screenshots/?(\?|$)", href, re.I):
+                                            _add_shot(href)
+                                        img = a.find("img")
+                                        if img:
+                                            _add_shot(img.get("data-src") or img.get("src") or "")
+                                    for img in curr.find_all("img") if hasattr(curr, "find_all") else []:
+                                        _add_shot(
+                                            img.get("data-src")
+                                            or img.get("data-lazy-src")
+                                            or img.get("src")
+                                            or ""
+                                        )
+                                    if name == "a":
+                                        _add_shot(curr.get("href", ""))
+                                    if name == "img":
+                                        _add_shot(curr.get("src") or curr.get("data-src") or "")
+                                    if name == "video":
+                                        source = curr.find("source")
+                                        video_src = source.get("src", "") if source else curr.get("src", "")
+                                        video_src = _prefer_video_url(video_src)
+                                        if video_src and video_src not in videos:
+                                            videos.append(video_src)
+                            else:
+                                # fallback: only riotpixels embeds
+                                for img in parse_root.find_all("img"):
+                                    src = img.get("data-src") or img.get("src") or ""
+                                    if "riotpixels" in src.lower():
+                                        _add_shot(src)
 
-                            # Fallback if no specific description header
-                            if not game_desc_paragraphs:
-                                paragraphs = []
-                                for p in content_el.find_all('p', recursive=True):
-                                    p_copy = BeautifulSoup(str(p), 'html.parser')
-                                    for br in p_copy.find_all('br'):
-                                        br.replace_with('\n')
-                                    text = p_copy.get_text()
-                                    
-                                    cleaned_lines = []
-                                    for line in text.split('\n'):
-                                        line = line.strip()
-                                        if not line:
-                                            continue
-                                        line_lower = line.lower()
-                                        if line_lower.endswith('.rar') or line_lower.endswith('.bin') or line_lower.endswith('.exe') or 'fitgirl-repacks' in line_lower:
-                                            continue
-                                        if any(token in line_lower for token in [
-                                            "genres/tags:", "companies:", "languages:", "original size:", "repack size:", 
-                                            "screenshots:", "discussion and", "download mirrors", "filehoster:", "repack features",
-                                            "backwards compatibility", "game description", "if you experience", "repack notes",
-                                            "show direct links", "magnet", "1337x", "rutor", "tapochek.net", "compatibl",
-                                            "requires windows", "game updates", "unpack to", "run patch.bat", "patch", "update",
-                                            "elamigos", "rune", "flt", "tenoke", "soundtrack"
-                                        ]):
-                                            continue
-                                        cleaned_lines.append(line)
-                                        
-                                    if cleaned_lines:
-                                        p_text = " ".join(cleaned_lines)
-                                        if len(p_text) > 40:
-                                            paragraphs.append(p_text)
-                                            if len(paragraphs) == 3:
-                                                break
-                                game_desc_paragraphs = paragraphs
-                                
-                            description = "\n\n".join(game_desc_paragraphs)
-                            
-                            for a in content_el.find_all('a'):
-                                href = a.get('href', '')
-                                img = a.find('img')
-                                img_src = img.get('src', '') if img else ''
-                                for candidate in [href, img_src]:
-                                    if not candidate:
-                                        continue
-                                    cand_lower = candidate.lower()
-                                    if 'riotpixels.net/data/' in cand_lower:
-                                        candidate = re.sub(r'\.(?:240p|400p)\.(?:jpg|jpeg|png)$', '', candidate, flags=re.IGNORECASE)
-                                        cand_lower = candidate.lower()
-                                    if cand_lower.endswith(('.jpg', '.jpeg', '.png', '.webp', '.gif')) or ('riotpixels.net/data/' in cand_lower and '.jpg' in cand_lower):
-                                        if candidate not in screenshots and candidate != cover_image:
-                                            screenshots.append(candidate)
-                            screenshots = screenshots[:10]
-                            
-                            # Extract gameplay direct video tag trailers from FitGirl page
-                            for video in soup.find_all('video'):
-                                source = video.find('source')
-                                video_src = source.get('src', '') if source else video.get('src', '')
-                                if video_src:
-                                    if video_src.startswith('//'):
-                                        video_src = 'https:' + video_src
-                                    if video_src not in videos:
-                                        videos.append(video_src)
+                            screenshots = screenshots[:12]
+
+                            # 5. Videos / trailers (direct <video> + YouTube only near content, not sidebar widgets)
+                            for video in parse_root.find_all("video"):
+                                source = video.find("source")
+                                video_src = source.get("src", "") if source else video.get("src", "")
+                                video_src = _prefer_video_url(video_src)
+                                if video_src and video_src not in videos:
+                                    videos.append(video_src)
+
+                            # YouTube embeds inside article only (skip sidebar OST widgets)
+                            for iframe in parse_root.find_all("iframe"):
+                                # Skip widgets outside article content
+                                if iframe.find_parent(class_=re.compile(r"widget|sidebar|footer", re.I)):
+                                    continue
+                                src = iframe.get("src") or iframe.get("data-src") or ""
+                                if "youtube" in src or "youtu.be" in src:
+                                    if src.startswith("//"):
+                                        src = "https:" + src
+                                    # enable autoplay-friendly embed params later on FE
+                                    if src not in videos:
+                                        videos.append(src)
+
+                            # Trailer-first order: direct steam/mp4 first, then youtube
+                            def _video_rank(v):
+                                vl = (v or "").lower()
+                                if "microtrailer" in vl:
+                                    return 2
+                                if any(x in vl for x in (".mp4", ".webm", "steamstatic", "store_trailers")):
+                                    return 0
+                                if "youtube" in vl or "youtu.be" in vl:
+                                    return 1
+                                return 3
+                            videos = sorted(list(dict.fromkeys(videos)), key=_video_rank)
+
                         
                         developer_val = ""
                         publisher_val = ""
@@ -4151,10 +4755,12 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         }).encode())
                         return
                     else:
+                        status = getattr(response, "status_code", None) if response is not None else None
+                        err = f"Failed to fetch FitGirl page after retries. HTTP Status: {status}. Last error: {scrape_err}"
                         self.send_response(500)
                         self.send_header("Content-Type", "application/json")
                         self.end_headers()
-                        self.wfile.write(json.dumps({"success": False, "error": f"Failed to fetch FitGirl page. HTTP Status: {response.status_code}"}).encode())
+                        self.wfile.write(json.dumps({"success": False, "error": err}).encode())
                         return
 
                 # drive.online-fix.me direct folder URL
@@ -4478,7 +5084,43 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         'X-Requested-With': 'JSONHttpRequest',
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                     }
-                    resp = cf_requests.get(url, headers=headers, impersonate="chrome", timeout=15)
+                    # Prefer DoH-resolved IP for paste host (common DNS blocks)
+                    # curl_cffi 0.15: curl_options belongs on Session, not request()/get() kwargs
+                    paste_host = urllib.parse.urlparse(url).hostname or "paste.fitgirl-repacks.site"
+                    _doh_cache.pop(paste_host, None)
+                    paste_ip = resolve_doh(paste_host)
+                    if paste_ip:
+                        add_log(f"PrivateBin DNS via DoH: {paste_host} -> {paste_ip}")
+
+                    last_err = None
+                    resp = None
+                    for attempt in range(3):
+                        try:
+                            session_kwargs = {}
+                            if paste_ip:
+                                session_kwargs["curl_options"] = {
+                                    CurlOpt.RESOLVE: [f"{paste_host}:443:{paste_ip}", f"{paste_host}:80:{paste_ip}"]
+                                }
+                            with cf_requests.Session(**session_kwargs) as paste_sess:
+                                resp = paste_sess.get(
+                                    url,
+                                    headers=headers,
+                                    impersonate="chrome120",
+                                    timeout=45,
+                                )
+                            break
+                        except Exception as pe:
+                            last_err = pe
+                            add_log(f"PrivateBin fetch attempt {attempt + 1}/3 failed: {pe}")
+                            _doh_cache.pop(paste_host, None)
+                            paste_ip = resolve_doh(paste_host)
+                            time.sleep(0.6 * (attempt + 1))
+                    if resp is None:
+                        raise Exception(
+                            f"Cannot reach PrivateBin mirror ({paste_host}). "
+                            f"DNS/network blocked. Try another hoster mirror or enable WARP/VPN. "
+                            f"Details: {last_err}"
+                        )
                     if resp.status_code != 200:
                         raise Exception(f"PrivateBin server returned status code {resp.status_code}")
                     
@@ -4562,9 +5204,13 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps({"success": False, "error": "At least one file must be selected."}).encode())
                     return
                 
+                # Path: base / Game Title / CloudProvider
+                # Parts from different clouds stay in separate folders.
                 provider_sub = safe_folder_name(active_mirror)
                 if provider_sub:
-                    computed_dir = os.path.join(base_download_dir, safe_folder_name(game_title), provider_sub)
+                    computed_dir = os.path.join(
+                        base_download_dir, safe_folder_name(game_title), provider_sub
+                    )
                 else:
                     computed_dir = os.path.join(base_download_dir, safe_folder_name(game_title))
                 
@@ -4589,7 +5235,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 save_session_state()
                 
                 add_log(f"Configured download for: {game_title}")
-                add_log(f"Save directory: {state['download_dir']}")
+                add_log(f"Save directory: {state['download_dir']}  (Game / {provider_sub or 'default'})")
                 add_log(f"Selected {len(files)} files.")
                 
                 self.send_response(200)
@@ -4673,16 +5319,35 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         base_download_dir = state["default_download_dir"]
                     
                     state["active_mirror"] = new_mirror
-                    new_download_dir = os.path.abspath(os.path.join(base_download_dir, safe_folder_name(game_title), safe_folder_name(new_mirror)))
+                    # Separate folder per cloud: base/Game/Provider
+                    provider_sub = safe_folder_name(new_mirror)
+                    new_download_dir = os.path.abspath(
+                        os.path.join(
+                            base_download_dir,
+                            safe_folder_name(game_title),
+                            provider_sub if provider_sub else "",
+                        )
+                    )
                     state["download_dir"] = new_download_dir
                     
-                    if delete_old and old_download_dir and os.path.exists(old_download_dir) and old_download_dir != new_download_dir:
+                    # Optionally delete ONLY the previous provider's folder (never the whole game)
+                    if (
+                        delete_old
+                        and old_download_dir
+                        and os.path.exists(old_download_dir)
+                        and old_download_dir != new_download_dir
+                    ):
                         import shutil
                         try:
-                            shutil.rmtree(old_download_dir)
-                            add_log(f"Deleted old provider directory: {old_download_dir}")
+                            # Safety: only delete if it looks like a provider subfolder under the game
+                            game_root = os.path.abspath(
+                                os.path.join(base_download_dir, safe_folder_name(game_title))
+                            )
+                            if os.path.dirname(old_download_dir) == game_root:
+                                shutil.rmtree(old_download_dir)
+                                add_log(f"Deleted previous provider folder: {old_download_dir}")
                         except Exception as delete_err:
-                            add_log(f"Warning: Failed to delete old directory: {str(delete_err)}")
+                            add_log(f"Warning: Failed to delete old provider folder: {delete_err}")
                             
                     new_files_map = {f["filename"]: f for f in files}
                     updated_files = []
@@ -4691,9 +5356,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         if fn in new_files_map:
                             new_info = new_files_map[fn]
                             f["url"] = new_info["url"]
+                            # Fresh progress for this cloud folder; disk scan restores local partials
                             f["status"] = "waiting"
                             f["downloaded"] = 0
                             f["progress"] = 0
+                            f["error"] = ""
                             if new_info.get("size", 0) > 0:
                                 f["size"] = new_info["size"]
                         updated_files.append(f)
@@ -4701,7 +5368,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     
                     os.makedirs(new_download_dir, exist_ok=True)
                     state["should_stop"] = False
-                    
+                
                 initialize_queue_on_disk()
                 
                 if was_running:
@@ -4712,7 +5379,7 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         for _ in range(workers_to_start):
                             threading.Thread(target=download_worker, daemon=True).start()
                             
-                add_log(f"Successfully switched provider to: {new_mirror}")
+                add_log(f"Switched provider → {new_mirror}. Folder: {state['download_dir']}")
                 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

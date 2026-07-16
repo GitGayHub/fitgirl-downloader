@@ -4,18 +4,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FitGirl Repack Automated Downloader</title>
-    <link rel="stylesheet" href="style.css?v=2.1">
+    <link rel="stylesheet" href="style.css?v=4.0">
+    <link rel="stylesheet" href="details-fix.css?v=4.0">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="app.js?v=2.1" defer></script>
+    <script src="app.js?v=4.0" defer></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div id="haze-background">
-        <img id="haze-bg-img-1" src="" alt="" style="opacity: 0;">
-        <img id="haze-bg-img-2" src="" alt="" style="opacity: 0;">
-        <div class="haze-blob blob-1"></div>
-        <div class="haze-blob blob-2"></div>
-        <div class="haze-blob blob-3"></div>
+    <!-- Harmonoid NowPlayingBackground: AnimatedMeshGradient + palette crossfade -->
+    <!-- Harmonoid NowPlayingBackground = mesh_gradient AnimatedMeshGradient (WebGL shader 1:1) -->
+    <div id="haze-background" class="haze-idle">
+        <img id="haze-src-img" src="" alt="" crossorigin="anonymous" style="display:none;">
+        <div class="haze-mesh-stack" id="haze-mesh-stack">
+            <!-- Dual layers for AnimatedSwitcher-style crossfade -->
+            <canvas class="haze-mesh-layer is-active" id="haze-mesh-a" aria-hidden="true"></canvas>
+            <canvas class="haze-mesh-layer" id="haze-mesh-b" aria-hidden="true"></canvas>
+        </div>
+        <div class="haze-vignette" id="haze-vignette"></div>
+        <div class="haze-noise" id="haze-noise"></div>
     </div>
     <div class="glass-bg-glow"></div>
     <div class="app-container">
@@ -96,50 +102,67 @@
             <div id="setup-view" class="view-container">
                 <!-- CATALOG CONTAINER -->
                 <div id="catalog-container" class="subview-container">
-                    <header class="header" style="display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap;">
-                        <div class="title-section">
-                            <div style="display: flex; align-items: center; gap: 8px;">
-                                <span class="badge">BROWSE</span>
-                                <a id="btn-catalog-go-to-site" target="_blank" href="https://fitgirl-repacks.site/" class="btn btn-secondary btn-sm" style="padding: 2px 8px; border-radius: 6px; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-color: rgba(255,255,255,0.15); display: flex; align-items: center; gap: 4px; text-decoration: none; color: var(--text-white); background: rgba(255,255,255,0.03);">
-                                    <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor">
-                                        <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                                    </svg>
-                                    <span id="catalog-go-to-site-text">Go to FitGirl</span>
-                                </a>
-                            </div>
-                            <h2 id="catalog-title" style="cursor: pointer; transition: opacity 0.2s;">Game Catalog</h2>
+                    <header class="header catalog-floating-header">
+                        <div class="title-section" style="display:none;" aria-hidden="true">
+                            <span class="badge">BROWSE</span>
+                            <h2 id="catalog-title">Game Catalog</h2>
                             <p class="subtitle" id="catalog-subtitle">Browse popular repacks or search for games</p>
                         </div>
-                        <div class="header-right-actions" style="display: flex; align-items: center; gap: 12px;">
-                            <div class="site-toggle-group" id="site-toggle-trigger">
+                        <div class="catalog-toolbar-left apple-capsule-bar">
+                            <a id="btn-catalog-go-to-site" target="_blank" href="https://fitgirl-repacks.site/" class="apple-pill-btn apple-pill-primary" title="Open site">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                                    <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                                </svg>
+                                <span id="catalog-go-to-site-text">Site</span>
+                            </a>
+                        </div>
+                        <div class="header-right-actions catalog-toolbar-right apple-capsule-bar">
+                            <div class="site-toggle-group apple-segmented" id="site-toggle-trigger">
                                 <div class="site-toggle-slider" id="site-toggle-slider"></div>
                                 <div class="site-toggle-labels-wrapper">
                                     <span class="site-toggle-label fitgirl active" id="label-site-fitgirl">FitGirl</span>
                                     <span class="site-toggle-label onlinefix" id="label-site-onlinefix">Online-Fix</span>
                                 </div>
                             </div>
-                            <div class="search-wrapper">
+                            <button type="button" id="btn-open-search" class="apple-icon-btn" title="Search">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                </svg>
+                            </button>
+                            <div class="search-wrapper" style="display:none;" aria-hidden="true">
                                 <div class="search-box">
-                                    <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <circle cx="11" cy="11" r="8"></circle>
-                                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                                    </svg>
                                     <input type="text" id="search-input" placeholder="Search repacks...">
                                 </div>
                             </div>
-                            <button id="btn-toggle-manual-input" class="btn btn-secondary btn-icon-only" style="padding: 10px; border-radius: 12px; display: flex; align-items: center; justify-content: center;" title="Add Link / Paste URL Manually">
-                                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                            <button id="btn-toggle-manual-input" class="apple-icon-btn" title="Add Link">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
                                     <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                                 </svg>
                             </button>
-                            <button id="btn-settings-gear" class="btn btn-secondary btn-icon-only" style="padding: 10px; border-radius: 12px; display: flex; align-items: center; justify-content: center;" title="Settings">
-                                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+                            <button id="btn-settings-gear" class="apple-icon-btn" title="Settings">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                                    <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
                                 </svg>
                             </button>
                         </div>
                     </header>
 
+                    <div id="search-overlay" class="search-overlay" aria-hidden="true">
+                        <div class="search-overlay-backdrop" id="search-overlay-backdrop"></div>
+                        <div class="search-liquid-panel" role="dialog" aria-label="Search repacks">
+                            <div class="search-liquid-inner">
+                                <svg class="search-liquid-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                </svg>
+                                <input type="text" id="search-overlay-input" class="search-liquid-input" placeholder="Search repacks..." autocomplete="off" spellcheck="false">
+                                <button type="button" id="btn-search-overlay-clear" class="search-liquid-clear" title="Clear" style="display:none;">вњ•</button>
+                                <button type="button" id="btn-search-overlay-go" class="search-liquid-go">Search</button>
+                            </div>
+                            <p class="search-liquid-hint">Enter вЂ” search В· Esc вЂ” close</p>
+                        </div>
+                    </div>
 
 
                     <!-- Step 1: Input URL moved to Top of Catalog -->
@@ -190,45 +213,47 @@
                 </div>
 
                 <!-- GAME DETAILS CONTAINER -->
-                <div id="game-details-container" class="subview-container hidden-view" style="padding-bottom: 90px; overflow-y: auto; height: 100%;">
+                <div id="game-details-container" class="subview-container hidden-view">
                     
                     <!-- Sticky Details Top Header -->
                     <div class="details-sticky-header">
-                        <button id="btn-back-to-catalog-top" class="btn btn-minimal" style="display: flex; align-items: center; gap: 6px; border-radius: 8px; padding: 6px 14px; font-size: 0.8rem;">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                                <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
-                            </svg>
-                            <span>Back to Catalog</span>
-                        </button>
-                        <a id="btn-open-browser-top" class="btn btn-minimal" target="_blank" style="display: none; text-decoration: none; align-items: center; gap: 6px; border-radius: 8px; padding: 6px 14px; font-size: 0.8rem;">
-                            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
-                                <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                            </svg>
-                            <span>Open in Browser</span>
-                        </a>
+                        <div class="details-header-left">
+                            <button id="btn-back-to-catalog-top" class="apple-icon-btn details-icon-btn" type="button" title="Back to catalog">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                                    <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                                </svg>
+                            </button>
+                            <div class="details-title-block">
+                                <h2 id="details-game-title" class="details-page-title">Game Title</h2>
+                                <p id="details-game-subtitle" class="details-page-subtitle"></p>
+                            </div>
+                        </div>
+                        <div class="details-header-right apple-capsule-bar">
+                            <!-- version badge intentionally omitted (e.g. v9.7 is meaningless in header) -->
+                            <span id="details-version-badge" class="details-version-pill" style="display: none !important;" hidden></span>
+                            <a id="btn-open-browser-top" class="apple-icon-btn details-icon-btn" target="_blank" style="display: none; text-decoration: none;" title="Open on site">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                                    <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                                </svg>
+                            </a>
+                        </div>
                     </div>
 
                     <!-- Hidden Hero Banner Section (kept for JS backward compatibility) -->
                     <div id="details-hero-banner" style="display: none;">
                         <button id="btn-back-to-catalog" style="display: none;"></button>
                         <a id="btn-open-browser" style="display: none;"></a>
-                        <span id="details-version-badge" style="display: none;"></span>
-                        <h2 id="details-game-title" style="display: none;"></h2>
-                        <p id="details-game-subtitle" style="display: none;"></p>
                     </div>
 
-                    <!-- Main Columns Grid Layout -->
-                    <!-- Main Columns Grid Layout -->
+                    <!-- Hero media row: cover + preview -->
                     <div class="details-columns-layout">
                         
-                        <!-- Left Column: Game Cover & Metadata Info & Collapsible Description -->
+                        <!-- Left: cover + metadata -->
                         <div class="details-left-column">
-                            
-                            <!-- Game Vertical Cover Card -->
-                            <div class="details-cover-card" id="details-cover-card" style="margin-bottom: 15px; display: none;">
-                                <img id="details-cover-image" src="" alt="Game Cover" style="width: 100%; aspect-ratio: 3/4; object-fit: cover; background: #06060c; border-radius: 16px; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
-                                <div id="details-cover-placeholder" class="card-cover-placeholder" style="width: 100%; aspect-ratio: 3/4; border-radius: 16px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #1b1c2e, #0c0d16); border: 1px solid rgba(255,255,255,0.08);">
-                                    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.45; color: var(--text-muted);">
+                            <div class="details-cover-card" id="details-cover-card" style="display: none;">
+                                <img id="details-cover-image" class="details-cover-img" src="" alt="Game Cover">
+                                <div id="details-cover-placeholder" class="details-cover-placeholder">
+                                    <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                                         <rect x="2" y="6" width="20" height="12" rx="3"></rect>
                                         <path d="M6 12h4M8 10v4"></path>
                                         <circle cx="15" cy="11" r="1" fill="currentColor"></circle>
@@ -237,86 +262,76 @@
                                 </div>
                             </div>
                             
-                            <!-- Database Metadata Box -->
-                            <div class="sidebar-section-card" style="width: 100%;">
+                            <div class="sidebar-section-card details-meta-card">
                                 <div class="metadata-table">
                                     <div class="metadata-table-row" id="row-fg-genres" style="display: none;">
-                                        <span class="table-label">Genres/Tags</span>
-                                        <span class="table-value" id="details-fg-genres" style="text-align: right;">--</span>
+                                        <span class="table-label">Genres</span>
+                                        <span class="table-value" id="details-fg-genres">--</span>
                                     </div>
                                     <div class="metadata-table-row" id="row-fg-company" style="display: none;">
                                         <span class="table-label">Company</span>
-                                        <span class="table-value" id="details-fg-company" style="text-align: right;">--</span>
+                                        <span class="table-value" id="details-fg-company">--</span>
                                     </div>
                                     <div class="metadata-table-row" id="row-fg-languages" style="display: none;">
                                         <span class="table-label">Languages</span>
-                                        <span class="table-value" id="details-fg-languages" style="text-align: right;">--</span>
+                                        <span class="table-value" id="details-fg-languages">--</span>
                                     </div>
                                     <div class="metadata-table-row" id="row-fg-orig-size" style="display: none;">
-                                        <span class="table-label">Original Size</span>
-                                        <span class="table-value" id="details-fg-orig-size" style="text-align: right;">--</span>
+                                        <span class="table-label">Original</span>
+                                        <span class="table-value" id="details-fg-orig-size">--</span>
                                     </div>
                                     <div class="metadata-table-row" id="row-fg-repack-size" style="display: none;">
-                                        <span class="table-label">Repack Size</span>
-                                        <span class="table-value highlight-pink" id="details-fg-repack-size" style="text-align: right;">--</span>
+                                        <span class="table-label">Repack</span>
+                                        <span class="table-value highlight-pink" id="details-fg-repack-size">--</span>
                                     </div>
                                 </div>
                             </div>
 
-                            <!-- Description collapsible section moved to right column -->
-                            
-                            <!-- Metacritic Card (kept hidden to not break JS selector references) -->
                             <div class="metacritic-card-box" id="details-metacritic-card" style="display: none !important;">
                                 <div class="metacritic-score-badge" id="details-metacritic-score">--</div>
                             </div>
                         </div>
                         
-                        <!-- Right Column: Screenshots, Features, and Files Checklist -->
+                        <!-- Right: media full width, then description immediately under thumbs -->
                         <div class="details-right-column">
-                            
-                            <!-- Screenshots / Gameplay Preview Gallery (Moved to top of right column) -->
-                             <div class="details-section-card" id="game-screenshots-section" style="display: none;">
-                                 <h3 class="section-title">Gameplay Preview</h3>
-                                 <div class="screenshots-gallery-wrapper" style="margin-top: 15px;">
+                             <div class="details-section-card details-media-card" id="game-screenshots-section" style="display: none;">
+                                 <!-- Preview title removed — media uses full card width -->
+                                 <div class="screenshots-gallery-wrapper">
                                      <div class="screenshot-main-showcase" id="screenshot-main-showcase-container">
-                                         <!-- Main Showcase Image -->
-                                         <img id="screenshot-main-img" src="" alt="Gameplay Preview">
-                                         <!-- Main Showcase Video player for direct mp4/webm videos -->
-                                         <video id="screenshot-main-direct-video" autoplay muted loop playsinline style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0; object-fit: cover;"></video>
-                                         <!-- Main Showcase Video Iframe for YouTube (hidden by default) -->
-                                         <iframe id="screenshot-main-video" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="display: none; width: 100%; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); height: 100%; position: absolute; top: 0; left: 0;"></iframe >
+                                         <img id="screenshot-main-img" class="screenshot-main-media" src="" alt="">
+                                         <video id="screenshot-main-direct-video" class="screenshot-main-media screenshot-main-video" autoplay muted loop playsinline></video>
+                                         <iframe id="screenshot-main-video" class="screenshot-main-media screenshot-main-iframe" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
                                      </div>
                                      <div id="game-screenshots-container" class="screenshots-grid"></div>
                                  </div>
                              </div>
 
-                             <!-- Game Description Collapsible Card (Moved under gameplay preview) -->
-                             <div class="details-section-card collapsible-section" id="details-desc-section" style="display: none; width: 100%; margin-top: 10px;">
-                                 <div class="collapsible-header" id="details-desc-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                                     <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Game Description</h3>
-                                     <button id="btn-translate-desc" class="btn-lang-toggle" style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); font-size: 1.1rem; display: none; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s ease; z-index: 10;" title="Switch Language">
-                                         <span>🇬🇧</span>
-                                     </button>
+                             <!-- Description right under screenshots (not after tall left meta column) -->
+                             <div class="details-below-fold">
+                                 <div class="details-section-card collapsible-section" id="details-desc-section" style="display: none;">
+                                     <div class="collapsible-header" id="details-desc-header">
+                                         <h3 class="section-title collapsible-title">Game Description</h3>
+                                         <button id="btn-translate-desc" class="btn-lang-toggle" title="Switch Language">
+                                             <span>EN</span>
+                                         </button>
+                                     </div>
+                                     <div class="collapsible-content" id="details-desc-content">
+                                         <div id="game-description" class="section-description-text"></div>
+                                     </div>
                                  </div>
-                                 <div class="collapsible-content" id="details-desc-content">
-                                     <div id="game-description" class="section-description-text" style="font-size: 0.85rem; line-height: 1.5; color: var(--text-white); margin-top: 10px;"></div>
-                                 </div>
-                             </div>
 
-                             <!-- Repack Features Collapsible Card (Moved under game description) -->
-                             <div class="details-section-card collapsible-section" id="details-features-section" style="display: none; width: 100%; margin-top: 10px;">
-                                 <div class="collapsible-header" id="details-features-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-                                     <h3 class="section-title" style="margin: 0; font-size: 0.95rem; font-weight: 700;">+ Repack Features</h3>
-                                     <button id="btn-translate-features" class="btn-lang-toggle" style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); font-size: 1.1rem; display: none; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s ease; z-index: 10;" title="Switch Language">
-                                         <span>🇷🇺</span>
-                                     </button>
-                                 </div>
-                                 <div class="collapsible-content" id="details-features-content">
-                                     <ul id="repack-features-list" style="font-size: 0.85rem; line-height: 1.6; color: var(--text-white); margin-top: 10px; padding-left: 20px; list-style-type: disc;"></ul>
+                                 <div class="details-section-card collapsible-section" id="details-features-section" style="display: none;">
+                                     <div class="collapsible-header" id="details-features-header">
+                                         <h3 class="section-title collapsible-title">Repack Features</h3>
+                                         <button id="btn-translate-features" class="btn-lang-toggle" title="Switch Language">
+                                             <span>RU</span>
+                                         </button>
+                                     </div>
+                                     <div class="collapsible-content" id="details-features-content">
+                                         <ul id="repack-features-list" class="features-list"></ul>
+                                     </div>
                                  </div>
                              </div>
-                            
-                            <!-- Files checklist has been moved into the modal config wizard step 2 -->
                         </div>
 
                     </div>
@@ -345,16 +360,7 @@
                          <button id="btn-confirm-queue"></button>
                     </div>
 
-                    <!-- Details sticky bottom combined pill -->
-                    <div class="details-bottom-bar" id="details-bottom-bar" style="display: none;">
-                        <div class="details-bottom-size" id="details-bottom-size">--</div>
-                        <button id="btn-details-download-trigger" class="btn btn-details-download">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
-                            </svg>
-                            <span>Download</span>
-                        </button>
-                    </div>
+                    <!-- Download dock is teleported to <body> so position:fixed sticks to the viewport -->
                 </div>
             </div>
 
@@ -364,19 +370,18 @@
             <!-- DOWNLOAD VIEW -->
             <div id="download-view" class="view-container" style="display: none; flex-direction: column;">
                 <!-- Dashboard Header -->
-                <header class="download-dashboard-header" style="justify-content: flex-end;">
-                    <div class="header-right-actions" style="display: flex; align-items: center; gap: 12px; width: 100%; justify-content: flex-end;">
-                        <a id="btn-go-to-site" target="_blank" href="https://fitgirl-repacks.site/" class="btn btn-minimal" style="padding: 10px 18px; border-radius: 12px; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer; text-decoration: none;">
+                <header class="download-dashboard-header">
+                    <div class="header-right-actions dl-header-actions apple-capsule-bar">
+                        <a id="btn-go-to-site" target="_blank" href="https://fitgirl-repacks.site/" class="apple-icon-btn" title="Open site" style="text-decoration:none;">
                             <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                                 <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
                             </svg>
-                            <span id="go-to-site-text">Go to FitGirl</span>
+                            <span id="go-to-site-text" class="sr-only">Go to site</span>
                         </a>
-                        <button id="btn-back-to-catalog-download" class="btn btn-minimal" style="padding: 10px 18px; border-radius: 12px; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer;">
+                        <button id="btn-back-to-catalog-download" class="apple-icon-btn" type="button" title="Back to catalog">
                             <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
                             </svg>
-                            <span>Back to Catalog</span>
                         </button>
                     </div>
                 </header>
@@ -553,7 +558,7 @@
                     <div class="form-checkbox" style="display: flex; align-items: center; gap: 8px; margin-top: 5px;">
                         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text-white); font-size: 0.85rem;">
                             <input type="checkbox" id="chk-hide-gdrive" style="width: auto; height: auto; margin: 0; cursor: pointer;">
-                            <span>Hide Google Drive option (Скрыть Google Drive)</span>
+                            <span>Hide Google Drive option (РЎРєСЂС‹С‚СЊ Google Drive)</span>
                         </label>
                     </div>
                     
@@ -631,7 +636,7 @@
 
     <!-- iOS-style Mirror & Config Selector Modal (Step 1 & Step 2) -->
     <div class="modal-overlay" id="download-config-modal" style="display: none;">
-        <div class="modal-card" style="position: relative; max-width: 620px; width: 90%; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 25px;">
+        <div class="modal-card download-config-card" id="download-config-card" style="position: relative; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; padding: 25px;">
             <button class="modal-close-btn" id="btn-close-download-modal" style="position: absolute; top: 18px; right: 18px; width: 32px; height: 32px; border-radius: 50%; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: rgba(255,255,255,0.75); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s ease; z-index: 100;" title="Close">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -680,10 +685,10 @@
                     
                     <div class="checklist-controls" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 10px; margin-bottom: 12px;">
                         <div class="sorting-selector" style="display: flex; align-items: center; gap: 6px;">
-                            <span class="sorting-label" style="font-size: 0.75rem; color: var(--text-muted);">Сортировка:</span>
+                            <span class="sorting-label" style="font-size: 0.75rem; color: var(--text-muted);">РЎРѕСЂС‚РёСЂРѕРІРєР°:</span>
                             <select id="sorting-select" style="font-size: 0.75rem; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: var(--text-white); cursor: pointer;">
-                                <option value="sequential" selected>По порядку (1-N)</option>
-                                <option value="original">Как на сайте</option>
+                                <option value="sequential" selected>РџРѕ РїРѕСЂСЏРґРєСѓ (1-N)</option>
+                                <option value="original">РљР°Рє РЅР° СЃР°Р№С‚Рµ</option>
                             </select>
                         </div>
                         <div class="checklist-actions" style="display: flex; gap: 4px; flex-wrap: wrap;">
@@ -694,32 +699,32 @@
                         </div>
                     </div>
                     
-                    <div class="files-checklist-wrapper" style="position: relative; overflow: hidden; display: flex; flex-direction: column; max-height: 320px;">
+                    <div class="files-checklist-wrapper files-checklist-wide" style="position: relative; overflow: hidden; display: flex; flex-direction: column;">
                         <!-- Spinner overlay while mirror links fetch -->
                         <div class="checklist-loading-overlay" id="checklist-loading-spinner" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10,10,20,0.85); z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px;">
                             <div class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></div>
                             <p style="font-size: 0.8rem; margin-top: 8px; color: var(--text-muted);">Decrypting mirror paste...</p>
                         </div>
 
-                        <div class="files-checklist-container" style="overflow-y: auto; padding-right: 4px; max-height: 310px;">
+                        <div class="files-checklist-container" style="overflow-y: auto; padding-right: 4px;">
                             <!-- Collapsible Parts lists -->
                             <details class="file-group-collapsible file-group-box" id="file-group-main-box" open>
                                 <summary class="file-group-summary" style="font-size: 0.8rem; padding: 6px 10px;">
-                                    <span class="summary-toggle-icon">⏵</span>
+                                    <span class="summary-toggle-icon">вЏµ</span>
                                     <span class="group-title-label">Main Game Parts & Setup</span>
                                 </summary>
                                 <div class="file-checkbox-list" id="files-list-main" style="padding: 8px 10px;"></div>
                             </details>
                             <details class="file-group-collapsible file-group-box" id="file-group-lang-box" style="margin-top: 8px;">
                                 <summary class="file-group-summary" style="font-size: 0.8rem; padding: 6px 10px;">
-                                    <span class="summary-toggle-icon">⏵</span>
+                                    <span class="summary-toggle-icon">вЏµ</span>
                                     <span class="group-title-label">Optional Language Packs</span>
                                 </summary>
                                 <div class="file-checkbox-list" id="files-list-lang" style="padding: 8px 10px;"></div>
                             </details>
                             <details class="file-group-collapsible file-group-box" id="file-group-other-box" style="margin-top: 8px;">
                                 <summary class="file-group-summary" style="font-size: 0.8rem; padding: 6px 10px;">
-                                    <span class="summary-toggle-icon">⏵</span>
+                                    <span class="summary-toggle-icon">вЏµ</span>
                                     <span class="group-title-label">Optional Extras</span>
                                 </summary>
                                 <div class="file-checkbox-list" id="files-list-other" style="padding: 8px 10px;"></div>
@@ -746,27 +751,41 @@
             </div>
         </div>
     </div>
-    <!-- Floating Download Mini-Badge (visible during browsing when download is active) -->
-    <div id="floating-download-badge" style="display: none;" class="floating-download-bar">
-        <div class="floating-bar-main-click" id="floating-bar-click-area">
+    <!-- Details Download dock: MUST live on body (outside transformed/overflow ancestors) -->
+    <div class="details-bottom-bar" id="details-bottom-bar" style="display: none;" aria-hidden="true">
+        <div class="details-bottom-size" id="details-bottom-size">--</div>
+        <button id="btn-details-download-trigger" class="btn btn-details-download" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+            </svg>
+            <span>Download</span>
+        </button>
+    </div>
+
+    <!-- Floating Download Island (browsing while a session is active) -->
+    <div id="floating-download-badge" style="display: none;" class="floating-download-bar dl-island">
+        <div class="floating-bar-main-click" id="floating-bar-click-area" title="Open download view">
             <div class="floating-bar-top-row">
                 <span class="floating-bar-title" id="mini-game-title">Game Title</span>
-                <span class="floating-bar-eta" id="mini-game-eta">Remaining: --</span>
-                <span class="floating-bar-status" id="mini-game-status">0 kB/s | 0 MB / 0 GB</span>
+                <span class="floating-bar-pct" id="mini-game-pct">0%</span>
+                <span class="floating-bar-eta" id="mini-game-eta">вЂ”</span>
             </div>
             <div class="floating-bar-progress-container">
                 <div class="floating-bar-progress-fill" id="mini-progress-bar-fill" style="width: 0%;"></div>
             </div>
+            <div class="floating-bar-meta">
+                <span class="floating-bar-status" id="mini-game-status">0 MB / вЂ”</span>
+            </div>
         </div>
         <div class="floating-bar-controls">
-            <button class="floating-control-btn" id="mini-btn-play-pause" title="Pause/Resume">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+            <button type="button" class="floating-control-btn" id="mini-btn-play-pause" title="Resume" aria-label="Resume">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                    <path d="M8 5v14l11-7z"/>
                 </svg>
             </button>
-            <button class="floating-control-btn" id="mini-btn-cancel" title="Cancel Download">
+            <button type="button" class="floating-control-btn floating-control-cancel" id="mini-btn-cancel" title="Cancel" aria-label="Cancel">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm5 13.59L15.59 17 12 13.41 8.41 17 7 15.59 10.59 12 7 8.41 8.41 7 12 10.59 15.59 7 17 8.41 13.41 12 17 15.59z"/>
+                    <path d="M18.3 5.71 12 12.01 5.7 5.7 4.29 7.11 10.59 13.4 4.29 19.7 5.7 21.11 12 14.82l6.3 6.29 1.41-1.41-6.29-6.3 6.29-6.29z"/>
                 </svg>
             </button>
         </div>

@@ -1,0 +1,571 @@
+/* ============================================================
+   details-fix.css v4 — adaptive layout (no collapse / no overlap)
+   Loaded AFTER style.css
+   ============================================================ */
+
+/* ---- Harmonoid AnimatedMeshGradient via WebGL canvas (mesh_gradient package 1:1) ---- */
+html, body {
+    background: #05040a !important;
+}
+body { overflow: hidden !important; }
+
+#haze-background {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 0 !important;
+    pointer-events: none !important;
+    overflow: hidden !important;
+    background: #05040a !important;
+}
+.haze-mesh-stack {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+/* AnimatedSwitcher crossfade between two mesh canvases */
+.haze-mesh-layer,
+canvas.haze-mesh-layer {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    display: block !important;
+    opacity: 0 !important;
+    transition: opacity 0.9s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    will-change: opacity !important;
+    filter: none !important;
+    transform: none !important;
+    animation: none !important;
+    background: transparent !important;
+}
+.haze-mesh-layer.is-active,
+canvas.haze-mesh-layer.is-active {
+    opacity: 1 !important;
+    z-index: 1 !important;
+}
+/* Idle catalog: slightly dimmer mesh */
+#haze-background.haze-idle canvas.haze-mesh-layer.is-active {
+    opacity: 0.7 !important;
+}
+/* Game open: full bright mesh — must win over idle */
+#haze-background.haze-active canvas.haze-mesh-layer.is-active,
+#haze-background.haze-active #haze-mesh-a.is-active,
+#haze-background.haze-active #haze-mesh-b.is-active {
+    opacity: 1 !important;
+}
+
+#haze-background .haze-vignette {
+    position: absolute !important;
+    inset: 0 !important;
+    z-index: 2 !important;
+    background: radial-gradient(ellipse 80% 70% at 50% 40%, transparent 25%, rgba(4,3,10,0.38) 100%) !important;
+    pointer-events: none !important;
+}
+#haze-background .haze-noise {
+    position: absolute !important;
+    inset: 0 !important;
+    z-index: 3 !important;
+    opacity: 0.03 !important;
+    pointer-events: none !important;
+}
+.glass-bg-glow { display: none !important; }
+
+.app-container {
+    position: relative !important;
+    z-index: 2 !important;
+    background: transparent !important;
+    height: 100vh !important;
+    min-height: 0 !important;
+}
+
+/* ---- Details shell ---- */
+#game-details-container {
+    position: relative !important;
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    min-height: 0 !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    background: transparent !important;
+    padding: 8px 16px 110px 16px !important;
+    box-sizing: border-box !important;
+}
+#game-details-container.hidden-view { display: none !important; }
+
+/* Kill collapse animation that zeroed grid height (ui-fade-up both + transform) */
+#game-details-container .details-columns-layout,
+#game-details-container:not(.hidden-view) .details-columns-layout {
+    animation: none !important;
+    transform: none !important;
+    opacity: 1 !important;
+}
+
+#game-details-container .details-sticky-header {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 40 !important;
+    flex: 0 0 auto !important;
+    margin: 0 0 14px 0 !important;
+    background: rgba(12, 12, 20, 0.75) !important;
+    backdrop-filter: blur(16px) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 14px !important;
+    padding: 10px 14px !important;
+}
+
+/* ---- Hero row: fluid cover + media (never height:0) ---- */
+#game-details-container .details-columns-layout {
+    display: grid !important;
+    /* fluid cover column scales with viewport / zoom */
+    grid-template-columns: minmax(200px, clamp(220px, 22vw, 360px)) minmax(0, 1fr) !important;
+    gap: clamp(12px, 1.5vw, 20px) !important;
+    align-items: start !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    min-height: min-content !important;
+    margin: 0 0 18px 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    justify-items: stretch !important;
+}
+
+#game-details-container .details-left-column {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    height: auto !important;
+    min-height: min-content !important;
+    /* sticky only when there is room; no sticky collapse on short viewports */
+    position: relative !important;
+    top: auto !important;
+}
+
+#game-details-container .details-cover-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    aspect-ratio: 3 / 4 !important;
+    height: auto !important;
+    max-height: none !important;
+    border-radius: 16px !important;
+    overflow: hidden !important;
+    position: relative !important;
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid rgba(255,255,255,0.08) !important;
+    box-shadow: 0 14px 36px rgba(0,0,0,0.4) !important;
+}
+#game-details-container .details-cover-card[style*="display: none"] {
+    display: none !important;
+}
+#game-details-container .details-cover-card img,
+#game-details-container #details-cover-image {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+    object-position: center top !important;
+}
+#game-details-container .details-cover-card.is-loaded #details-cover-image {
+    display: block !important;
+}
+#game-details-container .details-cover-card.is-loaded .details-cover-placeholder {
+    display: none !important;
+}
+
+#game-details-container .details-meta-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 12px 14px !important;
+    border-radius: 14px !important;
+    box-sizing: border-box !important;
+}
+
+#game-details-container .details-right-column {
+    min-width: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 12px !important;
+    position: relative !important;
+    align-self: start !important;
+}
+
+/* Hide PREVIEW title completely */
+#game-details-container .details-media-header {
+    display: none !important;
+}
+
+#game-details-container .details-media-card {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 8px !important;
+    margin: 0 !important;
+    border-radius: 16px !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+}
+#game-details-container .details-media-card[style*="display: none"] {
+    display: none !important;
+}
+
+#game-details-container .screenshots-gallery-wrapper {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* Media fills full right-column width — no letterbox strip on the side */
+#game-details-container .screenshot-main-showcase {
+    position: relative !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 220px !important;
+    max-height: none !important;
+    aspect-ratio: var(--ss-ar, 16 / 9) !important;
+    margin: 0 !important;
+    border-radius: 12px !important;
+    overflow: hidden !important;
+    background: #0c0c14 !important;
+}
+#game-details-container .screenshot-main-showcase img,
+#game-details-container .screenshot-main-showcase video,
+#game-details-container .screenshot-main-showcase iframe,
+#game-details-container #screenshot-main-img,
+#game-details-container #screenshot-main-direct-video,
+#game-details-container #screenshot-main-video {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important; /* fill width; no empty side strip */
+    object-position: center !important;
+    background: #0c0c14 !important;
+    border: none !important;
+}
+
+#game-details-container .screenshots-grid {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    gap: 8px !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    padding-bottom: 2px !important;
+}
+#game-details-container .screenshots-grid img.ss-thumb,
+#game-details-container .video-thumbnail-wrapper {
+    flex: 0 0 auto !important;
+    width: clamp(96px, 10vw, 140px) !important;
+    height: clamp(54px, 5.6vw, 79px) !important;
+    border-radius: 10px !important;
+    object-fit: cover !important;
+}
+
+/* Description lives under media in right column — tight gap, no void */
+#game-details-container .details-below-fold {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 4px 0 20px 0 !important;
+    padding: 0 !important;
+    position: static !important;
+    z-index: auto !important;
+    flex: 0 0 auto !important;
+    clear: both !important;
+}
+#game-details-container #details-desc-section,
+#game-details-container #details-features-section {
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    z-index: auto !important;
+    margin: 0 !important;
+    background: rgba(14, 14, 22, 0.78) !important;
+    backdrop-filter: blur(14px) !important;
+    border: 1px solid rgba(255,255,255,0.07) !important;
+    border-radius: 16px !important;
+}
+#game-details-container #details-desc-section[style*="display: none"],
+#game-details-container #details-features-section[style*="display: none"] {
+    display: none !important;
+}
+#game-details-container #game-description {
+    display: block !important;
+    white-space: pre-line !important;
+    line-height: 1.55 !important;
+    color: rgba(255,255,255,0.9) !important;
+    max-height: none !important;
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+}
+
+/* ---- Cirno Download dock: true viewport floating ledge ----
+   Lives on <body> (see index.html) so ancestors cannot trap fixed. */
+body > #details-bottom-bar,
+#details-bottom-bar.details-bottom-bar,
+#details-bottom-bar {
+    position: fixed !important;
+    /* Center on viewport — do NOT use inset-inline:auto (it resets left) */
+    left: 50% !important;
+    right: auto !important;
+    bottom: max(16px, env(safe-area-inset-bottom, 0px)) !important;
+    top: auto !important;
+    transform: translateX(-50%) !important;
+    z-index: 10050 !important;
+    display: none;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 0 !important;
+    width: max-content !important;
+    max-width: min(440px, calc(100vw - 24px)) !important;
+    min-width: 0 !important;
+    min-height: 52px !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 6px 6px 6px 18px !important;
+    border-radius: 999px !important;
+    background: rgba(14, 14, 22, 0.9) !important;
+    border: 1px solid rgba(255,255,255,0.14) !important;
+    box-shadow:
+        0 14px 44px rgba(0,0,0,0.6),
+        0 0 0 1px rgba(255,255,255,0.04) inset !important;
+    backdrop-filter: blur(22px) saturate(170%) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(170%) !important;
+    pointer-events: auto !important;
+}
+body > #details-bottom-bar.is-visible,
+#details-bottom-bar.is-visible,
+#details-bottom-bar[style*="display: flex"],
+#details-bottom-bar[style*="display:flex"] {
+    display: flex !important;
+}
+#details-bottom-bar .details-bottom-size {
+    font-size: 0.92rem !important;
+    font-weight: 650 !important;
+    color: rgba(255,255,255,0.94) !important;
+    padding-right: 14px !important;
+    white-space: nowrap !important;
+}
+#btn-details-download-trigger,
+#details-bottom-bar .btn-details-download {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    height: 40px !important;
+    padding: 0 20px !important;
+    border-radius: 999px !important;
+    border: none !important;
+    background: rgba(255,255,255,0.95) !important;
+    color: #111 !important;
+    font-size: 0.9rem !important;
+    font-weight: 700 !important;
+    cursor: pointer !important;
+    transform: none !important;
+}
+#btn-details-download-trigger:hover {
+    background: #fff !important;
+}
+
+/* Kill transform on details shell — transform creates a fixed containing block */
+#game-details-container.subview-container,
+#game-details-container,
+.subview-container:not(.hidden-view) {
+    transform: none !important;
+    filter: none !important;
+    perspective: none !important;
+    will-change: auto !important;
+}
+
+/* ---- Responsive breakpoints (scale / zoom safe) ---- */
+
+/* Stack earlier — before cover+media get crushed */
+@media (max-width: 1100px) {
+    #game-details-container .details-columns-layout {
+        grid-template-columns: 1fr !important;
+        justify-items: stretch !important;
+    }
+    #game-details-container .details-left-column {
+        width: min(280px, 100%) !important;
+        max-width: 280px !important;
+        margin: 0 auto !important;
+        position: relative !important;
+    }
+    #game-details-container .details-right-column {
+        width: 100% !important;
+    }
+    #game-details-container .screenshot-main-showcase {
+        max-height: min(42vh, 420px) !important;
+    }
+}
+
+@media (max-width: 720px) {
+    #game-details-container {
+        padding: 6px 10px 100px 10px !important;
+    }
+    #game-details-container .details-left-column {
+        width: min(240px, 100%) !important;
+        max-width: 240px !important;
+    }
+    #game-details-container .details-page-title {
+        font-size: 1rem !important;
+    }
+    #details-bottom-bar {
+        bottom: 14px !important;
+        max-width: calc(100vw - 16px) !important;
+    }
+}
+
+/* Kill legacy rules that force 220px cover on wide screens */
+@media (min-width: 1400px) {
+    #game-details-container .details-columns-layout {
+        grid-template-columns: minmax(240px, clamp(260px, 18vw, 340px)) minmax(0, 1fr) !important;
+        max-width: none !important;
+    }
+    #game-details-container .details-left-column,
+    #game-details-container .details-cover-card,
+    #game-details-container .details-meta-card {
+        width: 100% !important;
+        max-width: none !important;
+    }
+}
+
+/* Nuke leftover style.css max-heights that leave side voids / bottom gap */
+#game-details-container .screenshot-main-showcase,
+#game-details-container .screenshot-main-showcase.preview-empty {
+    max-height: none !important;
+    width: 100% !important;
+}
+#game-details-container .details-columns-layout {
+    margin-bottom: 0 !important;
+    align-items: start !important;
+}
+#game-details-container .details-left-column {
+    align-self: start !important;
+    max-height: none !important;
+}
+/* Meta long lists shouldn't invent a huge void before description (desc is in right col now) */
+#game-details-container .details-meta-card .table-value {
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+}
+
+/* ============================================================
+   Catalog adaptive grid — no overlap, full rows via --catalog-cols
+   ============================================================ */
+#catalog-container .games-grid-wrapper {
+    position: relative !important;
+    overflow: hidden !important;
+    min-height: 0 !important;
+    flex: 1 1 auto !important;
+}
+
+/* Flex wrap + center: width locked to N columns so rows stay even;
+   incomplete last page row is centered (justify-content:center). */
+#games-grid-container.games-grid:not(.is-onlinefix-home),
+.games-grid:not(.is-onlinefix-home) {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    align-content: flex-start !important;
+    align-items: flex-start !important;
+    gap: var(--catalog-gap, 12px) !important;
+    /* Lock width to exact column count — prevents "11th card" wrapping weirdness */
+    width: min(
+        100%,
+        calc(
+            var(--catalog-cols, 6) * var(--catalog-card-w, 150px)
+            + (var(--catalog-cols, 6) - 1) * var(--catalog-gap, 12px)
+        )
+    ) !important;
+    max-width: 100% !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    padding: 58px 8px 78px 8px !important;
+    box-sizing: content-box !important;
+    grid-template-columns: none !important;
+}
+
+/* Fixed card width from JS so last incomplete row centers evenly */
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card,
+.games-grid:not(.is-onlinefix-home) > .game-card {
+    position: relative !important;
+    width: var(--catalog-card-w, 150px) !important;
+    max-width: var(--catalog-card-w, 150px) !important;
+    min-width: 0 !important;
+    flex: 0 0 var(--catalog-card-w, 150px) !important;
+    height: auto !important;
+    min-height: 0 !important;
+    aspect-ratio: 3 / 4.15 !important;
+    overflow: hidden !important;
+    border-radius: 14px !important;
+    isolation: isolate !important;
+    z-index: 1 !important;
+    transform: none !important;
+    will-change: auto !important;
+    animation: none !important;
+    box-sizing: border-box !important;
+}
+
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card:hover,
+.games-grid:not(.is-onlinefix-home) > .game-card:hover {
+    /* lift only — never scale (scale causes neighbor overlap) */
+    transform: translateY(-4px) !important;
+    z-index: 4 !important;
+}
+
+/* Cover fills the card; absolute children do not escape */
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card .card-cover-area,
+.games-grid:not(.is-onlinefix-home) > .game-card .card-cover-area {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-height: none !important;
+    aspect-ratio: auto !important;
+    overflow: hidden !important;
+    border-radius: inherit !important;
+}
+
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card .card-cover,
+.games-grid:not(.is-onlinefix-home) > .game-card .card-cover {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+    display: block !important;
+    transform: none !important;
+}
+
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card:hover .card-cover,
+.games-grid:not(.is-onlinefix-home) > .game-card:hover .card-cover {
+    transform: none !important;
+}
+
+/* Browse pills visible → extra top pad */
+.games-grid-wrapper:has(.browse-nav-pills:not([style*="display: none"]))
+    #games-grid-container.games-grid:not(.is-onlinefix-home) {
+    padding-top: 96px !important;
+}
