@@ -762,19 +762,19 @@
         </button>
     </div>
 
-    <!-- Floating Download Island (browsing while a session is active) -->
-    <div id="floating-download-badge" style="display: none;" class="floating-download-bar dl-island">
+    <!-- Floating Download Island (only when a real download session is active) -->
+    <div id="floating-download-badge" class="floating-download-bar dl-island" aria-hidden="true">
         <div class="floating-bar-main-click" id="floating-bar-click-area" title="Open download view">
             <div class="floating-bar-top-row">
-                <span class="floating-bar-title" id="mini-game-title">Game Title</span>
+                <span class="floating-bar-title" id="mini-game-title">—</span>
                 <span class="floating-bar-pct" id="mini-game-pct">0%</span>
-                <span class="floating-bar-eta" id="mini-game-eta">вЂ”</span>
+                <span class="floating-bar-eta" id="mini-game-eta">—</span>
             </div>
             <div class="floating-bar-progress-container">
                 <div class="floating-bar-progress-fill" id="mini-progress-bar-fill" style="width: 0%;"></div>
             </div>
             <div class="floating-bar-meta">
-                <span class="floating-bar-status" id="mini-game-status">0 MB / вЂ”</span>
+                <span class="floating-bar-status" id="mini-game-status">—</span>
             </div>
         </div>
         <div class="floating-bar-controls">

@@ -283,7 +283,9 @@ def save_session_state():
                 "is_configured": state["is_configured"],
                 "total_progress": state["total_progress"],
                 "active_mirror": state["active_mirror"],
-                "average_download_speed": state.get("average_download_speed", 5000000.0)
+                "average_download_speed": state.get("average_download_speed", 5000000.0),
+                "original_size": state.get("original_size", ""),
+                "is_extracted": state.get("is_extracted", False),
             }
         with open(session_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -314,6 +316,7 @@ def load_session_state():
                 state["active_mirror"] = data.get("active_mirror", "")
                 state["average_download_speed"] = data.get("average_download_speed", 5000000.0)
                 state["original_size"] = data.get("original_size", state.get("original_size", ""))
+                state["is_extracted"] = bool(data.get("is_extracted", False))
 
                 # Ensure path = base / Game / Cloud (per-provider folders)
                 try:
@@ -3111,6 +3114,57 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 add_log(f"Proxy image exception: {str(e)}")
                 self.send_response(500)
                 self.end_headers()
+            return
+
+        elif path == "/api/proxy_media":
+            # Same-origin stream for video poster capture (CORS-safe mid-frame thumbs).
+            # Prefer microtrailers / short clips; large movie_max is still allowed but slower.
+            try:
+                query_params = urllib.parse.parse_qs(url_parsed.query)
+                media_url = query_params.get("url", [""])[0]
+                if not media_url:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                if media_url.startswith("//"):
+                    media_url = "https:" + media_url
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "*/*",
+                }
+                # Forward Range so the browser can seek for mid-frame capture
+                range_hdr = self.headers.get("Range")
+                if range_hdr:
+                    headers["Range"] = range_hdr
+                req = urllib.request.Request(media_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=45) as response:
+                    status = getattr(response, "status", 200) or 200
+                    content_type = response.headers.get("Content-Type", "video/webm")
+                    content_len = response.headers.get("Content-Length")
+                    accept_ranges = response.headers.get("Accept-Ranges", "bytes")
+                    content_range = response.headers.get("Content-Range")
+                    body = response.read()
+                self.send_response(status if status in (200, 206) else 200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+                self.send_header("Accept-Ranges", accept_ranges or "bytes")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                if content_range:
+                    self.send_header("Content-Range", content_range)
+                if content_len:
+                    self.send_header("Content-Length", content_len)
+                else:
+                    self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                add_log(f"Proxy media exception: {str(e)}")
+                try:
+                    self.send_response(502)
+                    self.end_headers()
+                except Exception:
+                    pass
             return
             
         elif path == "/api/proxy_page":

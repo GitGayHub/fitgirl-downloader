@@ -158,9 +158,117 @@ const elQueueContainer = document.getElementById("queue-list-container");
 const elQueueCompletedCount = document.getElementById("queue-completed-count");
 
 const elTotalProgressText = document.getElementById("total-progress-text");
+const elTotalProgressTextSidebar = document.getElementById("total-progress-text-sidebar");
 const elGlobalSpeed = document.getElementById("global-speed");
 const elGlobalTimeLeft = document.getElementById("global-time-left");
 const svgProgressCircleBar = document.querySelector(".progress-circle-bar");
+const svgDashboardProgressBar = document.getElementById("dashboard-progress-bar");
+
+/**
+ * Derive session phase from backend state.
+ * ready    — session configured, nothing downloaded yet
+ * paused   — partial progress, not running
+ * downloading / starting — engine running
+ * complete — every file finished (or 100%)
+ * none     — no active session
+ */
+function getDownloadSessionInfo(state) {
+    const files = (state && state.files) || [];
+    const fileCount = files.length;
+    const doneCount = files.filter(f => f.status === "finished").length;
+    const failedCount = files.filter(f => f.status === "failed").length;
+    const activeCount = files.filter(f =>
+        f.status === "downloading" || f.status === "connecting" || f.status === "copying"
+    ).length;
+    const anyBytes = files.some(f => (f.downloaded || 0) > 0 || f.status === "finished");
+    const pct = typeof state?.total_progress === "number" ? state.total_progress : 0;
+    const anyProgress = anyBytes || pct > 0;
+    const allDone = fileCount > 0 && doneCount === fileCount;
+    const completeByProgress = fileCount > 0 && pct >= 100 && doneCount === fileCount;
+
+    let phase = "none";
+    if (state?.is_configured && fileCount > 0) {
+        if (allDone || completeByProgress) {
+            phase = "complete";
+        } else if (state.is_running && activeCount > 0) {
+            phase = "downloading";
+        } else if (state.is_running) {
+            phase = "starting";
+        } else if (!anyProgress) {
+            phase = "ready";
+        } else {
+            phase = "paused";
+        }
+    } else if (state?.is_configured && fileCount === 0) {
+        phase = "ready";
+    }
+
+    return {
+        phase,
+        pct,
+        fileCount,
+        doneCount,
+        failedCount,
+        activeCount,
+        anyProgress,
+        allDone: allDone || completeByProgress,
+        title: (state?.game_title || "").trim()
+    };
+}
+
+function applyDownloadStatusBadge(elBadge, phase) {
+    if (!elBadge) return;
+    const styles = {
+        ready: {
+            text: "READY",
+            bg: "rgba(52, 152, 219, 0.15)",
+            border: "rgba(52, 152, 219, 0.4)",
+            color: "#5dade2"
+        },
+        starting: {
+            text: "STARTING",
+            bg: "rgba(155, 89, 182, 0.15)",
+            border: "rgba(155, 89, 182, 0.35)",
+            color: "#be90d4"
+        },
+        downloading: {
+            text: "DOWNLOADING",
+            bg: "rgba(155, 89, 182, 0.15)",
+            border: "rgba(155, 89, 182, 0.35)",
+            color: "#be90d4"
+        },
+        paused: {
+            text: "PAUSED",
+            bg: "rgba(230, 126, 34, 0.15)",
+            border: "rgba(230, 126, 34, 0.35)",
+            color: "#f39c12"
+        },
+        complete: {
+            text: "COMPLETE",
+            bg: "rgba(46, 204, 113, 0.15)",
+            border: "rgba(46, 204, 113, 0.4)",
+            color: "#2ecc71"
+        },
+        none: {
+            text: "IDLE",
+            bg: "rgba(255, 255, 255, 0.06)",
+            border: "rgba(255, 255, 255, 0.12)",
+            color: "#a0a0b0"
+        }
+    };
+    const s = styles[phase] || styles.none;
+    elBadge.innerText = s.text;
+    elBadge.style.background = s.bg;
+    elBadge.style.borderColor = s.border;
+    elBadge.style.color = s.color;
+}
+
+function setProgressCircle(offset, pctText) {
+    if (svgProgressCircleBar) svgProgressCircleBar.style.strokeDashoffset = offset;
+    if (svgDashboardProgressBar) svgDashboardProgressBar.style.strokeDashoffset = offset;
+    if (elTotalProgressText) elTotalProgressText.innerText = pctText;
+    if (elTotalProgressTextSidebar) elTotalProgressTextSidebar.innerText = pctText;
+}
 
 // Application State
 let appState = {
@@ -425,11 +533,18 @@ function updateUI(newState) {
     // 1. Manage setup vs download views
     syncViewState();
     
+    const sessionInfo = getDownloadSessionInfo(newState);
+
     if (newState.is_configured) {
-        // Populate display info
-        elActiveGameTitle.innerText = newState.game_title || "Custom Repack";
-        elActiveGameSubtitle.innerText = `Save directory: ${newState.download_dir}`;
-        elDownloadDirDisplay.value = newState.download_dir;
+        // Always show session identity (even when idle / complete / not started)
+        const displayTitle = sessionInfo.title || "Custom Repack";
+        if (elActiveGameTitle) elActiveGameTitle.innerText = displayTitle;
+        if (elActiveGameSubtitle) {
+            elActiveGameSubtitle.innerText = newState.download_dir
+                ? `Save directory: ${newState.download_dir}`
+                : "Save directory: not set";
+        }
+        if (elDownloadDirDisplay) elDownloadDirDisplay.value = newState.download_dir || "";
         
         const elActiveGameOriginalSize = document.getElementById("active-game-original-size");
         if (elActiveGameOriginalSize) {
@@ -442,11 +557,13 @@ function updateUI(newState) {
         }
         
         // Sync mirror badge
-        if (newState.active_mirror) {
-            elDownloadMirrorBadge.innerText = `Mirror: ${newState.active_mirror}`;
-            elDownloadMirrorBadge.style.display = "inline-block";
-        } else {
-            elDownloadMirrorBadge.style.display = "none";
+        if (elDownloadMirrorBadge) {
+            if (newState.active_mirror) {
+                elDownloadMirrorBadge.innerText = `Mirror: ${newState.active_mirror}`;
+                elDownloadMirrorBadge.style.display = "inline-block";
+            } else {
+                elDownloadMirrorBadge.style.display = "none";
+            }
         }
         
         // Google Drive manual cleanup button toggle
@@ -471,79 +588,112 @@ function updateUI(newState) {
             elThreadsSelect.value = String(newState.max_workers);
         }
         
-        // Sync Play/Pause Button & Status Badge
+        // Sync Play/Pause Button & Status Badge from real session phase
         const elDownloadStatusBadge = document.getElementById("download-status-badge");
-        if (newState.is_running) {
-            elStartPauseBtn.innerHTML = `
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-                </svg>
-                <span>Pause</span>
-            `;
-            elStartPauseBtn.classList.remove("btn-pulse");
-            elStartPauseBtn.style.backgroundColor = "#e67e22";
-            elStartPauseBtn.style.borderColor = "#d35400";
-            
-            if (elDownloadStatusBadge) {
-                elDownloadStatusBadge.innerText = "DOWNLOADING";
-                elDownloadStatusBadge.style.background = "rgba(155, 89, 182, 0.15)";
-                elDownloadStatusBadge.style.borderColor = "rgba(155, 89, 182, 0.35)";
-                elDownloadStatusBadge.style.color = "#be90d4";
-            }
-        } else {
-            elStartPauseBtn.innerHTML = `
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
-                </svg>
-                <span>Resume</span>
-            `;
-            elStartPauseBtn.classList.add("btn-pulse");
-            elStartPauseBtn.style.backgroundColor = ""; // reset to primary
-            elStartPauseBtn.style.borderColor = "";
-            
-            if (elDownloadStatusBadge) {
-                elDownloadStatusBadge.innerText = "PAUSED";
-                elDownloadStatusBadge.style.background = "rgba(230, 126, 34, 0.15)";
-                elDownloadStatusBadge.style.borderColor = "rgba(230, 126, 34, 0.35)";
-                elDownloadStatusBadge.style.color = "#f39c12";
+        applyDownloadStatusBadge(elDownloadStatusBadge, sessionInfo.phase);
+
+        if (elStartPauseBtn) {
+            if (sessionInfo.phase === "downloading" || sessionInfo.phase === "starting") {
+                elStartPauseBtn.innerHTML = `
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                    </svg>
+                    <span>Pause</span>
+                `;
+                elStartPauseBtn.classList.remove("btn-pulse");
+                elStartPauseBtn.style.backgroundColor = "#e67e22";
+                elStartPauseBtn.style.borderColor = "#d35400";
+                elStartPauseBtn.disabled = false;
+                elStartPauseBtn.style.opacity = "1";
+            } else if (sessionInfo.phase === "complete") {
+                elStartPauseBtn.innerHTML = `
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+                    </svg>
+                    <span>Downloaded</span>
+                `;
+                elStartPauseBtn.classList.remove("btn-pulse");
+                elStartPauseBtn.style.backgroundColor = "rgba(46, 204, 113, 0.2)";
+                elStartPauseBtn.style.borderColor = "rgba(46, 204, 113, 0.45)";
+                // Keep enabled so user can re-trigger if needed; server will no-op empty work
+                elStartPauseBtn.disabled = false;
+                elStartPauseBtn.style.opacity = "1";
+            } else if (sessionInfo.phase === "ready") {
+                elStartPauseBtn.innerHTML = `
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                    <span>Start Download</span>
+                `;
+                elStartPauseBtn.classList.add("btn-pulse");
+                elStartPauseBtn.style.backgroundColor = "";
+                elStartPauseBtn.style.borderColor = "";
+                elStartPauseBtn.disabled = false;
+                elStartPauseBtn.style.opacity = "1";
+            } else {
+                // paused / partial
+                elStartPauseBtn.innerHTML = `
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                    <span>Resume</span>
+                `;
+                elStartPauseBtn.classList.add("btn-pulse");
+                elStartPauseBtn.style.backgroundColor = "";
+                elStartPauseBtn.style.borderColor = "";
+                elStartPauseBtn.disabled = false;
+                elStartPauseBtn.style.opacity = "1";
             }
         }
         
         // 2. Overall Download Progress & Speeds
-        const isDownloading = newState.files.some(f => f.status === "downloading");
+        const isDownloading = sessionInfo.phase === "downloading";
         if (isDownloading && newState.total_speed > 0) {
             if (smoothedSpeed === 0) {
                 smoothedSpeed = newState.total_speed;
             } else {
                 smoothedSpeed = 0.05 * newState.total_speed + 0.95 * smoothedSpeed;
             }
-        } else {
+        } else if (!isDownloading && sessionInfo.phase !== "starting") {
             smoothedSpeed = 0;
         }
 
-        elGlobalSpeed.innerText = formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed);
-        elTotalProgressText.innerText = `${newState.total_progress}%`;
+        if (elGlobalSpeed) {
+            elGlobalSpeed.innerText = (isDownloading || sessionInfo.phase === "starting")
+                ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed)
+                : "0.0 MB/s";
+        }
+
+        const progressPct = Math.max(0, Math.min(100, Number(newState.total_progress) || 0));
+        const offset = 283 - (283 * progressPct) / 100;
+        setProgressCircle(offset, `${progressPct}%`);
         
-        // Circular progress SVG
-        const offset = 283 - (283 * newState.total_progress) / 100;
-        svgProgressCircleBar.style.strokeDashoffset = offset;
-        
-        // ETA Left
-        if (isDownloading && smoothedSpeed > 0) {
-            let totalBytesLeft = 0;
-            newState.files.forEach(f => {
-                if (f.status !== "finished") {
-                    let expectedSize = f.size;
-                    if (expectedSize <= 0) {
-                        expectedSize = f.type === "installer" ? 7468619 : 524288000;
+        // ETA / status under progress ring
+        if (elGlobalTimeLeft) {
+            if (sessionInfo.phase === "complete") {
+                elGlobalTimeLeft.innerText = "Complete";
+            } else if (sessionInfo.phase === "ready") {
+                elGlobalTimeLeft.innerText = "Not started";
+            } else if (sessionInfo.phase === "paused") {
+                elGlobalTimeLeft.innerText = "Paused";
+            } else if (isDownloading && smoothedSpeed > 0) {
+                let totalBytesLeft = 0;
+                newState.files.forEach(f => {
+                    if (f.status !== "finished") {
+                        let expectedSize = f.size;
+                        if (expectedSize <= 0) {
+                            expectedSize = f.type === "installer" ? 7468619 : 524288000;
+                        }
+                        totalBytesLeft += Math.max(0, expectedSize - (f.downloaded || 0));
                     }
-                    totalBytesLeft += Math.max(0, expectedSize - f.downloaded);
-                }
-            });
-            const totalSecondsLeft = Math.floor(totalBytesLeft / smoothedSpeed);
-            elGlobalTimeLeft.innerText = formatTime(totalSecondsLeft);
-        } else {
-            elGlobalTimeLeft.innerText = "Ожидание загрузки";
+                });
+                const totalSecondsLeft = Math.floor(totalBytesLeft / smoothedSpeed);
+                elGlobalTimeLeft.innerText = formatTime(totalSecondsLeft);
+            } else if (sessionInfo.phase === "starting") {
+                elGlobalTimeLeft.innerText = "Starting…";
+            } else {
+                elGlobalTimeLeft.innerText = "Waiting…";
+            }
         }
         
         // 3. Extract & Install Buttons Coordination
@@ -1282,8 +1432,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
 
     const key = cacheKeyForUrl(url);
     const finishUi = () => {
-        const elDetailsLoader = document.getElementById("details-page-loader");
-        if (elDetailsLoader) elDetailsLoader.style.display = "none";
+        hideDetailsPageLoader();
         elSetupDashboard.style.display = "grid";
         elAnalyzeSpinner.style.display = "none";
         elAnalyzeBtnText.innerText = "Analyze Link";
@@ -2173,12 +2322,35 @@ if (elChangeProviderBtn) {
     });
 }
 
+function setFloatingIslandVisible(el, visible) {
+    if (!el) return;
+    el.classList.toggle("is-visible", !!visible);
+    el.setAttribute("aria-hidden", visible ? "false" : "true");
+    // Inline styles must not fight CSS !important; class .is-visible owns display.
+    el.style.removeProperty("display");
+}
+
+/** True only when there is a real configured download queue (not ghost placeholders). */
+function hasRealDownloadSession(state, sessionInfo) {
+    if (!state || !state.is_configured) return false;
+    const files = state.files || [];
+    if (!files.length) return false;
+    const info = sessionInfo || getDownloadSessionInfo(state);
+    // Require a title or actual queue work — never show bare "Game Title" island
+    if (info.phase === "none") return false;
+    if (!info.title && !info.anyProgress && info.phase === "ready" && files.length === 0) return false;
+    return true;
+}
+
 function updateMiniBadge(newState) {
     const elMiniBadge = document.getElementById("floating-download-badge");
     if (!elMiniBadge) return;
+
+    const sessionInfo = getDownloadSessionInfo(newState);
+    const showIsland = hasRealDownloadSession(newState, sessionInfo) && viewState !== "downloading";
     
-    if (newState.is_configured && viewState !== "downloading") {
-        elMiniBadge.style.display = "flex";
+    if (showIsland) {
+        setFloatingIslandVisible(elMiniBadge, true);
         elMiniBadge.classList.add("dl-island", "is-compact-island");
         
         const elMiniTitle = document.getElementById("mini-game-title");
@@ -2187,9 +2359,12 @@ function updateMiniBadge(newState) {
         const elMiniProgressBarFill = document.getElementById("mini-progress-bar-fill");
         const elMiniPct = document.getElementById("mini-game-pct");
         
-        if (elMiniTitle) elMiniTitle.innerText = newState.game_title || "Downloading";
+        // Always show real game title when session exists (not only while downloading)
+        if (elMiniTitle) {
+            elMiniTitle.innerText = sessionInfo.title || "Download session";
+        }
         
-        const isDownloading = newState.files && newState.files.some(f => f.status === "downloading");
+        const isDownloading = sessionInfo.phase === "downloading";
         const speedText = isDownloading
             ? formatSpeed(smoothedSpeed > 0 ? smoothedSpeed : newState.total_speed)
             : "0 MB/s";
@@ -2199,39 +2374,51 @@ function updateMiniBadge(newState) {
             if (f.status === "finished" && f.size > 0) return acc + f.size;
             return acc + (f.downloaded || 0);
         }, 0) : 0;
-        const doneCount = newState.files ? newState.files.filter(f => f.status === "finished").length : 0;
-        const fileCount = newState.files ? newState.files.length : 0;
         const totalSizeText = totalBytes > 0 ? formatBytes(totalBytes) : "—";
         const downloadedSizeText = formatBytes(downloadedBytes);
-        const pct = (typeof newState.total_progress === "number" && newState.total_progress > 0)
+        const pct = (typeof newState.total_progress === "number")
             ? Math.round(newState.total_progress)
             : (totalBytes > 0 ? Math.min(100, Math.floor((downloadedBytes / totalBytes) * 100)) : 0);
         
-        // Status line: compact size + optional speed when active
+        // Status line: size + optional speed
         if (elMiniStatus) {
-            elMiniStatus.innerText = isDownloading
-                ? `${downloadedSizeText} / ${totalSizeText} · ${speedText}`
-                : `${downloadedSizeText} / ${totalSizeText}`;
+            if (sessionInfo.phase === "ready") {
+                elMiniStatus.innerText = totalBytes > 0
+                    ? `Not started · ${totalSizeText}`
+                    : "Not started";
+            } else if (sessionInfo.phase === "complete") {
+                elMiniStatus.innerText = `${downloadedSizeText} / ${totalSizeText} · Done`;
+            } else if (isDownloading) {
+                elMiniStatus.innerText = `${downloadedSizeText} / ${totalSizeText} · ${speedText}`;
+            } else {
+                elMiniStatus.innerText = `${downloadedSizeText} / ${totalSizeText}`;
+            }
         }
         
-        // State chip: Paused / Left / Complete
+        // State chip: Ready / Paused / ETA / Done
         if (elMiniEta) {
             let stateLabel = "…";
             let stateClass = "is-idle";
-            if (newState.is_running && isDownloading && smoothedSpeed > 0) {
+            if (sessionInfo.phase === "complete") {
+                stateLabel = "Done";
+                stateClass = "is-done";
+            } else if (sessionInfo.phase === "ready") {
+                stateLabel = "Ready";
+                stateClass = "is-idle";
+            } else if (sessionInfo.phase === "downloading" && smoothedSpeed > 0) {
                 const remainingBytes = Math.max(0, totalBytes - downloadedBytes);
                 const etaSeconds = Math.max(0, remainingBytes / smoothedSpeed);
                 stateLabel = formatTime(etaSeconds);
                 stateClass = "is-running";
-            } else if (pct >= 100 && fileCount > 0 && doneCount === fileCount) {
-                stateLabel = "Done";
-                stateClass = "is-done";
-            } else if (!newState.is_running) {
+            } else if (sessionInfo.phase === "downloading" || sessionInfo.phase === "starting") {
+                stateLabel = "Sync";
+                stateClass = "is-running";
+            } else if (sessionInfo.phase === "paused") {
                 stateLabel = "Paused";
                 stateClass = "is-paused";
             } else {
-                stateLabel = "Sync";
-                stateClass = "is-running";
+                stateLabel = "Idle";
+                stateClass = "is-idle";
             }
             elMiniEta.innerText = stateLabel;
             elMiniEta.className = "floating-bar-eta " + stateClass;
@@ -2247,20 +2434,28 @@ function updateMiniBadge(newState) {
 
         const playPauseBtn = document.getElementById("mini-btn-play-pause");
         if (playPauseBtn) {
-            playPauseBtn.setAttribute("aria-label", newState.is_running ? "Pause" : "Resume");
-            playPauseBtn.title = newState.is_running ? "Pause" : "Resume";
-            playPauseBtn.innerHTML = newState.is_running
-                ? `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M7 5h3v14H7V5zm7 0h3v14h-3V5z"/></svg>`
-                : `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+            const running = sessionInfo.phase === "downloading" || sessionInfo.phase === "starting";
+            let aria = "Start";
+            if (running) aria = "Pause";
+            else if (sessionInfo.phase === "paused") aria = "Resume";
+            else if (sessionInfo.phase === "complete") aria = "Completed";
+            else if (sessionInfo.phase === "ready") aria = "Start Download";
+            playPauseBtn.setAttribute("aria-label", aria);
+            playPauseBtn.title = aria;
+            if (sessionInfo.phase === "complete") {
+                playPauseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+            } else {
+                playPauseBtn.innerHTML = running
+                    ? `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M7 5h3v14H7V5zm7 0h3v14h-3V5z"/></svg>`
+                    : `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+            }
         }
 
         const elDetailsGameTitle = document.getElementById("details-game-title");
         const isViewingActiveGame = viewState === "details" &&
             elDetailsGameTitle &&
-            elDetailsGameTitle.innerText === newState.game_title;
-        
-        // Clean island positioning — no inline size wars
-        elMiniBadge.style.cssText = "display:flex; top:14px; bottom:auto; left:50%; transform:translateX(-50%);";
+            sessionInfo.title &&
+            elDetailsGameTitle.innerText === sessionInfo.title;
         
         if (isViewingActiveGame) {
             setDetailsDownloadBarVisible(false);
@@ -2268,7 +2463,7 @@ function updateMiniBadge(newState) {
             setDetailsDownloadBarVisible(true);
         }
     } else {
-        elMiniBadge.style.display = "none";
+        setFloatingIslandVisible(elMiniBadge, false);
         if (viewState === "details") {
             setDetailsDownloadBarVisible(true);
         }
@@ -2313,19 +2508,16 @@ function syncViewState() {
         elDownloadView.classList.add("active-overlay");
         if (elDownloadBackdrop) elDownloadBackdrop.style.display = "block";
         
-        if (elMiniBadge) elMiniBadge.style.display = "none";
+        // Hide mini island while full download overlay is open
+        setFloatingIslandVisible(elMiniBadge, false);
     } else {
         // Hide download overlay
         elDownloadView.classList.remove("active-overlay");
         elDownloadView.classList.add("hidden-view");
         if (elDownloadBackdrop) elDownloadBackdrop.style.display = "none";
         
-        if (elMiniBadge && appState.is_configured) {
-            elMiniBadge.style.display = "flex";
-            updateMiniBadge(appState);
-        } else if (elMiniBadge) {
-            elMiniBadge.style.display = "none";
-        }
+        // updateMiniBadge decides visibility (real session only)
+        updateMiniBadge(appState);
     }
 
     // Handle catalog background views based on background state
@@ -2441,13 +2633,62 @@ void main() {
   gl_FragColor = vec4(grainedComp, 1.0);
 }`;
 
+/**
+ * Adaptive haze quality — same shader / colors on every PC.
+ * Powerful desktops keep full DPR + uncapped FPS.
+ * Weak / thermal-limited GPUs automatically lower render resolution and
+ * frame cadence only (visual style unchanged). Never permanently "downgrades"
+ * a fast machine.
+ */
+const hazePerf = {
+    // Full quality defaults (desktop / dGPU)
+    maxDpr: 2,
+    targetFps: 60,
+    // Runtime adaptive
+    dprCap: Math.min(window.devicePixelRatio || 1, 2),
+    frameIntervalMs: 1000 / 60,
+    samples: [],
+    lastAdjust: 0,
+    mode: "high" // high | balanced | low
+};
+
+function hazeRecordFrame(frameMs) {
+    if (!Number.isFinite(frameMs) || frameMs <= 0 || frameMs > 200) return;
+    hazePerf.samples.push(frameMs);
+    if (hazePerf.samples.length > 45) hazePerf.samples.shift();
+    const now = performance.now();
+    if (now - hazePerf.lastAdjust < 1800 || hazePerf.samples.length < 20) return;
+    hazePerf.lastAdjust = now;
+    const avg = hazePerf.samples.reduce((a, b) => a + b, 0) / hazePerf.samples.length;
+    const deviceMax = Math.min(window.devicePixelRatio || 1, 2);
+
+    // ~60fps budget: keep full quality
+    if (avg < 14) {
+        hazePerf.mode = "high";
+        hazePerf.dprCap = deviceMax;
+        hazePerf.frameIntervalMs = 1000 / 60;
+    } else if (avg < 22) {
+        // Still looks fluid; slightly lower internal resolution only
+        hazePerf.mode = "balanced";
+        hazePerf.dprCap = Math.min(deviceMax, 1.25);
+        hazePerf.frameIntervalMs = 1000 / 45;
+    } else {
+        // Laptop / iGPU pressure — same colors/shader, cheaper raster
+        hazePerf.mode = "low";
+        hazePerf.dprCap = 1;
+        hazePerf.frameIntervalMs = 1000 / 30;
+    }
+}
+
 function createMeshRenderer(canvas) {
     if (!canvas || !canvas.getContext) return null;
     const gl = canvas.getContext("webgl", {
         alpha: false,
         antialias: false,
         premultipliedAlpha: false,
-        preserveDrawingBuffer: false
+        preserveDrawingBuffer: false,
+        powerPreference: "high-performance",
+        desynchronized: true
     });
     if (!gl) {
         console.warn("[haze] WebGL unavailable");
@@ -2499,7 +2740,7 @@ function createMeshRenderer(canvas) {
         c4: gl.getUniformLocation(prog, "uColor4")
     };
 
-    // Default AnimatedMeshGradientOptions()
+    // Default AnimatedMeshGradientOptions() — visual identity unchanged
     const options = { frequency: 5, amplitude: 30, speed: 2, grain: 0 };
     let colors = [
         [0.2, 0.08, 0.24],
@@ -2510,9 +2751,11 @@ function createMeshRenderer(canvas) {
     let time = 0;
     let running = false;
     let raf = 0;
+    let lastFrameWall = 0;
+    let lastDrawAt = 0;
 
     function resize() {
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const dpr = Math.min(window.devicePixelRatio || 1, hazePerf.dprCap || 1);
         const w = Math.max(2, Math.floor(window.innerWidth * dpr));
         const h = Math.max(2, Math.floor(window.innerHeight * dpr));
         if (canvas.width !== w || canvas.height !== h) {
@@ -2541,14 +2784,29 @@ function createMeshRenderer(canvas) {
         gl.uniform3fv(u.c4, colors[3]);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
+        lastDrawAt = performance.now();
     }
 
-    function loop() {
+    function loop(now) {
         if (!running) return;
-        // Flutter Ticker: _delta += 0.01 each frame
-        time += 0.01;
-        draw();
         raf = requestAnimationFrame(loop);
+
+        // Pause entirely when tab/window not visible — free GPU on laptops
+        if (typeof document !== "undefined" && document.hidden) return;
+
+        const wall = typeof now === "number" ? now : performance.now();
+        if (lastFrameWall && wall - lastFrameWall < (hazePerf.frameIntervalMs || 16.6) - 0.5) {
+            return;
+        }
+        const dt = lastFrameWall ? (wall - lastFrameWall) : 16.6;
+        lastFrameWall = wall;
+
+        // Flutter Ticker: _delta += 0.01 each nominal frame — scale by real dt
+        // so animation speed stays consistent when FPS is throttled.
+        time += 0.01 * (dt / 16.6667);
+        const t0 = performance.now();
+        draw();
+        hazeRecordFrame(performance.now() - t0);
     }
 
     return {
@@ -2561,11 +2819,14 @@ function createMeshRenderer(canvas) {
             ]);
             while (colors.length < 4) colors.push(colors[colors.length - 1] || [0, 0, 0]);
             colors = colors.slice(0, 4);
-            draw();
+            // One static redraw if not animating (inactive crossfade layer)
+            if (!running) draw();
+            else draw();
         },
         start() {
             if (running) return;
             running = true;
+            lastFrameWall = 0;
             raf = requestAnimationFrame(loop);
         },
         stop() {
@@ -2573,6 +2834,7 @@ function createMeshRenderer(canvas) {
             if (raf) cancelAnimationFrame(raf);
             raf = 0;
         },
+        isRunning() { return running; },
         draw,
         resize
     };
@@ -2581,17 +2843,61 @@ function createMeshRenderer(canvas) {
 // Two mesh renderers for AnimatedSwitcher crossfade
 let meshRendererA = null;
 let meshRendererB = null;
+let hazeCrossfadeStopTimer = 0;
 
 function ensureMeshRenderers() {
+    // Create both, but only keep the active layer animating (huge laptop win).
     if (!meshRendererA && elHazeMeshA) {
         meshRendererA = createMeshRenderer(elHazeMeshA);
-        if (meshRendererA) meshRendererA.start();
     }
     if (!meshRendererB && elHazeMeshB) {
         meshRendererB = createMeshRenderer(elHazeMeshB);
-        if (meshRendererB) meshRendererB.start();
+    }
+    // Start whichever is currently active
+    const activeIsA = !elHazeMeshB || elHazeMeshA?.classList.contains("is-active") || !elHazeMeshB.classList.contains("is-active");
+    if (activeIsA) {
+        meshRendererA?.start();
+        meshRendererB?.stop();
+    } else {
+        meshRendererB?.start();
+        meshRendererA?.stop();
     }
     return !!(meshRendererA && meshRendererB);
+}
+
+/** After palette crossfade, stop the hidden mesh so only one WebGL loop runs. */
+function hazeFinishCrossfade(activeIsA) {
+    if (hazeCrossfadeStopTimer) {
+        clearTimeout(hazeCrossfadeStopTimer);
+        hazeCrossfadeStopTimer = 0;
+    }
+    // Match CSS opacity transition (~0.9s)
+    hazeCrossfadeStopTimer = setTimeout(() => {
+        hazeCrossfadeStopTimer = 0;
+        if (activeIsA) {
+            meshRendererA?.start();
+            meshRendererB?.stop();
+        } else {
+            meshRendererB?.start();
+            meshRendererA?.stop();
+        }
+    }, 950);
+}
+
+// Visibility / battery: freeze both meshes while hidden; resume active only.
+if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+            meshRendererA?.stop();
+            meshRendererB?.stop();
+        } else {
+            ensureMeshRenderers();
+            const activeR = (elHazeMeshA?.classList.contains("is-active") ? meshRendererA : meshRendererB)
+                || meshRendererA;
+            activeR?.start();
+            activeR?.draw();
+        }
+    });
 }
 
 /**
@@ -2700,15 +3006,24 @@ function applyHazePalette(colors) {
     const nextR = hazeMeshActiveIsA ? meshRendererB : meshRendererA;
     const prevR = hazeMeshActiveIsA ? meshRendererA : meshRendererB;
 
-    if (nextR) nextR.setColors(colors);
-    // Also keep prev rendering so crossfade shows motion on both
-    if (prevR && !prevR._hasColors) prevR.setColors(colors);
-    if (nextR) nextR._hasColors = true;
+    if (nextR) {
+        nextR.setColors(colors);
+        nextR.start(); // animate incoming during crossfade
+        nextR._hasColors = true;
+    }
+    // Keep outgoing still for one static frame if it had no colors yet
+    if (prevR && !prevR._hasColors) {
+        prevR.setColors(colors);
+        prevR._hasColors = true;
+    }
+    // During short crossfade both may be visible; stop the outgoing shortly after
+    // (hazeFinishCrossfade). Avoid permanent dual full-screen WebGL on laptops.
 
     void nextCanvas.offsetWidth;
     nextCanvas.classList.add("is-active");
     prevCanvas.classList.remove("is-active");
     hazeMeshActiveIsA = !hazeMeshActiveIsA;
+    hazeFinishCrossfade(hazeMeshActiveIsA);
 
     const p = colors[0];
     const s = colors[1] || colors[0];
@@ -2834,11 +3149,15 @@ function clearDynamicBackground() {
     const nextCanvas = hazeMeshActiveIsA ? elHazeMeshB : elHazeMeshA;
     const prevCanvas = hazeMeshActiveIsA ? elHazeMeshA : elHazeMeshB;
     const nextR = hazeMeshActiveIsA ? meshRendererB : meshRendererA;
-    if (nextR) nextR.setColors(idleColors);
+    if (nextR) {
+        nextR.setColors(idleColors);
+        nextR.start();
+    }
     void nextCanvas?.offsetWidth;
     nextCanvas?.classList.add("is-active");
     prevCanvas?.classList.remove("is-active");
     hazeMeshActiveIsA = !hazeMeshActiveIsA;
+    hazeFinishCrossfade(hazeMeshActiveIsA);
 
     document.body.style.transition = "background-color 1.8s ease";
     document.body.style.backgroundColor = "#05040a";
@@ -3264,8 +3583,81 @@ function renderGamesList(results, popularList) {
     }
 }
 
+/** Smooth staged loading progress for details fetch (0–99 until finish). */
+let _detailsLoadPctTimer = 0;
+let _detailsLoadPct = 0;
+
+function setDetailsLoadPercent(pct, label) {
+    _detailsLoadPct = Math.max(0, Math.min(99, Math.round(pct)));
+    const elPct = document.getElementById("details-load-pct");
+    const elBar = document.getElementById("details-load-bar-fill");
+    const elLabel = document.getElementById("details-load-label");
+    if (elPct) elPct.textContent = `${_detailsLoadPct}%`;
+    if (elBar) elBar.style.width = `${_detailsLoadPct}%`;
+    if (elLabel && label) elLabel.textContent = label;
+}
+
+function startDetailsLoadProgress() {
+    stopDetailsLoadProgress(false);
+    _detailsLoadPct = 0;
+    setDetailsLoadPercent(4, "Connecting…");
+    const stages = [
+        { t: 400, p: 12, l: "Fetching page…" },
+        { t: 1200, p: 28, l: "Fetching page…" },
+        { t: 2500, p: 45, l: "Parsing repack…" },
+        { t: 4500, p: 62, l: "Loading media…" },
+        { t: 8000, p: 78, l: "Almost there…" },
+        { t: 14000, p: 88, l: "Still loading…" },
+        { t: 25000, p: 94, l: "Waiting for site…" }
+    ];
+    const start = performance.now();
+    const tick = () => {
+        const elapsed = performance.now() - start;
+        let target = 4;
+        let label = "Connecting…";
+        for (const s of stages) {
+            if (elapsed >= s.t) {
+                target = s.p;
+                label = s.l;
+            }
+        }
+        // Ease toward target
+        const next = _detailsLoadPct + Math.max(0.3, (target - _detailsLoadPct) * 0.08);
+        setDetailsLoadPercent(Math.min(target, next), label);
+        _detailsLoadPctTimer = requestAnimationFrame(tick);
+    };
+    _detailsLoadPctTimer = requestAnimationFrame(tick);
+}
+
+function stopDetailsLoadProgress(complete = true) {
+    if (_detailsLoadPctTimer) {
+        cancelAnimationFrame(_detailsLoadPctTimer);
+        _detailsLoadPctTimer = 0;
+    }
+    if (complete) {
+        setDetailsLoadPercent(100, "Done");
+        const elPct = document.getElementById("details-load-pct");
+        if (elPct) elPct.textContent = "100%";
+        const elBar = document.getElementById("details-load-bar-fill");
+        if (elBar) elBar.style.width = "100%";
+    }
+}
+
+function hideDetailsPageLoader() {
+    stopDetailsLoadProgress(true);
+    const elDetailsLoader = document.getElementById("details-page-loader");
+    if (elDetailsLoader) {
+        elDetailsLoader.classList.remove("is-active");
+        elDetailsLoader.style.display = "none";
+        elDetailsLoader.setAttribute("aria-hidden", "true");
+    }
+    const detailsRoot = document.getElementById("game-details-container");
+    if (detailsRoot) detailsRoot.classList.remove("is-details-loading");
+}
+
 function showDetailsLoadingState(gameTitle, coverUrl = "") {
-    elDetailsGameTitle.innerText = gameTitle || "Loading Game...";
+    const title = (gameTitle || "").trim() || "Loading…";
+    elDetailsGameTitle.innerText = title;
     elDetailsVersionBadge.style.display = "none";
     if (elBtnOpenBrowser) elBtnOpenBrowser.style.display = "none";
     const btnOpenTop = document.getElementById("btn-open-browser-top");
@@ -3298,49 +3690,26 @@ function showDetailsLoadingState(gameTitle, coverUrl = "") {
     const detailsCoverImage = document.getElementById("details-cover-image");
     const detailsCoverPlaceholder = document.getElementById("details-cover-placeholder");
 
-    // Single clean skeleton cover — never leave is-loaded from previous game (caused double-card flash)
+    // Hide skeleton cover during load — full overlay instead of half-empty layout
     if (detailsCoverCard) {
-        detailsCoverCard.classList.remove("is-loaded");
-        detailsCoverCard.classList.add("is-loading");
-        detailsCoverCard.style.display = "block";
+        detailsCoverCard.classList.remove("is-loaded", "is-loading");
+        detailsCoverCard.style.display = "none";
     }
     if (detailsCoverImage) {
         detailsCoverImage.removeAttribute("src");
         detailsCoverImage.src = "";
         detailsCoverImage.style.display = "none";
+        detailsCoverImage.removeAttribute("data-loading");
     }
-    if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
+    if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "none";
 
-    if (coverUrl && detailsCoverCard && detailsCoverImage) {
+    // Soft haze only — no broken cover flash
+    if (coverUrl) {
         const proxied = coverUrl.startsWith("/api/") ? coverUrl : `/api/proxy_image?url=${encodeURIComponent(coverUrl)}`;
-        getCachedImageUrl(proxied).then(cachedUrl => {
-            // Abort if user already navigated away
-            if (!detailsCoverCard.isConnected || detailsCoverCard.classList.contains("is-loaded") && detailsCoverImage.src && !detailsCoverImage.src.includes("blob:") && detailsCoverImage.getAttribute("data-loading") !== proxied) {
-                // still allow if we're the pending load
-            }
-            detailsCoverImage.setAttribute("data-loading", proxied);
-            detailsCoverImage.onload = () => {
-                if (detailsCoverImage.getAttribute("data-loading") !== proxied) return;
-                detailsCoverImage.style.display = "block";
-                if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "none";
-                detailsCoverCard.classList.remove("is-loading");
-                detailsCoverCard.classList.add("is-loaded");
-                setHazeBackground(cachedUrl);
-            };
-            detailsCoverImage.onerror = () => {
-                if (detailsCoverImage.getAttribute("data-loading") !== proxied) return;
-                detailsCoverImage.style.display = "none";
-                if (detailsCoverPlaceholder) detailsCoverPlaceholder.style.display = "flex";
-                detailsCoverCard.classList.remove("is-loading", "is-loaded");
-            };
-            detailsCoverImage.src = cachedUrl;
-        });
+        getCachedImageUrl(proxied).then((cachedUrl) => {
+            if (cachedUrl) setHazeBackground(cachedUrl);
+        }).catch(() => {});
     } else {
-        if (detailsCoverCard) {
-            detailsCoverCard.style.display = "block";
-            detailsCoverCard.classList.remove("is-loaded");
-            detailsCoverCard.classList.add("is-loading");
-        }
         clearDynamicBackground();
     }
     
@@ -3382,12 +3751,11 @@ function showDetailsLoadingState(gameTitle, coverUrl = "") {
         elMainVideoIframe.style.display = "none";
     }
     if (elGameScreenshotsSection) {
-        elGameScreenshotsSection.style.display = "block";
-        elGameScreenshotsSection.classList.add("is-loading-media");
+        elGameScreenshotsSection.style.display = "none";
+        elGameScreenshotsSection.classList.remove("is-loading-media");
         const showcase = document.getElementById("screenshot-main-showcase-container");
         if (showcase) {
-            showcase.classList.add("preview-empty", "is-loading");
-            showcase.classList.remove("has-media");
+            showcase.classList.remove("preview-empty", "is-loading", "has-media");
         }
         const thumbs = document.getElementById("game-screenshots-container");
         if (thumbs) thumbs.innerHTML = "";
@@ -3397,19 +3765,33 @@ function showDetailsLoadingState(gameTitle, coverUrl = "") {
     elMirrorSelectSection.style.display = "none";
     
     const detailsRoot = document.getElementById("game-details-container");
+    if (detailsRoot) detailsRoot.classList.add("is-details-loading");
+
     let elDetailsLoader = document.getElementById("details-page-loader");
     if (!elDetailsLoader) {
         elDetailsLoader = document.createElement("div");
         elDetailsLoader.id = "details-page-loader";
-        elDetailsLoader.className = "details-inline-loader";
+        elDetailsLoader.className = "details-page-loader";
         elDetailsLoader.innerHTML = `
-            <span class="spinner" style="width:18px;height:18px;border-width:2px;"></span>
-            <span>Loading repack details…</span>
+            <div class="details-load-card">
+                <div class="details-load-spinner" aria-hidden="true"></div>
+                <div class="details-load-title" id="details-load-title">Loading</div>
+                <div class="details-load-label" id="details-load-label">Preparing…</div>
+                <div class="details-load-pct" id="details-load-pct">0%</div>
+                <div class="details-load-bar" aria-hidden="true">
+                    <div class="details-load-bar-fill" id="details-load-bar-fill" style="width:0%"></div>
+                </div>
+            </div>
         `;
         if (detailsRoot) detailsRoot.appendChild(elDetailsLoader);
     }
+    const loadTitle = document.getElementById("details-load-title");
+    if (loadTitle) loadTitle.textContent = title;
+    elDetailsLoader.classList.add("is-active");
     elDetailsLoader.style.display = "flex";
+    elDetailsLoader.setAttribute("aria-hidden", "false");
     elSetupDashboard.style.display = "none";
+    startDetailsLoadProgress();
 }
 
 function updateCatalogPagination(hasNext) {
@@ -4486,7 +4868,7 @@ if (elChecklistContainer) {
 // Start Application logic
 initSettings();
 syncViewState();
-// Boot idle Harmonoid mesh (AnimatedMeshGradient continuously running)
+// Boot idle Harmonoid mesh — single active WebGL loop (second canvas is static until crossfade)
 try {
     ensureMeshRenderers();
     const idle = [
@@ -4499,12 +4881,20 @@ try {
     if (meshRendererB) meshRendererB.setColors(idle);
     elHazeMeshA?.classList.add("is-active");
     elHazeMeshB?.classList.remove("is-active");
+    meshRendererA?.start();
+    meshRendererB?.stop();
+    hazeMeshActiveIsA = true;
+    // Debounced resize — avoid thrashing canvas reallocation on window drag
+    let hazeResizeTimer = 0;
     window.addEventListener("resize", () => {
-        meshRendererA?.resize();
-        meshRendererB?.resize();
-        meshRendererA?.draw();
-        meshRendererB?.draw();
-    });
+        if (hazeResizeTimer) clearTimeout(hazeResizeTimer);
+        hazeResizeTimer = setTimeout(() => {
+            hazeResizeTimer = 0;
+            const active = hazeMeshActiveIsA ? meshRendererA : meshRendererB;
+            active?.resize();
+            active?.draw();
+        }, 120);
+    }, { passive: true });
 } catch (e) {
     console.warn("[haze] boot failed", e);
 }
@@ -4565,28 +4955,39 @@ function renderScreenshots(screenshotsList, videosList) {
     }
 
     /**
-     * Full width of media card; height from real image AR (no crop, no side gutters).
+     * Always fill the media column width. Height follows real AR up to a viewport cap.
+     * Never leave a dead empty strip on the right of the player.
      */
     function fitShowcaseToSize(nw, nh) {
         if (!elMainScreenshotShowcase || !nw || !nh) return;
         const ar = nw / nh;
         const parent = elMainScreenshotShowcase.parentElement;
-        const maxW = Math.max(320, (parent && parent.clientWidth) || 900);
-        // Cap height so page doesn't explode, but prefer full width
-        const maxH = Math.min(window.innerHeight * 0.56, 720);
+        const maxW = Math.max(320, (parent && parent.clientWidth) || elMainScreenshotShowcase.clientWidth || 900);
+        // Prefer full column width; cap height so description still fits below
+        // Give media more vertical room (user: screenshots felt too short)
+        const maxH = Math.min(Math.max(320, window.innerHeight * 0.64), 920);
         let w = maxW;
         let h = w / ar;
-        if (h > maxH) {
-            h = maxH;
-            w = h * ar;
-        }
+        // Prefer natural height from AR when it fits; only clamp if too tall
+        if (h > maxH) h = maxH;
+        // Floor so 16:9 trailers don't look tiny on wide screens
+        const minH = Math.min(maxH, Math.max(260, window.innerHeight * 0.34));
+        if (h < minH && ar >= 1.2) h = minH;
         elMainScreenshotShowcase.style.setProperty("--ss-ar", `${nw} / ${nh}`);
-        elMainScreenshotShowcase.style.setProperty("width", Math.round(w) + "px", "important");
-        elMainScreenshotShowcase.style.setProperty("height", Math.round(h) + "px", "important");
+        elMainScreenshotShowcase.style.setProperty("width", "100%", "important");
         elMainScreenshotShowcase.style.setProperty("max-width", "100%", "important");
-        elMainScreenshotShowcase.style.setProperty("aspect-ratio", `${nw} / ${nh}`, "important");
-        elMainScreenshotShowcase.style.marginLeft = w < maxW - 2 ? "auto" : "0";
-        elMainScreenshotShowcase.style.marginRight = w < maxW - 2 ? "auto" : "0";
+        elMainScreenshotShowcase.style.setProperty("height", Math.round(h) + "px", "important");
+        elMainScreenshotShowcase.style.setProperty("min-height", Math.round(minH) + "px", "important");
+        elMainScreenshotShowcase.style.setProperty("aspect-ratio", "auto", "important");
+        elMainScreenshotShowcase.style.setProperty("margin-left", "0", "important");
+        elMainScreenshotShowcase.style.setProperty("margin-right", "0", "important");
+        // Screenshots: contain (full frame). Video: cover (fills box).
+        if (elMainScreenshotImg && elMainScreenshotImg.style.display !== "none") {
+            elMainScreenshotImg.style.setProperty("object-fit", "contain", "important");
+        }
+        if (elMainDirectVideo && elMainDirectVideo.style.display !== "none") {
+            elMainDirectVideo.style.setProperty("object-fit", "cover", "important");
+        }
     }
 
     function fitShowcaseToNaturalSize(imgEl) {
@@ -4640,37 +5041,71 @@ function renderScreenshots(screenshotsList, videosList) {
         }
     }
 
-    /** Capture a mid-frame from a direct video as a data URL poster (best-effort). */
+    /** Steam trailer → official store thumbnail (different from screenshots). */
+    function steamTrailerPoster(videoUrl) {
+        const u = normalizeVideoUrl(videoUrl || "");
+        if (!/steam/i.test(u)) return "";
+        // .../steam/apps/12345/movie_max.mp4|movie480.webm|microtrailer.webm
+        // → .../steam/apps/12345/movie.293x165.jpg
+        const m = u.match(/^(https?:\/\/[^?#]*?\/steam\/apps\/\d+\/)/i);
+        if (m) return m[1] + "movie.293x165.jpg";
+        const m2 = u.match(/^(https?:\/\/[^?#]*?\/apps\/\d+\/)/i);
+        if (m2 && /steam/i.test(u)) return m2[1] + "movie.293x165.jpg";
+        return "";
+    }
+
+    /**
+     * Capture a mid-frame (~50%) from a trailer as poster.
+     * Uses same-origin /api/proxy_media so canvas is not CORS-tainted
+     * (raw CDN videos almost always fail toDataURL → wrong first-screenshot fallback).
+     */
     function captureVideoPoster(videoUrl) {
         return new Promise((resolve) => {
             const playUrl = normalizeVideoUrl(videoUrl);
-            if (!isDirectVideo(playUrl)) {
-                resolve(youtubePoster(videoUrl) || "");
+            if (!playUrl) {
+                resolve("");
                 return;
             }
+            if (!isDirectVideo(playUrl)) {
+                resolve(youtubePoster(videoUrl) || steamTrailerPoster(videoUrl) || "");
+                return;
+            }
+            // Prefer Steam official thumb when available (fast + distinct from screenshots)
+            const steamThumb = steamTrailerPoster(playUrl);
+            if (steamThumb) {
+                // Still try mid-frame in background via proxy; start with steam thumb
+                // Caller can set steam first then upgrade — we resolve steam immediately
+                // for snappy UI, and also attempt mid-frame upgrade below.
+            }
+
             const v = document.createElement("video");
             v.muted = true;
             v.playsInline = true;
             v.preload = "auto";
-            // Don't set crossOrigin — many CDNs lack CORS; canvas may taint, then we fallback
+            v.crossOrigin = "anonymous";
             let settled = false;
             const finish = (url) => {
                 if (settled) return;
                 settled = true;
                 try { v.removeAttribute("src"); v.load(); } catch (_) {}
-                resolve(url || "");
+                resolve(url || steamThumb || "");
             };
-            const timer = setTimeout(() => finish(""), 7000);
+            const timer = setTimeout(() => finish(steamThumb || ""), 10000);
+
+            // Same-origin proxy → canvas export works
+            const proxied = `/api/proxy_media?url=${encodeURIComponent(playUrl)}`;
+
             v.addEventListener("loadedmetadata", () => {
                 try {
                     const dur = v.duration;
-                    const t = (isFinite(dur) && dur > 0)
-                        ? Math.max(0.35, Math.min(dur * 0.5, dur - 0.15))
-                        : 1.2;
+                    // Prefer middle of trailer (user request); avoid first black frame
+                    const t = (isFinite(dur) && dur > 0.6)
+                        ? Math.max(0.4, Math.min(dur * 0.5, dur - 0.2))
+                        : 1.0;
                     v.currentTime = t;
                 } catch (_) {
                     clearTimeout(timer);
-                    finish("");
+                    finish(steamThumb || "");
                 }
             });
             v.addEventListener("seeked", () => {
@@ -4678,23 +5113,42 @@ function renderScreenshots(screenshotsList, videosList) {
                     const canvas = document.createElement("canvas");
                     const vw = v.videoWidth || 640;
                     const vh = v.videoHeight || 360;
+                    if (vw < 2 || vh < 2) {
+                        clearTimeout(timer);
+                        finish(steamThumb || "");
+                        return;
+                    }
                     const scale = Math.min(1, 960 / Math.max(vw, 1));
                     canvas.width = Math.max(1, Math.round(vw * scale));
                     canvas.height = Math.max(1, Math.round(vh * scale));
                     const ctx = canvas.getContext("2d");
                     ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+                    // Reject near-black first frames (failed seek / empty)
+                    try {
+                        const sample = ctx.getImageData(
+                            Math.floor(canvas.width / 2),
+                            Math.floor(canvas.height / 2),
+                            1, 1
+                        ).data;
+                        const lum = 0.2126 * sample[0] + 0.7152 * sample[1] + 0.0722 * sample[2];
+                        if (lum < 6) {
+                            clearTimeout(timer);
+                            finish(steamThumb || "");
+                            return;
+                        }
+                    } catch (_) { /* ignore sample errors */ }
                     clearTimeout(timer);
-                    finish(canvas.toDataURL("image/jpeg", 0.84));
+                    finish(canvas.toDataURL("image/jpeg", 0.86));
                 } catch (_) {
                     clearTimeout(timer);
-                    finish("");
+                    finish(steamThumb || "");
                 }
             });
             v.addEventListener("error", () => {
                 clearTimeout(timer);
-                finish("");
+                finish(steamThumb || "");
             });
-            v.src = playUrl;
+            v.src = proxied;
         });
     }
 
@@ -4719,7 +5173,7 @@ function renderScreenshots(screenshotsList, videosList) {
                 elMainDirectVideo.setAttribute("playsinline", "");
                 elMainDirectVideo.controls = true;
                 elMainDirectVideo.preload = "auto";
-                elMainDirectVideo.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;object-position:center;background:#0a0a12;border:none;z-index:2;";
+                elMainDirectVideo.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;background:#0a0a12;border:none;z-index:2;";
                 elMainDirectVideo.onloadedmetadata = () => {
                     fitShowcaseToSize(elMainDirectVideo.videoWidth || 16, elMainDirectVideo.videoHeight || 9);
                     if (elMainScreenshotShowcase) {
@@ -4819,11 +5273,20 @@ function renderScreenshots(screenshotsList, videosList) {
                     const thumbWrapper = document.createElement("div");
                     thumbWrapper.className = "video-thumbnail-wrapper" + (vIdx === 0 ? " active" : "");
                     const ytPoster = youtubePoster(videoUrl);
-                    const fallbackPoster = ytPoster || (hasScreenshots
-                        ? `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`
-                        : "");
+                    const steamPoster = steamTrailerPoster(videoUrl);
+                    // NEVER use screenshots[0] as trailer fallback — that made trailer == first shot
+                    const coverFallback = (typeof scrapedMetadata !== "undefined" && scrapedMetadata.cover_image)
+                        ? (scrapedMetadata.cover_image.startsWith("/api/")
+                            ? scrapedMetadata.cover_image
+                            : `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`)
+                        : "";
+                    const initialPoster = ytPoster
+                        ? ytPoster
+                        : (steamPoster
+                            ? `/api/proxy_image?url=${encodeURIComponent(steamPoster)}`
+                            : coverFallback);
                     thumbWrapper.innerHTML = `
-                        <img class="video-thumb-poster" alt="" draggable="false" ${fallbackPoster ? `src="${fallbackPoster}"` : ""}>
+                        <img class="video-thumb-poster" alt="Trailer" draggable="false" ${initialPoster ? `src="${initialPoster}"` : ""}>
                         <div class="video-thumbnail-overlay">
                             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                                 <path d="M8 5v14l11-7z"/>
@@ -4831,12 +5294,15 @@ function renderScreenshots(screenshotsList, videosList) {
                         </div>
                         <span class="video-thumb-label">Trailer</span>
                     `;
-                    // Mid-frame (~50%) capture for direct trailers → small thumb poster
+                    // Always try mid-frame (~50%) for direct trailers — upgrades steam/cover placeholder
                     if (isDirectVideo(videoUrl) || /microtrailer|store_trailers|\.mp4|\.webm/i.test(videoUrl)) {
                         captureVideoPoster(videoUrl).then((posterUrl) => {
                             if (!posterUrl || !thumbWrapper.isConnected) return;
+                            // Skip if mid-frame somehow equals first screenshot URL (shouldn't for data URLs)
                             const img = thumbWrapper.querySelector(".video-thumb-poster");
-                            if (img) img.src = posterUrl;
+                            if (!img) return;
+                            img.src = posterUrl;
+                            img.dataset.posterSource = posterUrl.startsWith("data:") ? "midframe" : "remote";
                         });
                     }
                     

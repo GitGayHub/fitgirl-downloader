@@ -7,6 +7,7 @@ echo ==============================================
 echo        FitGirl Repack Downloader
 echo ==============================================
 echo.
+
 echo Closing previous FitGirl servers (keeping this window)...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kill_old_servers.ps1"
 if errorlevel 1 (
@@ -14,7 +15,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo Starting browser in 2s...
+echo Opening dashboard in browser in 2s...
 start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8000/"
 
 echo Starting server...

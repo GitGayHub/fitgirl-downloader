@@ -3494,9 +3494,9 @@ details[open] .summary-toggle-icon {
 
 .screenshot-main-showcase {
     width: 100%;
-    max-width: 70%;
-    margin: 0 auto;
-    aspect-ratio: 21 / 9;
+    max-width: 100%;
+    margin: 0;
+    aspect-ratio: 16 / 9;
     border-radius: 16px;
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.08);
@@ -4867,10 +4867,8 @@ body {
     }
 }
 
-/* Media uses contain so nothing is crookedly cropped */
-#game-details-container .screenshot-main-showcase img,
-#game-details-container .screenshot-main-showcase video,
-#game-details-container .screenshot-main-showcase iframe {
+/* Screenshots: full frame; video rules override in details-fix.css */
+#game-details-container .screenshot-main-showcase img {
     object-fit: contain !important;
     object-position: center center !important;
 }
@@ -4908,22 +4906,110 @@ body {
     z-index: 2;
 }
 
-/* Inline loader under hero */
-.details-inline-loader {
+/* Full-page details loader (replaces half-empty skeleton) */
+.details-page-loader,
+#details-page-loader {
     display: none;
+    position: absolute;
+    inset: 0;
+    z-index: 80;
     align-items: center;
     justify-content: center;
+    padding: 24px;
+    background: radial-gradient(ellipse 70% 55% at 50% 42%, rgba(40, 20, 70, 0.45), rgba(6, 5, 12, 0.82));
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    box-sizing: border-box;
+}
+.details-page-loader.is-active,
+#details-page-loader.is-active,
+#details-page-loader[style*="display: flex"] {
+    display: flex !important;
+}
+.details-load-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     gap: 10px;
-    margin: 16px auto 0;
-    padding: 10px 18px;
-    border-radius: 999px;
-    background: rgba(12,12,20,0.55);
-    border: 1px solid rgba(255,255,255,0.08);
-    color: var(--text-muted);
-    font-size: 0.82rem;
-    font-weight: 600;
-    width: fit-content;
-    backdrop-filter: blur(12px);
+    min-width: min(320px, 86vw);
+    max-width: 400px;
+    padding: 28px 32px 24px;
+    border-radius: 20px;
+    background: rgba(14, 14, 22, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(139, 92, 246, 0.12) inset;
+    text-align: center;
+}
+.details-load-spinner {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 3px solid rgba(255, 255, 255, 0.12);
+    border-top-color: #a78bfa;
+    border-right-color: #c084fc;
+    animation: details-load-spin 0.75s linear infinite;
+    margin-bottom: 4px;
+}
+@keyframes details-load-spin {
+    to { transform: rotate(360deg); }
+}
+.details-load-title {
+    font-family: "Outfit", system-ui, sans-serif;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #f3f0ff;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.details-load-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: rgba(226, 226, 236, 0.65);
+}
+.details-load-pct {
+    font-family: "Outfit", system-ui, sans-serif;
+    font-size: 1.65rem;
+    font-weight: 700;
+    color: #c4b5fd;
+    letter-spacing: 0.02em;
+    text-shadow: 0 0 18px rgba(167, 139, 250, 0.45);
+    margin-top: 2px;
+}
+.details-load-bar {
+    width: 100%;
+    height: 6px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    margin-top: 6px;
+}
+.details-load-bar-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, #7c3aed, #a78bfa, #e879f9);
+    box-shadow: 0 0 12px rgba(167, 139, 250, 0.5);
+    transition: width 0.25s ease-out;
+}
+
+/* Hide skeleton layout while full loader is up */
+#game-details-container.is-details-loading .details-columns-layout,
+#game-details-container.is-details-loading .details-below-fold,
+#game-details-container.is-details-loading #details-bottom-bar,
+#game-details-container.is-details-loading .details-media-card {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+#game-details-container.is-details-loading {
+    position: relative !important;
+    min-height: 50vh !important;
+}
+
+/* Legacy pill loader (unused, keep harmless) */
+.details-inline-loader {
+    display: none !important;
 }
 
 /* Thumbs a bit larger, more readable */
@@ -5190,7 +5276,7 @@ body {
 }
 
 /* When download badge is visible, keep catalog header actions right-aligned */
-body:has(#floating-download-badge:not([style*="display: none"])) #catalog-container > header.header .title-section {
+body:has(#floating-download-badge.is-visible) #catalog-container > header.header .title-section {
     max-width: 22vw;
 }
 
@@ -5302,19 +5388,15 @@ body:has(#floating-download-badge:not([style*="display: none"])) #catalog-contai
 }
 
 /* Details loading: hide download dock until ready */
-#game-details-container:has(.details-inline-loader[style*="display: flex"]) #details-bottom-bar,
-#game-details-container:has(.details-inline-loader:not([style*="display: none"])) #details-bottom-bar {
-    opacity: 0.35;
-    pointer-events: none;
-}
-
-.details-inline-loader {
-    animation: ui-fade-up 0.3s ease both;
+#game-details-container.is-details-loading #details-bottom-bar,
+#game-details-container:has(#details-page-loader.is-active) #details-bottom-bar {
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 /* Prefer cover not floating left empty during load */
 #game-details-container .details-columns-layout {
-    max-width: 1200px !important;
+    max-width: none !important;
 }
 
 /* Reduce heavy glow spam */
@@ -6018,7 +6100,9 @@ body.search-open .app-container {
     border: 0 !important;
 }
 
-/* Compact floating island � NEVER tall pill */
+/* Compact floating island — NEVER tall pill.
+   Visibility is controlled ONLY by .is-visible (do NOT force display:flex here —
+   that overrode inline display:none and always showed a ghost "Game Title" bar). */
 #floating-download-badge.floating-download-bar,
 #floating-download-badge,
 .floating-download-bar {
@@ -6033,14 +6117,19 @@ body.search-open .app-container {
     height: auto !important;
     max-height: 64px !important;
     padding: 8px 12px 8px 16px !important;
-    border-radius: 22px !important; /* not 999px � that made a giant oval */
-    display: flex !important;
+    border-radius: 22px !important; /* not 999px — that made a giant oval */
+    display: none !important; /* default hidden until real session */
     flex-direction: row !important;
     align-items: center !important;
     gap: 12px !important;
     z-index: 1800 !important;
     overflow: hidden !important;
     box-sizing: border-box !important;
+}
+#floating-download-badge.is-visible,
+#floating-download-badge.floating-download-bar.is-visible,
+#floating-download-badge.dl-island.is-visible {
+    display: flex !important;
 }
 #floating-download-badge .floating-bar-main-click {
     flex-direction: column !important;
@@ -6574,7 +6663,7 @@ body.search-open .app-container {
     transform: translateX(-50%) !important;
     bottom: auto !important;
     z-index: 2400 !important;
-    display: none; /* toggled by JS to flex */
+    /* display toggled via .is-visible only (see block above) */
     flex-direction: row !important;
     align-items: center !important;
     gap: 12px !important;
@@ -6741,7 +6830,7 @@ body.search-open .app-container {
 }
 
 /* Leave room for island under top header on catalog */
-body:has(#floating-download-badge[style*="display: flex"]) #catalog-container > header.header .title-section {
+body:has(#floating-download-badge.is-visible) #catalog-container > header.header .title-section {
     max-width: min(28vw, 280px);
 }
 

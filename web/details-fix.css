@@ -35,16 +35,20 @@ canvas.haze-mesh-layer {
     display: block !important;
     opacity: 0 !important;
     transition: opacity 0.9s cubic-bezier(0.4, 0, 0.2, 1) !important;
-    will-change: opacity !important;
+    /* will-change only on active layer — cheaper compositing on iGPU */
+    will-change: auto !important;
     filter: none !important;
     transform: none !important;
     animation: none !important;
     background: transparent !important;
+    /* CSS upscale from lower internal canvas resolution still looks smooth */
+    image-rendering: auto !important;
 }
 .haze-mesh-layer.is-active,
 canvas.haze-mesh-layer.is-active {
     opacity: 1 !important;
     z-index: 1 !important;
+    will-change: opacity !important;
 }
 /* Idle catalog: slightly dimmer mesh */
 #haze-background.haze-idle canvas.haze-mesh-layer.is-active {
@@ -96,6 +100,9 @@ canvas.haze-mesh-layer.is-active {
     box-sizing: border-box !important;
 }
 #game-details-container.hidden-view { display: none !important; }
+#game-details-container:not(.hidden-view) {
+    position: relative !important;
+}
 
 /* Kill collapse animation that zeroed grid height (ui-fade-up both + transform) */
 #game-details-container .details-columns-layout,
@@ -229,31 +236,48 @@ canvas.haze-mesh-layer.is-active {
     min-height: 0 !important;
 }
 
-/* Media fills full right-column width — no letterbox strip on the side */
+/* Media fills FULL right-column width — no left-aligned small player / empty right gutter */
+#game-details-container .details-media-card,
+#game-details-container .screenshots-gallery-wrapper {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
 #game-details-container .screenshot-main-showcase {
     position: relative !important;
+    display: block !important;
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;
-    min-height: 220px !important;
-    max-height: none !important;
+    min-height: clamp(280px, 38vh, 480px) !important;
+    max-height: min(64vh, 920px) !important;
     aspect-ratio: var(--ss-ar, 16 / 9) !important;
-    margin: 0 !important;
+    margin: 0 !important; /* never auto/side gutters */
     border-radius: 12px !important;
     overflow: hidden !important;
     background: #0c0c14 !important;
+    box-sizing: border-box !important;
 }
 #game-details-container .screenshot-main-showcase img,
+#game-details-container #screenshot-main-img {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important; /* full screenshot visible — taller box */
+    object-position: center !important;
+    background: #0c0c14 !important;
+    border: none !important;
+}
 #game-details-container .screenshot-main-showcase video,
 #game-details-container .screenshot-main-showcase iframe,
-#game-details-container #screenshot-main-img,
 #game-details-container #screenshot-main-direct-video,
 #game-details-container #screenshot-main-video {
     position: absolute !important;
     inset: 0 !important;
     width: 100% !important;
     height: 100% !important;
-    object-fit: cover !important; /* fill width; no empty side strip */
+    object-fit: cover !important;
     object-position: center !important;
     background: #0c0c14 !important;
     border: none !important;
@@ -276,19 +300,21 @@ canvas.haze-mesh-layer.is-active {
     object-fit: cover !important;
 }
 
-/* Description lives under media in right column — tight gap, no void */
+/* Description lives under media — full width of right column, fluid with media */
 #game-details-container .details-below-fold {
     display: flex !important;
     flex-direction: column !important;
     gap: 10px !important;
     width: 100% !important;
     max-width: 100% !important;
-    margin: 4px 0 20px 0 !important;
+    margin: 8px 0 24px 0 !important;
     padding: 0 !important;
     position: static !important;
     z-index: auto !important;
-    flex: 0 0 auto !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
     clear: both !important;
+    box-sizing: border-box !important;
 }
 #game-details-container #details-desc-section,
 #game-details-container #details-features-section {
@@ -301,6 +327,7 @@ canvas.haze-mesh-layer.is-active {
     backdrop-filter: blur(14px) !important;
     border: 1px solid rgba(255,255,255,0.07) !important;
     border-radius: 16px !important;
+    box-sizing: border-box !important;
 }
 #game-details-container #details-desc-section[style*="display: none"],
 #game-details-container #details-features-section[style*="display: none"] {
@@ -413,7 +440,8 @@ body > #details-bottom-bar.is-visible,
         width: 100% !important;
     }
     #game-details-container .screenshot-main-showcase {
-        max-height: min(42vh, 420px) !important;
+        min-height: clamp(220px, 34vh, 380px) !important;
+        max-height: min(50vh, 560px) !important;
     }
 }
 
@@ -448,11 +476,13 @@ body > #details-bottom-bar.is-visible,
     }
 }
 
-/* Nuke leftover style.css max-heights that leave side voids / bottom gap */
+/* Full-width player — never shrink to a left-aligned strip */
 #game-details-container .screenshot-main-showcase,
 #game-details-container .screenshot-main-showcase.preview-empty {
-    max-height: none !important;
     width: 100% !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
 }
 #game-details-container .details-columns-layout {
     margin-bottom: 0 !important;
