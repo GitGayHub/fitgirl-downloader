@@ -30,12 +30,11 @@ It handles PrivateBin link decryption, Cloudflare bypasses, parallel multi-threa
    .venv\Scripts\activate   # Windows
    pip install requests curl_cffi privatebinapi beautifulsoup4
    ```
-3. **Run the application**:
-   ```bash
-   python main.py
-   # or: Run_Downloader.bat
-   ```
-4. Open [http://localhost:8000](http://localhost:8000) in your browser.
+3. **Run the application** (silent, no CMD pile):
+   - Double-click **FitGirl Downloader** shortcut (Desktop / Start Menu), or `Launch_Downloader.vbs`
+   - Install/refresh shortcuts: `powershell -ExecutionPolicy Bypass -File .\install_shortcuts.ps1`
+   - Dev console mode: `python main.py` or `Run_Downloader.bat`
+4. Browser opens [http://127.0.0.1:8000](http://127.0.0.1:8000) automatically. Re-launch only focuses the UI if the server is already running.
 
 ## Continue with Grok on another PC
 

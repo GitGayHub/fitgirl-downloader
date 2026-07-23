@@ -1,0 +1,384 @@
+/**
+ * Frosted session pill — title · % · status + play/pause
+ * Visual language from AndroSend glass, content = download session info
+ */
+
+#floating-download-badge.as-nav-pill,
+#floating-download-badge.dl-island,
+#floating-download-badge {
+    position: fixed !important;
+    top: 16px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    z-index: 2400 !important;
+    display: none !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    gap: 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: min(420px, calc(100vw - 28px)) !important;
+    height: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    overflow: visible !important;
+}
+#floating-download-badge.is-visible {
+    display: flex !important;
+}
+
+/* One frosted glass capsule */
+#floating-download-badge .as-nav-pill-shell.dl-session-shell,
+#floating-download-badge .dl-session-shell {
+    position: relative !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 10px !important;
+    width: auto !important;
+    min-width: min(280px, calc(100vw - 40px)) !important;
+    max-width: min(440px, calc(100vw - 28px)) !important;
+    height: auto !important;
+    min-height: 52px !important;
+    max-height: 68px !important;
+    padding: 7px 8px 7px 16px !important;
+    border-radius: 22px !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    isolation: isolate !important;
+    cursor: pointer !important;
+
+    background: rgba(95, 95, 105, 0.36) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.38),
+        0 2px 8px rgba(0, 0, 0, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.28),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.16) !important;
+    backdrop-filter: blur(52px) saturate(175%) brightness(1.1) !important;
+    -webkit-backdrop-filter: blur(52px) saturate(175%) brightness(1.1) !important;
+}
+
+#floating-download-badge .dl-session-shell::before {
+    content: "" !important;
+    position: absolute !important;
+    inset: 0 !important;
+    border-radius: inherit !important;
+    pointer-events: none !important;
+    z-index: 0 !important;
+    background: linear-gradient(
+        180deg,
+        rgba(255, 255, 255, 0.16) 0%,
+        rgba(255, 255, 255, 0.04) 40%,
+        rgba(0, 0, 0, 0.08) 100%
+    ) !important;
+}
+
+/* Hide leftover glass layers only (not session content) */
+#floating-download-badge .lg-backdrop-canvas,
+#floating-download-badge .lg-tint,
+#floating-download-badge .lg-specular,
+#floating-download-badge .lg-edge {
+    display: none !important;
+}
+
+/* Text block: row1 Title · % · status | row2 current file · file% */
+#floating-download-badge .dl-session-info {
+    position: relative !important;
+    z-index: 2 !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    justify-content: center !important;
+    gap: 2px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+}
+
+#floating-download-badge .dl-session-row-main,
+#floating-download-badge .dl-session-row-file {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    gap: 7px !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
+}
+
+#floating-download-badge .dl-session-row-file {
+    gap: 6px !important;
+    opacity: 0.88 !important;
+}
+
+#floating-download-badge .dl-session-file-name {
+    font-size: 0.68rem !important;
+    font-weight: 500 !important;
+    font-family: "JetBrains Mono", ui-monospace, monospace !important;
+    color: rgba(255, 255, 255, 0.72) !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    max-width: min(200px, 42vw) !important;
+}
+
+#floating-download-badge .dl-session-file-pct {
+    font-size: 0.68rem !important;
+    font-weight: 700 !important;
+    font-variant-numeric: tabular-nums !important;
+    color: rgba(196, 181, 253, 0.95) !important;
+    flex: 0 0 auto !important;
+}
+
+#floating-download-badge .dl-session-file-size {
+    font-size: 0.64rem !important;
+    font-weight: 500 !important;
+    font-family: "JetBrains Mono", ui-monospace, monospace !important;
+    font-variant-numeric: tabular-nums !important;
+    color: rgba(255, 255, 255, 0.62) !important;
+    flex: 0 0 auto !important;
+}
+
+#floating-download-badge .dl-session-file-speed {
+    font-size: 0.64rem !important;
+    font-weight: 700 !important;
+    font-variant-numeric: tabular-nums !important;
+    color: rgba(134, 239, 172, 0.95) !important;
+    flex: 0 0 auto !important;
+}
+
+#floating-download-badge .dl-session-file-name {
+    max-width: min(140px, 28vw) !important;
+}
+
+#floating-download-badge .dl-session-shell {
+    max-width: min(520px, calc(100vw - 24px)) !important;
+}
+
+#floating-download-badge .dl-session-title {
+    font-size: 0.82rem !important;
+    font-weight: 650 !important;
+    color: rgba(255, 255, 255, 0.94) !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    max-width: min(160px, 36vw) !important;
+}
+
+#floating-download-badge .dl-session-dot {
+    color: rgba(255, 255, 255, 0.35) !important;
+    font-weight: 700 !important;
+}
+
+#floating-download-badge .dl-session-pct {
+    font-size: 0.78rem !important;
+    font-weight: 700 !important;
+    font-variant-numeric: tabular-nums !important;
+    color: rgba(255, 255, 255, 0.78) !important;
+    flex: 0 0 auto !important;
+}
+
+/* Status chip: PAUSED / ACTIVE / ETA */
+#floating-download-badge .dl-session-status,
+#floating-download-badge #mini-game-eta {
+    flex: 0 0 auto !important;
+    font-size: 0.62rem !important;
+    font-weight: 750 !important;
+    letter-spacing: 0.04em !important;
+    text-transform: uppercase !important;
+    padding: 3px 8px !important;
+    border-radius: 999px !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    color: rgba(255, 255, 255, 0.7) !important;
+}
+#floating-download-badge #mini-game-eta.is-paused,
+#floating-download-badge .dl-session-status.is-paused {
+    color: #fbbf24 !important;
+    background: rgba(251, 191, 36, 0.12) !important;
+    border-color: rgba(251, 191, 36, 0.28) !important;
+}
+#floating-download-badge #mini-game-eta.is-running,
+#floating-download-badge .dl-session-status.is-running {
+    color: #86efac !important;
+    background: rgba(74, 222, 128, 0.12) !important;
+    border-color: rgba(134, 239, 172, 0.28) !important;
+}
+#floating-download-badge #mini-game-eta.is-done,
+#floating-download-badge .dl-session-status.is-done {
+    color: #93c5fd !important;
+    background: rgba(59, 130, 246, 0.12) !important;
+    border-color: rgba(147, 197, 253, 0.28) !important;
+}
+
+/* Play / pause control — elevated frosted disc */
+#floating-download-badge .dl-session-toggle {
+    position: relative !important;
+    z-index: 2 !important;
+    flex: 0 0 40px !important;
+    width: 40px !important;
+    height: 40px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 50% !important;
+    background: transparent !important;
+    color: #fff !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    transition: transform 0.16s ease !important;
+}
+#floating-download-badge .dl-session-toggle:hover {
+    transform: scale(1.06) !important;
+}
+#floating-download-badge .dl-session-toggle:active {
+    transform: scale(0.94) !important;
+}
+
+#floating-download-badge .dl-session-toggle .as-nav-center-ring {
+    position: absolute !important;
+    inset: 0 !important;
+    border-radius: 50% !important;
+    z-index: 0 !important;
+    background: rgba(48, 48, 56, 0.55) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    box-shadow:
+        0 6px 16px rgba(0, 0, 0, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.24),
+        inset 0 -2px 8px rgba(0, 0, 0, 0.25) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+}
+#floating-download-badge .dl-session-toggle .as-nav-center-ring::after {
+    content: "" !important;
+    position: absolute !important;
+    inset: 0 !important;
+    border-radius: 50% !important;
+    background: linear-gradient(
+        160deg,
+        rgba(255, 255, 255, 0.16) 0%,
+        transparent 45%,
+        rgba(0, 0, 0, 0.12) 100%
+    ) !important;
+    pointer-events: none !important;
+}
+#floating-download-badge .dl-session-toggle .as-nav-center-icon {
+    position: relative !important;
+    z-index: 1 !important;
+    width: 18px !important;
+    height: 18px !important;
+    fill: #fff !important;
+}
+#floating-download-badge .dl-session-toggle.is-running .as-nav-center-ring {
+    box-shadow:
+        0 6px 16px rgba(0, 0, 0, 0.35),
+        0 0 0 1px rgba(134, 239, 172, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
+}
+#floating-download-badge .dl-session-toggle.is-paused .as-nav-center-ring {
+    box-shadow:
+        0 6px 16px rgba(0, 0, 0, 0.35),
+        0 0 0 1px rgba(251, 191, 36, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
+}
+
+/* Hide old caption / 3-btn leftovers */
+#floating-download-badge .as-nav-caption,
+#floating-download-badge .as-nav-btn:not(.dl-session-toggle),
+#floating-download-badge #mini-btn-open-queue,
+#floating-download-badge #mini-btn-cancel {
+    display: none !important;
+}
+
+/* Pagination still frosted (same material) */
+.floating-pagination-capsule {
+    position: absolute !important;
+    bottom: 16px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: min(200px, calc(100vw - 48px)) !important;
+    height: 52px !important;
+    padding: 4px 8px !important;
+    border-radius: 9999px !important;
+    z-index: 120 !important;
+    overflow: hidden !important;
+    background: rgba(95, 95, 105, 0.36) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    box-shadow:
+        0 12px 36px rgba(0, 0, 0, 0.36),
+        inset 0 1px 0 rgba(255, 255, 255, 0.24) !important;
+    backdrop-filter: blur(52px) saturate(175%) brightness(1.1) !important;
+    -webkit-backdrop-filter: blur(52px) saturate(175%) brightness(1.1) !important;
+}
+.floating-pagination-capsule:hover { transform: translateX(-50%) !important; }
+.floating-pagination-capsule::before {
+    content: "" !important;
+    position: absolute !important;
+    inset: 0 !important;
+    border-radius: inherit !important;
+    pointer-events: none !important;
+    background: linear-gradient(180deg, rgba(255,255,255,0.14) 0%, transparent 50%, rgba(0,0,0,0.08) 100%) !important;
+}
+.floating-pagination-capsule > * { position: relative !important; z-index: 1 !important; }
+.floating-pagination-capsule .lg-backdrop-canvas,
+.floating-pagination-capsule .lg-tint,
+.floating-pagination-capsule .lg-specular,
+.floating-pagination-capsule .lg-edge,
+.floating-pagination-capsule .lg-content { display: none !important; }
+
+.pagination-arrow-btn {
+    width: 40px !important;
+    height: 40px !important;
+    border: none !important;
+    border-radius: 50% !important;
+    background: transparent !important;
+    color: rgba(200, 200, 210, 0.8) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+}
+.pagination-arrow-btn:hover:not(:disabled) {
+    color: #fff !important;
+    background: transparent !important;
+}
+.pagination-arrow-btn:disabled { opacity: 0.28 !important; cursor: not-allowed !important; }
+
+.pagination-page-num {
+    width: 38px !important;
+    height: 38px !important;
+    min-width: 38px !important;
+    border-radius: 50% !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-weight: 700 !important;
+    font-size: 0.88rem !important;
+    color: #fff !important;
+    background: rgba(48, 48, 56, 0.55) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Site buttons still hidden */
+#btn-catalog-go-to-site,
+#btn-go-to-site,
+#btn-open-browser-top,
+#btn-open-browser,
+.catalog-toolbar-left {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+}

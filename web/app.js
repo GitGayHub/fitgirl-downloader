@@ -142,12 +142,26 @@ let hazeApplyGeneration = 0;
 let dynamicResetTimeout = null;
 let hazeAnimRaf = 0;
 
-// Proxy helper for blocked ISP domains
+/**
+ * Open FitGirl through local reverse proxy (Python fetches via DoH).
+ * Browser DNS in DE/RU is blocked — direct fitgirl-repacks.site fails;
+ * localhost proxy serves the real site HTML+CSS+images.
+ */
 function getOpenBrowserUrl(originalUrl) {
-    if (originalUrl && originalUrl.includes("fitgirl-repacks.site")) {
-        return `/api/proxy_page?url=${encodeURIComponent(originalUrl)}`;
+    if (!originalUrl) return originalUrl;
+    const u = String(originalUrl);
+    if (u.includes("fitgirl-repacks.site") || u.includes("paste.fitgirl-repacks.site")) {
+        // Absolute origin so target=_blank always hits our server, not a relative dead tab
+        const origin = (typeof location !== "undefined" && location.origin)
+            ? location.origin
+            : "http://127.0.0.1:8000";
+        return `${origin}/api/proxy_page?url=${encodeURIComponent(u)}`;
     }
     return originalUrl;
+}
+
+function getFitGirlHomeProxyUrl() {
+    return getOpenBrowserUrl("https://fitgirl-repacks.site/");
 }
 
 // Download View Elements
@@ -163,6 +177,139 @@ const elGlobalSpeed = document.getElementById("global-speed");
 const elGlobalTimeLeft = document.getElementById("global-time-left");
 const svgProgressCircleBar = document.querySelector(".progress-circle-bar");
 const svgDashboardProgressBar = document.getElementById("dashboard-progress-bar");
+const elCurrentFileLine = document.getElementById("current-file-progress-line");
+const elCurrentFileName = document.getElementById("current-file-name");
+const elCurrentFilePct = document.getElementById("current-file-pct");
+const elCurrentFileSize = document.getElementById("current-file-size");
+const elCurrentFileSpeed = document.getElementById("current-file-speed");
+
+/** Active downloading/connecting file (or first waiting if idle). */
+function getActiveDownloadFile(state) {
+    const files = (state && state.files) || [];
+    if (!files.length) return null;
+    const idx = typeof state.active_index === "number" ? state.active_index : -1;
+    if (idx >= 0 && idx < files.length) {
+        const f = files[idx];
+        if (f && ["downloading", "connecting", "copying"].includes(f.status)) return f;
+    }
+    const active = files.find((f) =>
+        ["downloading", "connecting", "copying"].includes(f.status)
+    );
+    if (active) return active;
+    // paused/idle: show first incomplete as context
+    return files.find((f) => f.status !== "finished") || null;
+}
+
+function shortFileName(name, maxLen = 42) {
+    const n = String(name || "").trim();
+    if (!n) return "—";
+    if (n.length <= maxLen) return n;
+    const keep = maxLen - 1;
+    const head = Math.ceil(keep * 0.55);
+    const tail = keep - head;
+    return n.slice(0, head) + "…" + n.slice(-tail);
+}
+
+/** Compact size for file line: always prefer MB/GB for readability. */
+function formatFileSizePair(downloaded, total) {
+    const d = Math.max(0, Number(downloaded) || 0);
+    const t = Math.max(0, Number(total) || 0);
+    if (t <= 0 && d <= 0) return "0 / ? MB";
+    if (t <= 0) return `${formatBytes(d, 1)} / ?`;
+    // Same unit for both when possible (prefer MB for mid-size parts)
+    if (t < 1024 * 1024 * 1024) {
+        const dm = d / (1024 * 1024);
+        const tm = t / (1024 * 1024);
+        return `${dm.toFixed(1)} / ${tm.toFixed(1)} MB`;
+    }
+    const dg = d / (1024 * 1024 * 1024);
+    const tg = t / (1024 * 1024 * 1024);
+    return `${dg.toFixed(2)} / ${tg.toFixed(2)} GB`;
+}
+
+function updateCurrentFileProgressLine(state) {
+    const f = getActiveDownloadFile(state);
+    const line = elCurrentFileLine;
+    const elName = elCurrentFileName;
+    const elPct = elCurrentFilePct;
+    const elSize = elCurrentFileSize;
+    const elSpeed = elCurrentFileSpeed;
+    const elMiniRow = document.getElementById("mini-current-file-row");
+    const elMiniName = document.getElementById("mini-current-file-name");
+    const elMiniPct = document.getElementById("mini-current-file-pct");
+    const elMiniSize = document.getElementById("mini-current-file-size");
+    const elMiniSpeed = document.getElementById("mini-current-file-speed");
+
+    if (!f) {
+        if (line) line.classList.add("is-idle");
+        if (elName) {
+            elName.textContent = "No active file";
+            elName.title = "";
+        }
+        if (elPct) elPct.textContent = "—";
+        if (elSize) elSize.textContent = "—";
+        if (elSpeed) elSpeed.textContent = "—";
+        if (elMiniRow) elMiniRow.hidden = true;
+        return;
+    }
+
+    const fullName = f.filename || "file";
+    const downloaded = Number(f.downloaded) || 0;
+    let total = Number(f.size) || 0;
+    if (total <= 0 && f.type === "installer") total = 7468619;
+    let pct = typeof f.progress === "number" ? f.progress : 0;
+    if ((!pct || pct === 0) && total > 0 && downloaded > 0) {
+        pct = Math.min(100, Math.floor((downloaded / total) * 100));
+    }
+    pct = Math.max(0, Math.min(100, Math.round(pct)));
+    const fileSpeed = Number(f.speed) || 0;
+    const isActive =
+        f.status === "downloading" || f.status === "connecting" || f.status === "copying";
+    const statusHint =
+        f.status === "connecting"
+            ? "connecting"
+            : f.status === "copying"
+              ? "copying"
+              : f.status === "waiting"
+                ? "queued"
+                : f.status === "failed"
+                  ? "failed"
+                  : "";
+    const short = shortFileName(fullName, 36);
+    const sizeLabel = formatFileSizePair(downloaded, total);
+    const speedLabel =
+        isActive && fileSpeed > 0
+            ? formatSpeed(fileSpeed)
+            : f.status === "connecting"
+              ? "…"
+              : f.status === "waiting"
+                ? "—"
+                : "0.0 MB/s";
+    const pctLabel =
+        statusHint && f.status !== "downloading" ? `${pct}% · ${statusHint}` : `${pct}%`;
+
+    if (line) line.classList.toggle("is-idle", f.status === "waiting" || f.status === "finished");
+    if (elName) {
+        elName.textContent = short;
+        elName.title =
+            `${fullName}` +
+            (f.status ? ` (${f.status})` : "") +
+            ` · ${sizeLabel}` +
+            (fileSpeed > 0 ? ` · ${formatSpeed(fileSpeed)}` : "");
+    }
+    if (elPct) elPct.textContent = pctLabel;
+    if (elSize) elSize.textContent = sizeLabel;
+    if (elSpeed) elSpeed.textContent = speedLabel;
+
+    if (elMiniRow && elMiniName && elMiniPct) {
+        elMiniRow.hidden = false;
+        elMiniName.textContent = shortFileName(fullName, 28);
+        elMiniName.title = fullName;
+        elMiniPct.textContent = `${pct}%`;
+        if (elMiniSize) elMiniSize.textContent = sizeLabel;
+        if (elMiniSpeed) elMiniSpeed.textContent = speedLabel;
+    }
+}
 
 /**
  * Derive session phase from backend state.
@@ -475,7 +622,63 @@ async function fetchState() {
     }
 }
 
+function updateWarpSettingsPanel(newState) {
+    const elStatus = document.getElementById("warp-settings-status");
+    const elInstall = document.getElementById("btn-warp-install");
+    const elRotate = document.getElementById("btn-warp-rotate");
+    if (!elStatus) return;
+
+    const status = newState.warp_status || "unknown";
+    const connected = !!newState.warp_connected;
+    let label = "Cloudflare WARP: unknown";
+    let color = "var(--text-muted)";
+
+    if (status === "installing" || status === "checking") {
+        label = status === "installing"
+            ? "Downloading / installing Cloudflare WARP…"
+            : "Checking Cloudflare WARP…";
+        color = "#f5c542";
+        if (elInstall) {
+            elInstall.disabled = true;
+            elInstall.innerText = "Working…";
+        }
+    } else if (status === "installed") {
+        label = connected
+            ? "✓ WARP installed and connected — auto IP rotate on Pixeldrain limit"
+            : "✓ WARP installed (connecting…) — auto IP rotate on Pixeldrain limit";
+        color = "#3dd68c";
+        if (elInstall) {
+            elInstall.disabled = true;
+            elInstall.innerText = "Installed";
+        }
+        if (elRotate) elRotate.disabled = false;
+    } else if (status === "error") {
+        label = "WARP not ready: " + (newState.warp_error_message || "install failed");
+        color = "#ff6b6b";
+        if (elInstall) {
+            elInstall.disabled = false;
+            elInstall.innerText = "Download / Install WARP";
+        }
+    } else if (status === "skipped") {
+        label = "WARP skipped at startup — install here to unlock high Pixeldrain speed";
+        color = "#f5c542";
+        if (elInstall) {
+            elInstall.disabled = false;
+            elInstall.innerText = "Download / Install WARP";
+        }
+    } else {
+        if (elInstall) {
+            elInstall.disabled = false;
+            elInstall.innerText = "Download / Install WARP";
+        }
+    }
+
+    elStatus.style.color = color;
+    elStatus.innerText = label;
+}
+
 function handleWarpState(newState) {
+    updateWarpSettingsPanel(newState);
     if (!elWarpModal) return;
     
     const status = newState.warp_status;
@@ -504,7 +707,7 @@ function handleWarpState(newState) {
         elWarpSkipBtn.style.display = "block";
         elWarpRetryBtn.style.display = "block";
     } else {
-        // installed or skipped
+        // installed or skipped — hide blocking modal
         elWarpModal.style.display = "none";
     }
 }
@@ -513,21 +716,51 @@ function handleWarpState(newState) {
 function updateUI(newState) {
     handleWarpState(newState);
     
-    // Pixeldrain limit warning modal trigger
+    // Pixeldrain free-cap: backend auto-rotates WARP; UI also kicks rotate ONCE
+    // without waiting for the user to spam buttons (clicking did nothing useful before).
     if (newState.pixeldrain_limit_reached && !isShowingPixeldrainLimitAlert) {
         isShowingPixeldrainLimitAlert = true;
-        Swal.fire({
-            title: 'Pixeldrain Limit Reached',
-            text: "You have reached Pixeldrain's daily free bandwidth limit (6 GB). Speed is throttled to 1 MB/s total. Please enable a VPN or Cloudflare WARP, then Pause and Resume the download in this app to reconnect at high speed.",
-            icon: 'warning',
-            confirmButtonText: 'OK',
-            confirmButtonColor: '#9b59b6',
-            background: '#040409',
-            color: '#e2e2ec'
-        }).then(() => {
-            fetch("/api/clear_pixeldrain_limit");
-            isShowingPixeldrainLimitAlert = false;
-        });
+        const hasWarp = newState.warp_status === "installed";
+
+        // Silent auto-kick immediately (no user click required)
+        (async () => {
+            try {
+                if (hasWarp) {
+                    console.log("[AUTO-WARP UI] pixeldrain_limit_reached → /api/warp/rotate");
+                    await fetch("/api/warp/rotate", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: "{}",
+                    });
+                    // Backend already pause/resumes workers; just refresh UI after a bit
+                    setTimeout(() => fetchState(), 10000);
+                }
+            } catch (e) {
+                console.error("[AUTO-WARP UI] rotate failed", e);
+            } finally {
+                // Allow another auto-kick in 90s if still limited
+                setTimeout(() => {
+                    isShowingPixeldrainLimitAlert = false;
+                    try { fetch("/api/clear_pixeldrain_limit"); } catch (_) {}
+                }, 90000);
+            }
+        })();
+
+        // Non-blocking toast only (don't freeze UI on modal that needs clicks)
+        if (typeof Swal !== "undefined") {
+            Swal.fire({
+                toast: true,
+                position: "top-end",
+                timer: 6000,
+                showConfirmButton: false,
+                icon: hasWarp ? "info" : "warning",
+                title: hasWarp
+                    ? "Pixeldrain free-cap — auto WARP IP rotate…"
+                    : "Pixeldrain free-cap — install WARP in Settings",
+                background: "#040409",
+                color: "#e2e2ec",
+            });
+        }
     }
 
     // 1. Manage setup vs download views
@@ -667,6 +900,9 @@ function updateUI(newState) {
         const progressPct = Math.max(0, Math.min(100, Number(newState.total_progress) || 0));
         const offset = 283 - (283 * progressPct) / 100;
         setProgressCircle(offset, `${progressPct}%`);
+
+        // Second line under overall progress: current file · file%
+        updateCurrentFileProgressLine(newState);
         
         // ETA / status under progress ring
         if (elGlobalTimeLeft) {
@@ -1044,7 +1280,7 @@ function initCheckedFiles(files) {
 
 // ---- Details page cache (memory + localStorage) so revisiting games is instant ----
 const detailsPageCache = new Map();
-const DETAILS_CACHE_STORAGE_KEY = "fg_details_cache_v6";
+const DETAILS_CACHE_STORAGE_KEY = "fg_details_cache_v9";
 const DETAILS_CACHE_MAX = 40;
 
 (function hydrateDetailsCache() {
@@ -1074,9 +1310,70 @@ function cacheKeyForUrl(url) {
     return (url || "").trim().replace(/\/+$/, "").toLowerCase();
 }
 
-function applyAnalyzeResult(url, data) {
+/** Format repack size for UI: "55/55.1 GB" → "55–55.1 GB" (not progress-looking). */
+function formatRepackSizeDisplay(sizeStr) {
+    if (!sizeStr || sizeStr === "Unknown" || sizeStr === "—") return sizeStr || "";
+    let s = String(sizeStr).trim();
+    s = s.replace(
+        /\s+(?:Download\s+Mirrors?|Filehoster|Genres?\/Tags?|Companies?|Languages?).*$/i,
+        ""
+    ).trim();
+    const m = s.match(/^([\d]+(?:[.,][\d]+)?)\s*\/\s*([\d]+(?:[.,][\d]+)?)\s*([A-Za-z]+)?\s*$/);
+    if (m) {
+        const unit = (m[3] || "GB").trim();
+        return `${m[1]}–${m[2]} ${unit}`;
+    }
+    // already en-dash form
+    return s.replace(/\//g, "–");
+}
+
+/** Drop FitGirl "Included Bonus Content / Soundtracks" dumps from description text. */
+function stripBonusContentFromDescription(text) {
+    if (!text) return text;
+    let out = String(text);
+    // Cut from first bonus header to end
+    out = out.replace(
+        /(?:\n|^)\s*(?:•\s*)?(?:included\s+)?bonus\s+(?:content|soundtracks?|osts?|materials?|extras?)(?:\s*\([^)]*\))?\s*:?\s*\n[\s\S]*$/i,
+        ""
+    );
+    out = out.replace(
+        /(?:\n|^)\s*(?:•\s*)?включ[её]нн\w*\s+бонусн\w*[\s\S]*$/i,
+        ""
+    );
+    const lines = out.split("\n");
+    const cleaned = [];
+    let skip = false;
+    const isBonusHeader = (ln) => {
+        const low = (ln || "").trim().toLowerCase().replace(/^[•·*\-–—]\s*/, "").replace(/:+\s*$/, "");
+        if (/^(included\s+)?bonus\s+(content|soundtracks?|osts?|materials?|extras?)(\s*\([^)]*\))?$/.test(low)) return true;
+        if (/included bonus/.test(low) && /(content|soundtrack|ost|non-audio|audio)/.test(low)) return true;
+        return false;
+    };
+    const isResume = (ln) => {
+        const low = (ln || "").trim().toLowerCase().replace(/:+\s*$/, "");
+        return /^(game features|features|pc features|about this game|about the game|story|plot)$/.test(low);
+    };
+    for (const ln of lines) {
+        if (isBonusHeader(ln)) { skip = true; continue; }
+        if (skip) {
+            if (isResume(ln)) { skip = false; cleaned.push(ln); }
+            continue;
+        }
+        cleaned.push(ln);
+    }
+    return cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function applyAnalyzeResult(url, data, gen = detailsOpenGeneration) {
+    // Drop stale responses from a previous game click
+    if (gen !== detailsOpenGeneration) {
+        console.warn("Stale analyze result ignored", url);
+        return;
+    }
     // Shared apply path for network + cache hits
     if (data.type === "fitgirl_page") {
+        // Always sanitize description (cache may predate bonus strip)
+        if (data.description) data.description = stripBonusContentFromDescription(data.description);
 // Populate metadata sidebar
                 scrapedMetadata.original_size = data.original_size || "Unknown";
                 scrapedMetadata.repack_size = data.repack_size || "Unknown";
@@ -1096,8 +1393,9 @@ function applyAnalyzeResult(url, data) {
                 }
                 const btnOpenTop = document.getElementById("btn-open-browser-top");
                 if (btnOpenTop) {
-                    btnOpenTop.href = getOpenBrowserUrl(url);
-                    btnOpenTop.style.display = "inline-flex";
+                    btnOpenTop.style.display = "none";
+                    btnOpenTop.setAttribute("hidden", "");
+                    btnOpenTop.setAttribute("aria-hidden", "true");
                 }
                 
                 // Render Hero Banner backdrop
@@ -1204,18 +1502,20 @@ function applyAnalyzeResult(url, data) {
                 const btnBackTop = document.getElementById("btn-back-to-catalog-top");
                 if (btnBackTop) {
                     btnBackTop.onclick = () => {
-                        setViewState("catalog");
+                        navigateBackToCatalog();
                     };
                 }
+                // Open-on-site control removed from details header (always keep hidden)
                 const btnOpenBrowserTop = document.getElementById("btn-open-browser-top");
-                if (btnOpenBrowserTop && url) {
-                    btnOpenBrowserTop.href = getOpenBrowserUrl(url);
-                    btnOpenBrowserTop.style.display = "flex";
-                } else if (btnOpenBrowserTop) {
+                if (btnOpenBrowserTop) {
                     btnOpenBrowserTop.style.display = "none";
+                    btnOpenBrowserTop.setAttribute("hidden", "");
+                    btnOpenBrowserTop.setAttribute("aria-hidden", "true");
                 }
 
-                // Render Screenshots & Videos Gallery
+                // Render Screenshots & Videos Gallery (always after hard clear of previous game)
+                clearDetailsMediaHard();
+                if (gen !== detailsOpenGeneration) return;
                 renderScreenshots(data.screenshots, data.videos);
                 if (elGameScreenshotsSection) elGameScreenshotsSection.classList.remove("is-loading-media");
                 const showcaseEl = document.getElementById("screenshot-main-showcase-container");
@@ -1245,7 +1545,9 @@ function applyAnalyzeResult(url, data) {
                 showMetaRow(
                     document.getElementById("row-fg-repack-size"),
                     document.getElementById("details-fg-repack-size"),
-                    (data.repack_size && data.repack_size !== "Unknown") ? data.repack_size : ""
+                    (data.repack_size && data.repack_size !== "Unknown")
+                        ? formatRepackSizeDisplay(data.repack_size)
+                        : ""
                 );
                 const metaCard = document.querySelector(".details-meta-card");
                 if (metaCard) metaCard.style.display = metaVisibleCount > 0 ? "block" : "none";
@@ -1257,7 +1559,7 @@ function applyAnalyzeResult(url, data) {
                     const rs = (data.repack_size && data.repack_size !== "Unknown")
                         ? data.repack_size
                         : (scrapedMetadata.repack_size !== "Unknown" ? scrapedMetadata.repack_size : "");
-                    detailsBottomSize.innerText = rs || "—";
+                    detailsBottomSize.innerText = formatRepackSizeDisplay(rs) || "—";
                 }
                 if (detailsBottomBar) setDetailsDownloadBarVisible(true);
                 
@@ -1401,7 +1703,8 @@ function applyAnalyzeResult(url, data) {
         scrapedMetadata.repack_size = data.repack_size || "Unknown";
         scrapedMetadata.cover_image = data.cover_image || "";
         if (data.description && elGameDescription) {
-            elGameDescription.innerHTML = String(data.description).replace(/\n/g, "<br>");
+            const cleanDesc = stripBonusContentFromDescription(String(data.description));
+            elGameDescription.innerHTML = cleanDesc.replace(/\n/g, "<br>");
             const descSection = document.getElementById("details-desc-section");
             if (descSection) descSection.style.display = "block";
         }
@@ -1412,7 +1715,9 @@ function applyAnalyzeResult(url, data) {
         }
         const detailsBottomSize = document.getElementById("details-bottom-size");
         if (detailsBottomSize) {
-            detailsBottomSize.innerText = (data.repack_size && data.repack_size !== "Unknown") ? data.repack_size : "—";
+            detailsBottomSize.innerText = (data.repack_size && data.repack_size !== "Unknown")
+                ? formatRepackSizeDisplay(data.repack_size)
+                : "—";
         }
         setDetailsDownloadBarVisible(true);
         setViewState("details");
@@ -1439,17 +1744,25 @@ elAnalyzeBtn.addEventListener("click", async () => {
         elAnalyzeBtn.removeAttribute("disabled");
     };
 
+    const genAtStart = detailsOpenGeneration;
+
     // Instant cache hit (already-opened games)
     if (detailsPageCache.has(key)) {
         try {
-            applyAnalyzeResult(url, detailsPageCache.get(key));
+            applyAnalyzeResult(url, detailsPageCache.get(key), genAtStart);
         } catch (e) {
             console.warn("Cache apply failed, refetching", e);
             detailsPageCache.delete(key);
         } finally {
-            finishUi();
+            if (genAtStart === detailsOpenGeneration) finishUi();
+            else {
+                elAnalyzeSpinner.style.display = "none";
+                elAnalyzeBtnText.innerText = "Analyze Link";
+                elAnalyzeBtn.removeAttribute("disabled");
+            }
         }
-        if (detailsPageCache.has(key)) return;
+        if (detailsPageCache.has(key) && genAtStart === detailsOpenGeneration) return;
+        if (genAtStart !== detailsOpenGeneration) return;
     }
 
     const controller = new AbortController();
@@ -1464,6 +1777,14 @@ elAnalyzeBtn.addEventListener("click", async () => {
         });
         clearTimeout(timeoutId);
 
+        // User already opened another game — discard this response
+        if (genAtStart !== detailsOpenGeneration) {
+            elAnalyzeSpinner.style.display = "none";
+            elAnalyzeBtnText.innerText = "Analyze Link";
+            elAnalyzeBtn.removeAttribute("disabled");
+            return;
+        }
+
         const data = await response.json();
         if (response.ok && data.success) {
             detailsPageCache.set(key, data);
@@ -1472,7 +1793,7 @@ elAnalyzeBtn.addEventListener("click", async () => {
                 detailsPageCache.delete(first);
             }
             persistDetailsCache();
-            applyAnalyzeResult(url, data);
+            applyAnalyzeResult(url, data, genAtStart);
         } else {
             elAnalyzeError.style.display = "block";
             elAnalyzeError.innerText = data.error || "Failed to analyze link. Check logs.";
@@ -1501,6 +1822,12 @@ elAnalyzeBtn.addEventListener("click", async () => {
         }
     } catch (e) {
         clearTimeout(timeoutId);
+        if (genAtStart !== detailsOpenGeneration) {
+            elAnalyzeSpinner.style.display = "none";
+            elAnalyzeBtnText.innerText = "Analyze Link";
+            elAnalyzeBtn.removeAttribute("disabled");
+            return;
+        }
         console.error("Error analyzing:", e);
         const isAbort = e && e.name === "AbortError";
         elAnalyzeError.style.display = "block";
@@ -1528,7 +1855,12 @@ elAnalyzeBtn.addEventListener("click", async () => {
             }
         }
     } finally {
-        finishUi();
+        if (genAtStart === detailsOpenGeneration) finishUi();
+        else {
+            elAnalyzeSpinner.style.display = "none";
+            elAnalyzeBtnText.innerText = "Analyze Link";
+            elAnalyzeBtn.removeAttribute("disabled");
+        }
     }
 });
 
@@ -2027,7 +2359,7 @@ function updateSelectionPill() {
         if (totalSelectedSize > 0) {
             detailsBottomSize.innerText = formatBytes(totalSelectedSize);
         } else if (scrapedMetadata.repack_size && scrapedMetadata.repack_size !== "Unknown") {
-            detailsBottomSize.innerText = scrapedMetadata.repack_size;
+            detailsBottomSize.innerText = formatRepackSizeDisplay(scrapedMetadata.repack_size);
         }
     }
 }
@@ -2328,6 +2660,10 @@ function setFloatingIslandVisible(el, visible) {
     el.setAttribute("aria-hidden", visible ? "false" : "true");
     // Inline styles must not fight CSS !important; class .is-visible owns display.
     el.style.removeProperty("display");
+    // Kick liquid-glass backdrop capture when island appears
+    if (visible && typeof window.refreshLiquidGlass === "function") {
+        requestAnimationFrame(() => window.refreshLiquidGlass());
+    }
 }
 
 /** True only when there is a real configured download queue (not ghost placeholders). */
@@ -2432,6 +2768,9 @@ function updateMiniBadge(newState) {
             elMiniProgressBarFill.style.width = `${pct}%`;
         }
 
+        // Second line on island: current file · its %
+        updateCurrentFileProgressLine(newState);
+
         const playPauseBtn = document.getElementById("mini-btn-play-pause");
         if (playPauseBtn) {
             const running = sessionInfo.phase === "downloading" || sessionInfo.phase === "starting";
@@ -2442,13 +2781,23 @@ function updateMiniBadge(newState) {
             else if (sessionInfo.phase === "ready") aria = "Start Download";
             playPauseBtn.setAttribute("aria-label", aria);
             playPauseBtn.title = aria;
+            // Play / pause / done inside frosted disc
+            const iconSvg = (path) =>
+                `<span class="as-nav-center-ring" aria-hidden="true"></span>` +
+                `<svg class="as-nav-center-icon" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="${path}"/></svg>`;
+            const PLAY = "M8 5v14l11-7z";
+            const PAUSE = "M6 19h4V5H6v14zm8-14v14h4V5h-4z";
+            const CHECK = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z";
             if (sessionInfo.phase === "complete") {
-                playPauseBtn.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+                playPauseBtn.innerHTML = iconSvg(CHECK);
+            } else if (running) {
+                playPauseBtn.innerHTML = iconSvg(PAUSE);
             } else {
-                playPauseBtn.innerHTML = running
-                    ? `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M7 5h3v14H7V5zm7 0h3v14h-3V5z"/></svg>`
-                    : `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+                playPauseBtn.innerHTML = iconSvg(PLAY);
             }
+            playPauseBtn.classList.toggle("is-running", running);
+            playPauseBtn.classList.toggle("is-paused", sessionInfo.phase === "paused");
+            playPauseBtn.classList.toggle("is-done", sessionInfo.phase === "complete");
         }
 
         const elDetailsGameTitle = document.getElementById("details-game-title");
@@ -2473,11 +2822,96 @@ function updateMiniBadge(newState) {
 // ViewState Router
 let viewState = "catalog"; // "catalog", "details", "downloading"
 
-function setViewState(state) {
+/**
+ * Browser / mouse Back: stay in the SPA.
+ * Opening details pushes history; Back returns to catalog instead of closing the tab.
+ */
+function setViewState(state, opts = {}) {
+    const fromHistory = !!(opts && opts.fromHistory);
+    const prev = viewState;
     viewState = state;
     syncViewState();
     updateMiniBadge(appState);
+
+    if (fromHistory) return;
+    try {
+        if (state === "details" && prev !== "details") {
+            history.pushState({ appView: "details" }, "", "#details");
+        } else if (state === "catalog" && prev === "details") {
+            // UI already navigated; keep hash in sync without extra stack entries
+            if (history.state && history.state.appView === "details") {
+                history.replaceState({ appView: "catalog" }, "", "#catalog");
+            } else if (location.hash === "#details") {
+                history.replaceState({ appView: "catalog" }, "", "#catalog");
+            }
+        }
+    } catch (_) { /* ignore history errors */ }
 }
+
+/** Prefer history.back() so mouse/browser Back and UI Back share one path. */
+function navigateBackToCatalog() {
+    try {
+        const elVideoIframe = document.getElementById("video-iframe");
+        if (elVideoIframe) elVideoIframe.src = "";
+        const elMainVideo = document.getElementById("screenshot-main-video");
+        if (elMainVideo) elMainVideo.src = "";
+        const elMainDirect = document.getElementById("screenshot-main-direct-video");
+        if (elMainDirect) {
+            try { elMainDirect.pause(); } catch (_) {}
+            elMainDirect.removeAttribute("src");
+            elMainDirect.load?.();
+        }
+    } catch (_) {}
+
+    if (viewState === "details" && history.state && history.state.appView === "details") {
+        history.back();
+        return;
+    }
+    setViewState("catalog", { fromHistory: true });
+    try {
+        history.replaceState({ appView: "catalog" }, "", "#catalog");
+    } catch (_) {}
+}
+
+window.addEventListener("popstate", (e) => {
+    const appView = (e.state && e.state.appView) || "catalog";
+
+    // Already on main catalog: Back must NOT leave the site / close the tab
+    if (viewState === "catalog") {
+        try {
+            history.pushState({ appView: "catalog", root: true }, "", "#catalog");
+        } catch (_) {}
+        return;
+    }
+
+    if (appView === "details") {
+        // Forward into details without content — bounce home
+        if (viewState !== "details") {
+            try { history.replaceState({ appView: "catalog" }, "", "#catalog"); } catch (_) {}
+            setViewState("catalog", { fromHistory: true });
+        }
+        return;
+    }
+
+    // Back from details / download overlay → catalog (stay in app)
+    if (viewState === "details" || viewState === "downloading") {
+        try {
+            const elVideoIframe = document.getElementById("video-iframe");
+            if (elVideoIframe) elVideoIframe.src = "";
+        } catch (_) {}
+        setViewState("catalog", { fromHistory: true });
+        // Keep a trap entry so another Back still stays on catalog
+        try {
+            history.pushState({ appView: "catalog", root: true }, "", "#catalog");
+        } catch (_) {}
+    }
+});
+
+// Seed history: catalog is the root. Extra push traps Back on main page.
+try {
+    history.replaceState({ appView: "catalog", root: true }, "", "#catalog");
+    history.pushState({ appView: "catalog", root: true }, "", "#catalog");
+} catch (_) {}
 
 function syncViewState() {
     if (appState.is_configured) {
@@ -2985,10 +3419,13 @@ function paletteKey(colors) {
 
 /**
  * Apply palette with Harmonoid AnimatedSwitcher crossfade + live WebGL mesh.
+ * opts.force — apply even if same key; opts.soft — longer/smoother tween (catalog page).
  */
-function applyHazePalette(colors) {
+function applyHazePalette(colors, opts = {}) {
+    const force = !!(opts && opts.force);
+    const soft = !!(opts && opts.soft);
     const key = paletteKey(colors);
-    if (key === lastHazePaletteKey && elHazeRoot && elHazeRoot.classList.contains("haze-active")) {
+    if (!force && key === lastHazePaletteKey && elHazeRoot && elHazeRoot.classList.contains("haze-active")) {
         return;
     }
     lastHazePaletteKey = key;
@@ -3008,29 +3445,31 @@ function applyHazePalette(colors) {
 
     if (nextR) {
         nextR.setColors(colors);
-        nextR.start(); // animate incoming during crossfade
+        nextR.start();
         nextR._hasColors = true;
     }
-    // Keep outgoing still for one static frame if it had no colors yet
     if (prevR && !prevR._hasColors) {
         prevR.setColors(colors);
         prevR._hasColors = true;
     }
-    // During short crossfade both may be visible; stop the outgoing shortly after
-    // (hazeFinishCrossfade). Avoid permanent dual full-screen WebGL on laptops.
 
     void nextCanvas.offsetWidth;
     nextCanvas.classList.add("is-active");
     prevCanvas.classList.remove("is-active");
     hazeMeshActiveIsA = !hazeMeshActiveIsA;
-    hazeFinishCrossfade(hazeMeshActiveIsA);
+    if (typeof hazeFinishCrossfade === "function") hazeFinishCrossfade(hazeMeshActiveIsA);
 
     const p = colors[0];
     const s = colors[1] || colors[0];
-    animateCSSColorVariables(`rgb(${p.r}, ${p.g}, ${p.b})`, `rgb(${s.r}, ${s.g}, ${s.b})`, 1100);
+    animateCSSColorVariables(
+        `rgb(${p.r}, ${p.g}, ${p.b})`,
+        `rgb(${s.r}, ${s.g}, ${s.b})`,
+        soft ? 1600 : 1100
+    );
 
-    // Soft body tint — mesh canvas paints the real background
-    document.body.style.transition = "background-color 1.2s ease";
+    document.body.style.transition = soft
+        ? "background-color 1.6s ease"
+        : "background-color 1.2s ease";
     document.body.style.backgroundColor = `rgb(${Math.floor(p.r * 0.15)},${Math.floor(p.g * 0.12)},${Math.floor(p.b * 0.18)})`;
     elHazeRoot.style.backgroundColor = "#000";
 }
@@ -3136,37 +3575,34 @@ function clearDynamicBackground() {
     if (dynamicResetTimeout) clearTimeout(dynamicResetTimeout);
     hazeApplyGeneration++;
     activeHazeUrl = "";
-    animateCSSColorVariables("#a83279", "#9b59b6", 1800);
-    ensureMeshRenderers();
-
-    const idleColors = [
-        { r: 48, g: 22, b: 58 },
-        { r: 110, g: 44, b: 120 },
-        { r: 36, g: 24, b: 62 },
-        { r: 78, g: 34, b: 98 }
-    ];
-
-    const nextCanvas = hazeMeshActiveIsA ? elHazeMeshB : elHazeMeshA;
-    const prevCanvas = hazeMeshActiveIsA ? elHazeMeshA : elHazeMeshB;
-    const nextR = hazeMeshActiveIsA ? meshRendererB : meshRendererA;
-    if (nextR) {
-        nextR.setColors(idleColors);
-        nextR.start();
+    // Do NOT snap to purple — keep mesh running and re-sample catalog covers
+    // (avoids idle blink on main page)
+    if (viewState === "catalog") {
+        scheduleCatalogPageHaze();
+        dynamicResetTimeout = setTimeout(() => {
+            if (elHazeSrcImg) {
+                elHazeSrcImg.removeAttribute("src");
+                elHazeSrcImg.removeAttribute("data-haze-src");
+            }
+            dynamicResetTimeout = null;
+        }, 200);
+        return;
     }
-    void nextCanvas?.offsetWidth;
-    nextCanvas?.classList.add("is-active");
-    prevCanvas?.classList.remove("is-active");
-    hazeMeshActiveIsA = !hazeMeshActiveIsA;
-    hazeFinishCrossfade(hazeMeshActiveIsA);
 
-    document.body.style.transition = "background-color 1.8s ease";
-    document.body.style.backgroundColor = "#05040a";
+    ensureMeshRenderers();
+    const idleColors = [
+        { r: 55, g: 28, b: 48 },
+        { r: 90, g: 40, b: 70 },
+        { r: 35, g: 30, b: 55 },
+        { r: 70, g: 35, b: 60 }
+    ];
+    applyHazePalette(idleColors, { force: true, soft: true });
 
     dynamicResetTimeout = setTimeout(() => {
-        lastHazePaletteKey = "";
+        // Keep haze-active so opacity doesn't blink to idle 0.55
         if (elHazeRoot) {
-            elHazeRoot.classList.remove("haze-active");
-            elHazeRoot.classList.add("haze-idle");
+            elHazeRoot.classList.add("haze-active");
+            elHazeRoot.classList.remove("haze-idle");
         }
         if (elHazeSrcImg) {
             elHazeSrcImg.removeAttribute("src");
@@ -3524,6 +3960,8 @@ function createGameCard(game) {
         elUrlTextarea.value = game.url;
         setViewState("details");
         showDetailsLoadingState(game.title, game.cover_image || "");
+        // Tag analyze with generation so late responses can't paint wrong game
+        elAnalyzeBtn.dataset.forGeneration = String(detailsOpenGeneration);
         elAnalyzeBtn.click();
     });
     
@@ -3655,13 +4093,83 @@ function hideDetailsPageLoader() {
     if (detailsRoot) detailsRoot.classList.remove("is-details-loading");
 }
 
+/** Bumped on every details open — cancels stale analyze/media cycles. */
+let detailsOpenGeneration = 0;
+let activeMediaGeneration = 0;
+
+/** Hard-clear showcase + thumbs so previous game never bleeds into the next. */
+function clearDetailsMediaHard() {
+    activeMediaGeneration++; // invalidate in-flight cycle timers / poster captures
+    const imgA = document.getElementById("screenshot-main-img");
+    const imgB = document.getElementById("screenshot-main-img-b");
+    const video = document.getElementById("screenshot-main-direct-video");
+    const iframe = document.getElementById("screenshot-main-video");
+    const showcase = document.getElementById("screenshot-main-showcase-container");
+    const thumbs = document.getElementById("game-screenshots-container");
+    const progress = document.getElementById("media-cycle-progress");
+    const fill = document.getElementById("media-cycle-progress-fill");
+    [imgA, imgB].forEach((img) => {
+        if (!img) return;
+        try {
+            img.onload = null;
+            img.onerror = null;
+            img.onclick = null;
+            img.removeAttribute("src");
+            img.src = "";
+            img.classList.remove("is-active");
+            img.style.opacity = "0";
+            img.style.display = "block";
+        } catch (_) {}
+    });
+    if (video) {
+        try {
+            video.pause();
+            video.onended = null;
+            video.ontimeupdate = null;
+            video.onloadedmetadata = null;
+            video.oncanplay = null;
+            video.onerror = null;
+            video.removeAttribute("src");
+            video.load();
+            video.controls = false;
+            video.classList.remove("is-active");
+        } catch (_) {}
+    }
+    if (iframe) {
+        try {
+            iframe.src = "";
+            iframe.classList.remove("is-active");
+        } catch (_) {}
+    }
+    if (thumbs) thumbs.innerHTML = "";
+    if (showcase) {
+        showcase.classList.remove("has-media", "preview-empty", "is-loading");
+        showcase.style.removeProperty("height");
+    }
+    if (progress) progress.classList.remove("is-visible");
+    if (fill) {
+        fill.style.transition = "none";
+        fill.style.width = "0%";
+    }
+    const section = document.getElementById("game-screenshots-section");
+    if (section) {
+        section.style.display = "none";
+        section.classList.remove("is-loading-media");
+    }
+}
+
 function showDetailsLoadingState(gameTitle, coverUrl = "") {
+    detailsOpenGeneration += 1;
+    clearDetailsMediaHard();
     const title = (gameTitle || "").trim() || "Loading…";
     elDetailsGameTitle.innerText = title;
     elDetailsVersionBadge.style.display = "none";
     if (elBtnOpenBrowser) elBtnOpenBrowser.style.display = "none";
     const btnOpenTop = document.getElementById("btn-open-browser-top");
-    if (btnOpenTop) btnOpenTop.style.display = "none";
+    if (btnOpenTop) {
+        btnOpenTop.style.display = "none";
+        btnOpenTop.setAttribute("hidden", "");
+    }
     elMetadataOriginalSize.innerText = "--";
     elMetadataRepackSize.innerText = "--";
     
@@ -3727,39 +4235,8 @@ function showDetailsLoadingState(gameTitle, coverUrl = "") {
         featuresSection.style.display = "none";
         featuresSection.classList.remove("active");
     }
-    // Hard-reset media so previous game never flashes
-    const elMainScreenshotImg = document.getElementById("screenshot-main-img");
-    const elMainVideoIframe = document.getElementById("screenshot-main-video");
-    const elMainDirectVideo = document.getElementById("screenshot-main-direct-video");
-    if (elMainScreenshotImg) {
-        elMainScreenshotImg.removeAttribute("src");
-        elMainScreenshotImg.src = "";
-        elMainScreenshotImg.style.display = "none";
-        elMainScreenshotImg.onclick = null;
-    }
-    if (elMainDirectVideo) {
-        try {
-            elMainDirectVideo.pause();
-            elMainDirectVideo.removeAttribute("src");
-            elMainDirectVideo.load();
-        } catch (_) {}
-        elMainDirectVideo.style.display = "none";
-        elMainDirectVideo.controls = false;
-    }
-    if (elMainVideoIframe) {
-        elMainVideoIframe.src = "";
-        elMainVideoIframe.style.display = "none";
-    }
-    if (elGameScreenshotsSection) {
-        elGameScreenshotsSection.style.display = "none";
-        elGameScreenshotsSection.classList.remove("is-loading-media");
-        const showcase = document.getElementById("screenshot-main-showcase-container");
-        if (showcase) {
-            showcase.classList.remove("preview-empty", "is-loading", "has-media");
-        }
-        const thumbs = document.getElementById("game-screenshots-container");
-        if (thumbs) thumbs.innerHTML = "";
-    }
+    // Hard-reset media so previous game never flashes (dual layers + timers)
+    clearDetailsMediaHard();
     
     elConfigCard.style.display = "none";
     elMirrorSelectSection.style.display = "none";
@@ -3931,7 +4408,124 @@ async function loadCatalogGames() {
         elGamesLoader.style.display = "none";
         elBtnPrevPage.disabled = (currentPage === 1);
         elPageIndicator.innerText = currentPage;
+        // After cards render: sample visible covers → page accent haze
+        scheduleCatalogPageHaze();
     }
+}
+
+/** Aggregate dominant colors from covers currently on this catalog page. */
+function scheduleCatalogPageHaze() {
+    if (viewState !== "catalog") return;
+    clearTimeout(window._catalogHazeTimer);
+    window._catalogHazeTimer = setTimeout(() => updateCatalogPageHazeFromCovers(), 400);
+}
+
+function updateCatalogPageHazeFromCovers() {
+    if (viewState !== "catalog") return;
+    ensureMeshRenderers();
+    const cards = elGamesGridContainer
+        ? [...elGamesGridContainer.querySelectorAll(":scope > .game-card img.card-cover, .of-latest-grid img.card-cover")]
+        : [];
+    const samples = [];
+    const tryExtract = (img) => {
+        try {
+            if (!img || !img.complete || !img.naturalWidth) return;
+            const cols = extractPaletteFromImage(img, 6);
+            if (cols && cols.length) samples.push(...cols);
+        } catch (_) {}
+    };
+    let pending = 0;
+    const finish = () => {
+        if (viewState !== "catalog") return;
+        if (!samples.length) {
+            // Stable non-blinking idle (no purple snap)
+            applyHazePalette([
+                { r: 55, g: 28, b: 48 },
+                { r: 90, g: 40, b: 70 },
+                { r: 35, g: 30, b: 55 },
+                { r: 70, g: 35, b: 60 }
+            ], { force: true, soft: true });
+            return;
+        }
+        // Bucket by coarse hue; weight dominant buckets higher
+        const buckets = new Map();
+        for (const c of samples) {
+            const { h, s, l } = rgbToHsl(c.r, c.g, c.b);
+            if (s < 0.12 || l < 0.08 || l > 0.82) continue; // skip grey/black/white
+            const key = Math.round(h / 28) * 28; // ~13 hue bins
+            const prev = buckets.get(key) || { n: 0, r: 0, g: 0, b: 0, s: 0 };
+            prev.n += 1;
+            prev.r += c.r;
+            prev.g += c.g;
+            prev.b += c.b;
+            prev.s += s;
+            buckets.set(key, prev);
+        }
+        let ranked = [...buckets.values()]
+            .map(b => ({
+                n: b.n,
+                r: Math.round(b.r / b.n),
+                g: Math.round(b.g / b.n),
+                b: Math.round(b.b / b.n),
+                s: b.s / b.n
+            }))
+            .sort((a, b) => b.n - a.n || b.s - a.s);
+        if (!ranked.length) {
+            ranked = samples.slice(0, 4).map(c => ({ ...c, n: 1 }));
+        }
+        // Build 4 mesh colors: dominant first, then next hues, fill with variants
+        const mesh = [];
+        for (const c of ranked) {
+            if (mesh.length >= 4) break;
+            mesh.push({ r: c.r, g: c.g, b: c.b });
+        }
+        while (mesh.length < 4) {
+            const base = mesh[mesh.length % Math.max(1, mesh.length)] || { r: 80, g: 40, b: 70 };
+            mesh.push({
+                r: Math.min(255, Math.max(20, base.r + (mesh.length % 2 ? 25 : -15))),
+                g: Math.min(255, Math.max(15, base.g + (mesh.length % 3 ? 10 : -20))),
+                b: Math.min(255, Math.max(25, base.b + (mesh.length % 2 ? -10 : 20)))
+            });
+        }
+        // Page key so page1 ≠ page2 without forced hard cut every poll
+        applyHazePalette(mesh, { force: false, soft: true });
+    };
+
+    cards.forEach((img) => {
+        if (img.complete && img.naturalWidth) {
+            tryExtract(img);
+        } else {
+            pending++;
+            img.addEventListener("load", () => {
+                tryExtract(img);
+                pending--;
+                if (pending <= 0) finish();
+            }, { once: true });
+            img.addEventListener("error", () => {
+                pending--;
+                if (pending <= 0) finish();
+            }, { once: true });
+        }
+    });
+    if (pending <= 0) finish();
+}
+
+function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h = 0, s = 0;
+    const l = (max + min) / 2;
+    if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+            case r: h = ((g - b) / d + (g < b ? 6 : 0)); break;
+            case g: h = ((b - r) / d + 2); break;
+            default: h = ((r - g) / d + 4); break;
+        }
+        h *= 60;
+    }
+    return { h, s, l };
 }
 
 // Recompute grid density on resize / zoom so first page stays 3–4 full rows
@@ -4087,9 +4681,7 @@ elBtnNextPage.addEventListener("click", () => {
 });
 
 elBtnBackToCatalog.addEventListener("click", () => {
-    const elVideoIframe = document.getElementById("video-iframe");
-    if (elVideoIframe) elVideoIframe.src = "";
-    setViewState("catalog");
+    navigateBackToCatalog();
 });
 
 // Settings Modal controls
@@ -4099,6 +4691,18 @@ elSettingsGearBtn.addEventListener("click", () => {
         elSettingsModal.classList.add("active");
     }, 15);
     loadGDriveAccounts();
+    // Refresh WARP status when opening settings
+    fetch("/api/warp/status")
+        .then((r) => r.json())
+        .then((d) => {
+            updateWarpSettingsPanel({
+                warp_status: d.installed ? "installed" : (d.warp_status || "skipped"),
+                warp_connected: !!d.connected,
+                warp_error_message: d.warp_error_message || "",
+            });
+        })
+        .catch(() => {});
+    fetchState();
 });
 
 const closeSettings = () => {
@@ -4126,6 +4730,21 @@ elSaveSettingsBtn.addEventListener("click", async () => {
     
     if (elChkHideGDrive) {
         localStorage.setItem("hideGDrive", elChkHideGDrive.checked ? "true" : "false");
+    }
+
+    const elCaptchaKey = document.getElementById("txt-captcha-api-key");
+    if (elCaptchaKey) {
+        const captcha_api_key = elCaptchaKey.value.trim();
+        localStorage.setItem("captchaApiKey", captcha_api_key);
+        try {
+            await fetch("/api/set_captcha_key", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ api_key: captcha_api_key, provider: "auto" }),
+            });
+        } catch (e) {
+            console.error("Failed to save captcha key:", e);
+        }
     }
     
     const elClientId = document.getElementById("txt-gdrive-client-id");
@@ -4782,6 +5401,10 @@ function initSettings() {
             localStorage.setItem("gofileProxy", elChkGofileProxy.checked ? "true" : "false");
         });
     }
+    const elCaptchaKeyInit = document.getElementById("txt-captcha-api-key");
+    if (elCaptchaKeyInit) {
+        elCaptchaKeyInit.value = localStorage.getItem("captchaApiKey") || "";
+    }
     if (elChkHideGDrive) {
         elChkHideGDrive.checked = hideGDrive;
         elChkHideGDrive.addEventListener("change", () => {
@@ -4843,14 +5466,16 @@ function initSettings() {
         }
         if (elCatalogGoToSiteText) elCatalogGoToSiteText.innerText = "Online-Fix";
     } else {
+        // FitGirl is ISP-blocked in DE — always open via local DoH proxy (real site content)
+        const fgHome = getFitGirlHomeProxyUrl();
         if (elGoToSiteBtn) {
-            elGoToSiteBtn.href = "https://fitgirl-repacks.site/";
-            elGoToSiteBtn.title = "Open FitGirl";
+            elGoToSiteBtn.href = fgHome;
+            elGoToSiteBtn.title = "Open FitGirl (via local unblock proxy)";
         }
         if (elGoToSiteText) elGoToSiteText.innerText = "FitGirl";
         if (elCatalogGoToSiteBtn) {
-            elCatalogGoToSiteBtn.href = "https://fitgirl-repacks.site/";
-            elCatalogGoToSiteBtn.title = "Open FitGirl";
+            elCatalogGoToSiteBtn.href = fgHome;
+            elCatalogGoToSiteBtn.title = "Open FitGirl (via local unblock proxy)";
             elCatalogGoToSiteBtn.style.display = "";
         }
         if (elCatalogGoToSiteText) elCatalogGoToSiteText.innerText = "FitGirl";
@@ -4902,12 +5527,22 @@ loadCatalogGames();
 
 // Render Screenshots Showcase + Grid Gallery
 function renderScreenshots(screenshotsList, videosList) {
+    // Kill any previous game's media cycle / dual-layer leftovers
+    const mediaGen = ++activeMediaGeneration;
     const elScreenshotsSection = document.getElementById("game-screenshots-section");
     const elScreenshotsContainer = document.getElementById("game-screenshots-container");
     const elMainScreenshotImg = document.getElementById("screenshot-main-img");
+    const elMainScreenshotImgB = document.getElementById("screenshot-main-img-b");
     const elMainVideoIframe = document.getElementById("screenshot-main-video");
     const elMainDirectVideo = document.getElementById("screenshot-main-direct-video");
     const elMainScreenshotShowcase = document.getElementById("screenshot-main-showcase-container");
+
+    // Dual-layer image crossfade state (A/B ping-pong)
+    let activeImgLayer = elMainScreenshotImg; // currently visible img
+    let fadeImgLayer = elMainScreenshotImgB;  // next img (hidden)
+    let mediaFadeToken = 0;
+    const MEDIA_FADE_MS = 550;
+    const isLive = () => mediaGen === activeMediaGeneration;
 
     // Drop torrent-stats / tracker banners / other junk
     const junkShotRe = /torrent-stats|torrentstats|kitty-kode|statspics|tracker-stats|favicon|gravatar|wp-includes|emoji/i;
@@ -4954,40 +5589,78 @@ function renderScreenshots(screenshotsList, videosList) {
         return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : "";
     }
 
+    function setLayerActive(el, on) {
+        if (!el) return;
+        if (on) el.classList.add("is-active");
+        else el.classList.remove("is-active");
+    }
+
+    function deactivateAllMediaLayers({ keep = null } = {}) {
+        [elMainScreenshotImg, elMainScreenshotImgB, elMainDirectVideo, elMainVideoIframe].forEach((el) => {
+            if (!el || el === keep) return;
+            setLayerActive(el, false);
+        });
+    }
+
     /**
-     * Always fill the media column width. Height follows real AR up to a viewport cap.
-     * Never leave a dead empty strip on the right of the player.
+     * Smart fit — prioritize FULL column width (user: less empty side space).
+     * - Always use 100% of available width.
+     * - Height = width / natural AR when it fits under maxH.
+     * - If too tall: keep full width + maxH height, object-fit:cover (tiny crop, no bars).
+     * - If AR matches exactly: object-fit:fill (no crop, no bars).
      */
     function fitShowcaseToSize(nw, nh) {
         if (!elMainScreenshotShowcase || !nw || !nh) return;
         const ar = nw / nh;
         const parent = elMainScreenshotShowcase.parentElement;
-        const maxW = Math.max(320, (parent && parent.clientWidth) || elMainScreenshotShowcase.clientWidth || 900);
-        // Prefer full column width; cap height so description still fits below
-        // Give media more vertical room (user: screenshots felt too short)
-        const maxH = Math.min(Math.max(320, window.innerHeight * 0.64), 920);
+        // Prefer the media card / right column full inner width
+        const maxW = Math.max(
+            320,
+            (parent && parent.clientWidth) || elMainScreenshotShowcase.clientWidth || 900
+        );
+        // Use more vertical room so 16:9 can stay full-width on laptops
+        const maxH = Math.min(Math.max(360, window.innerHeight * 0.78), 1040);
+
+        // Always claim full width of the column
         let w = maxW;
         let h = w / ar;
-        // Prefer natural height from AR when it fits; only clamp if too tall
-        if (h > maxH) h = maxH;
-        // Floor so 16:9 trailers don't look tiny on wide screens
-        const minH = Math.min(maxH, Math.max(260, window.innerHeight * 0.34));
-        if (h < minH && ar >= 1.2) h = minH;
+        let fitMode = "fill"; // perfect when box AR === media AR
+        if (h > maxH) {
+            h = maxH;
+            // keep full width → box AR != media AR → cover avoids black bars
+            fitMode = "cover";
+        }
+        w = Math.max(280, Math.round(w));
+        h = Math.max(200, Math.round(h));
+
         elMainScreenshotShowcase.style.setProperty("--ss-ar", `${nw} / ${nh}`);
         elMainScreenshotShowcase.style.setProperty("width", "100%", "important");
         elMainScreenshotShowcase.style.setProperty("max-width", "100%", "important");
-        elMainScreenshotShowcase.style.setProperty("height", Math.round(h) + "px", "important");
-        elMainScreenshotShowcase.style.setProperty("min-height", Math.round(minH) + "px", "important");
-        elMainScreenshotShowcase.style.setProperty("aspect-ratio", "auto", "important");
+        elMainScreenshotShowcase.style.setProperty("height", h + "px", "important");
+        elMainScreenshotShowcase.style.setProperty("min-height", "0", "important");
+        elMainScreenshotShowcase.style.setProperty("max-height", "none", "important");
+        // When cover mode, don't force image AR on the box (width 100% + fixed h)
+        if (fitMode === "cover") {
+            elMainScreenshotShowcase.style.setProperty("aspect-ratio", "auto", "important");
+        } else {
+            elMainScreenshotShowcase.style.setProperty("aspect-ratio", `${nw} / ${nh}`, "important");
+        }
         elMainScreenshotShowcase.style.setProperty("margin-left", "0", "important");
         elMainScreenshotShowcase.style.setProperty("margin-right", "0", "important");
-        // Screenshots: contain (full frame). Video: cover (fills box).
-        if (elMainScreenshotImg && elMainScreenshotImg.style.display !== "none") {
-            elMainScreenshotImg.style.setProperty("object-fit", "contain", "important");
-        }
-        if (elMainDirectVideo && elMainDirectVideo.style.display !== "none") {
-            elMainDirectVideo.style.setProperty("object-fit", "cover", "important");
-        }
+
+        [elMainScreenshotImg, elMainScreenshotImgB, elMainDirectVideo, elMainVideoIframe].forEach((el) => {
+            if (!el) return;
+            el.style.setProperty("object-fit", fitMode, "important");
+            el.style.setProperty("object-position", "center center", "important");
+            el.style.setProperty("width", "100%", "important");
+            el.style.setProperty("height", "100%", "important");
+            el.style.setProperty("left", "0", "important");
+            el.style.setProperty("top", "0", "important");
+            // keep layers in layout for opacity crossfade (not display:none)
+            if (el.tagName === "IMG" || el.tagName === "VIDEO" || el.tagName === "IFRAME") {
+                el.style.setProperty("display", "block", "important");
+            }
+        });
     }
 
     function fitShowcaseToNaturalSize(imgEl) {
@@ -4995,31 +5668,97 @@ function renderScreenshots(screenshotsList, videosList) {
         fitShowcaseToSize(imgEl.naturalWidth, imgEl.naturalHeight);
     }
 
-    function showMainScreenshot(proxiedSrc) {
-        if (!elMainScreenshotImg) return;
-        stopVideo();
-        elMainScreenshotImg.alt = "";
-        // contain inside AR-matched box = full frame, no crop
-        elMainScreenshotImg.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;object-position:center;background:#0a0a12;border:none;cursor:zoom-in;";
-        elMainScreenshotImg.onload = () => {
-            fitShowcaseToNaturalSize(elMainScreenshotImg);
+    /**
+     * Smooth crossfade to a still image.
+     * Preloads into the inactive A/B layer, then swaps opacity — no hard cut.
+     */
+    function showMainScreenshot(proxiedSrc, { instant = false } = {}) {
+        if (!elMainScreenshotImg && !elMainScreenshotImgB) return;
+        // Ensure dual layers exist; fall back to single img
+        const hasDual = !!(elMainScreenshotImg && elMainScreenshotImgB);
+        const target = hasDual
+            ? ((activeImgLayer && activeImgLayer.src && !instant) ? fadeImgLayer : (activeImgLayer || elMainScreenshotImg))
+            : elMainScreenshotImg;
+        if (!target) return;
+
+        const token = ++mediaFadeToken;
+        target.alt = "";
+        target.style.cursor = "zoom-in";
+        target.onclick = () => openScreenshotModal(proxiedSrc);
+
+        const reveal = () => {
+            if (token !== mediaFadeToken) return;
+            fitShowcaseToNaturalSize(target);
             if (elMainScreenshotShowcase) {
                 elMainScreenshotShowcase.classList.remove("preview-empty", "is-loading");
                 elMainScreenshotShowcase.classList.add("has-media");
             }
-            requestAnimationFrame(() => fitShowcaseToNaturalSize(elMainScreenshotImg));
+            // Fade video/iframe out while image fades in
+            if (elMainDirectVideo) {
+                setLayerActive(elMainDirectVideo, false);
+                try { elMainDirectVideo.pause(); } catch (_) {}
+            }
+            if (elMainVideoIframe) setLayerActive(elMainVideoIframe, false);
+
+            if (hasDual && target !== activeImgLayer) {
+                setLayerActive(target, true);
+                setLayerActive(activeImgLayer, false);
+                // swap roles after fade
+                const prev = activeImgLayer;
+                activeImgLayer = target;
+                fadeImgLayer = prev;
+            } else {
+                setLayerActive(target, true);
+                if (hasDual && fadeImgLayer && fadeImgLayer !== target) setLayerActive(fadeImgLayer, false);
+                activeImgLayer = target;
+                fadeImgLayer = hasDual
+                    ? (target === elMainScreenshotImg ? elMainScreenshotImgB : elMainScreenshotImg)
+                    : null;
+            }
+            // After fade, fully stop video so it doesn't keep decoding under the image
+            setTimeout(() => {
+                if (token !== mediaFadeToken) return;
+                if (elMainDirectVideo && !elMainDirectVideo.classList.contains("is-active")) {
+                    try {
+                        elMainDirectVideo.removeAttribute("src");
+                        elMainDirectVideo.load();
+                        elMainDirectVideo.controls = false;
+                    } catch (_) {}
+                }
+                if (elMainVideoIframe && !elMainVideoIframe.classList.contains("is-active")) {
+                    elMainVideoIframe.src = "";
+                }
+            }, MEDIA_FADE_MS + 40);
+            requestAnimationFrame(() => fitShowcaseToNaturalSize(target));
         };
-        elMainScreenshotImg.onerror = () => {
-            elMainScreenshotImg.style.display = "none";
+
+        target.onload = reveal;
+        target.onerror = () => {
+            if (token !== mediaFadeToken) return;
+            setLayerActive(target, false);
             if (elMainScreenshotShowcase) elMainScreenshotShowcase.classList.add("preview-empty");
         };
-        elMainScreenshotImg.src = proxiedSrc;
-        elMainScreenshotImg.onclick = () => openScreenshotModal(proxiedSrc);
+
+        // Same src already fully loaded
+        if (target.src && target.src.endsWith(proxiedSrc.replace(/^\//, "")) === false) {
+            /* always assign; browser may cache */
+        }
+        if (target.getAttribute("src") === proxiedSrc && target.complete && target.naturalWidth) {
+            reveal();
+        } else {
+            // Start invisible if this is the incoming layer
+            if (hasDual && target === fadeImgLayer) setLayerActive(target, false);
+            target.src = proxiedSrc;
+            if (target.complete && target.naturalWidth) reveal();
+        }
+
         if (elMainScreenshotShowcase && !elMainScreenshotShowcase._ssResizeBound) {
             elMainScreenshotShowcase._ssResizeBound = true;
             window.addEventListener("resize", () => {
-                if (elMainScreenshotImg && elMainScreenshotImg.naturalWidth) {
-                    fitShowcaseToNaturalSize(elMainScreenshotImg);
+                const live = activeImgLayer || elMainScreenshotImg;
+                if (live && live.naturalWidth) fitShowcaseToNaturalSize(live);
+                else if (elMainDirectVideo && elMainDirectVideo.videoWidth) {
+                    fitShowcaseToSize(elMainDirectVideo.videoWidth, elMainDirectVideo.videoHeight);
                 }
             });
         }
@@ -5031,7 +5770,7 @@ function renderScreenshots(screenshotsList, videosList) {
             return;
         }
         const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
-        showMainScreenshot(firstScreenshotUrl);
+        showMainScreenshot(firstScreenshotUrl, { instant: true });
         if (elScreenshotsContainer) {
             const firstImg = elScreenshotsContainer.querySelector("img.ss-thumb");
             if (firstImg) {
@@ -5152,10 +5891,14 @@ function renderScreenshots(screenshotsList, videosList) {
         });
     }
 
-    function playVideo(videoUrl) {
+    function playVideo(videoUrl, { userLoop = false, showControls = null } = {}) {
         let playUrl = normalizeVideoUrl(videoUrl);
         const isDirect = isDirectVideo(playUrl);
-        
+        mediaFadeToken++; // cancel pending image fades
+        // Auto-cycle: hide native controls so our progress bar is visible.
+        // User click: show native controls.
+        const useControls = (showControls === null) ? !!userLoop : !!showControls;
+
         if (isDirect) {
             if (elMainDirectVideo) {
                 // Reset hard so re-click / autoplay always restarts
@@ -5168,12 +5911,22 @@ function renderScreenshots(screenshotsList, videosList) {
                 elMainDirectVideo.defaultMuted = true;
                 elMainDirectVideo.setAttribute("muted", "");
                 elMainDirectVideo.autoplay = true;
-                elMainDirectVideo.loop = true;
+                // Cycle mode needs 'ended' → no loop unless user clicked trailer
+                elMainDirectVideo.loop = !!userLoop;
+                if (userLoop) elMainDirectVideo.setAttribute("loop", "");
+                else elMainDirectVideo.removeAttribute("loop");
                 elMainDirectVideo.playsInline = true;
                 elMainDirectVideo.setAttribute("playsinline", "");
-                elMainDirectVideo.controls = true;
+                elMainDirectVideo.controls = useControls;
                 elMainDirectVideo.preload = "auto";
-                elMainDirectVideo.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;background:#0a0a12;border:none;z-index:2;";
+                elMainDirectVideo.style.setProperty("display", "block", "important");
+                elMainDirectVideo.style.setProperty("object-fit", "fill", "important");
+                elMainDirectVideo.style.setProperty("background", "transparent", "important");
+                // Fade video in; fade stills out
+                setLayerActive(elMainDirectVideo, true);
+                setLayerActive(elMainScreenshotImg, false);
+                setLayerActive(elMainScreenshotImgB, false);
+                setLayerActive(elMainVideoIframe, false);
                 elMainDirectVideo.onloadedmetadata = () => {
                     fitShowcaseToSize(elMainDirectVideo.videoWidth || 16, elMainDirectVideo.videoHeight || 9);
                     if (elMainScreenshotShowcase) {
@@ -5181,7 +5934,6 @@ function renderScreenshots(screenshotsList, videosList) {
                         elMainScreenshotShowcase.classList.add("has-media");
                     }
                     elMainDirectVideo.play().catch(() => {
-                        // retry muted play once
                         elMainDirectVideo.muted = true;
                         elMainDirectVideo.play().catch(() => {});
                     });
@@ -5194,7 +5946,7 @@ function renderScreenshots(screenshotsList, videosList) {
                     if (/\.mp4($|\?)/i.test(playUrl)) {
                         const webm = playUrl.replace(/\.mp4/i, ".webm");
                         elMainDirectVideo.onerror = () => {
-                            stopVideo();
+                            stopVideo({ hard: true });
                             fallbackToFirstScreenshot();
                         };
                         elMainDirectVideo.src = webm;
@@ -5203,14 +5955,14 @@ function renderScreenshots(screenshotsList, videosList) {
                     }
                     if (/movie_max|movie480/i.test(playUrl) && /microtrailer/i.test(videoUrl || "")) {
                         elMainDirectVideo.onerror = () => {
-                            stopVideo();
+                            stopVideo({ hard: true });
                             fallbackToFirstScreenshot();
                         };
                         elMainDirectVideo.src = videoUrl;
                         elMainDirectVideo.play().catch(() => {});
                         return;
                     }
-                    stopVideo();
+                    stopVideo({ hard: true });
                     fallbackToFirstScreenshot();
                 };
                 elMainDirectVideo.src = playUrl;
@@ -5218,41 +5970,50 @@ function renderScreenshots(screenshotsList, videosList) {
             }
             if (elMainVideoIframe) {
                 elMainVideoIframe.src = "";
-                elMainVideoIframe.style.display = "none";
+                setLayerActive(elMainVideoIframe, false);
             }
         } else {
             if (elMainVideoIframe) {
                 elMainVideoIframe.src = isYouTube(videoUrl) ? youtubeEmbedUrl(videoUrl) : videoUrl;
-                elMainVideoIframe.style.cssText = "display:block !important;position:absolute;inset:0;width:100%;height:100%;border:none;background:#08080f;z-index:2;";
+                elMainVideoIframe.style.setProperty("display", "block", "important");
+                elMainVideoIframe.style.setProperty("background", "#08080f", "important");
+                setLayerActive(elMainVideoIframe, true);
+                setLayerActive(elMainScreenshotImg, false);
+                setLayerActive(elMainScreenshotImgB, false);
+                setLayerActive(elMainDirectVideo, false);
                 fitShowcaseToSize(16, 9);
             }
             if (elMainDirectVideo) {
                 elMainDirectVideo.removeAttribute("src");
-                elMainDirectVideo.style.display = "none";
+                setLayerActive(elMainDirectVideo, false);
             }
             if (elMainScreenshotShowcase) {
                 elMainScreenshotShowcase.classList.remove("preview-empty", "is-loading");
                 elMainScreenshotShowcase.classList.add("has-media");
             }
         }
-        if (elMainScreenshotImg) elMainScreenshotImg.style.display = "none";
         if (elMainScreenshotShowcase) elMainScreenshotShowcase.classList.remove("preview-empty");
     }
 
-    function stopVideo() {
+    function stopVideo({ hard = false } = {}) {
         if (elMainDirectVideo) {
-            elMainDirectVideo.pause();
+            try { elMainDirectVideo.pause(); } catch (_) {}
+            setLayerActive(elMainDirectVideo, false);
             elMainDirectVideo.controls = false;
-            elMainDirectVideo.removeAttribute("src");
-            elMainDirectVideo.load();
-            elMainDirectVideo.style.display = "none";
             elMainDirectVideo.onerror = null;
             elMainDirectVideo.onloadedmetadata = null;
+            elMainDirectVideo.oncanplay = null;
+            if (hard) {
+                try {
+                    elMainDirectVideo.removeAttribute("src");
+                    elMainDirectVideo.load();
+                } catch (_) {}
+            }
         }
         if (elMainVideoIframe) {
-            elMainVideoIframe.src = "";
-            elMainVideoIframe.style.display = "none";
+            setLayerActive(elMainVideoIframe, false);
             elMainVideoIframe.onerror = null;
+            if (hard) elMainVideoIframe.src = "";
         }
     }
 
@@ -5266,15 +6027,171 @@ function renderScreenshots(screenshotsList, videosList) {
         if (hasVideos || hasScreenshots) {
             if (elMainScreenshotShowcase) elMainScreenshotShowcase.style.display = "block";
 
-            // Thumbs first so autoplay can mark trailer as active
-            // 1) Trailer thumbs ALWAYS first
+            // --- Media cycle: trailer1 → trailer2 → … → shots → trailer1 (stops on user click) ---
+            let mediaUserStopped = false;
+            let mediaCycleTimer = null;
+            let mediaShotIndex = 0;
+            let mediaVideoIndex = 0;
+            let progressRaf = 0;
+            const SHOT_DWELL_MS = 4500;
+            const shotProxied = hasScreenshots
+                ? screenshotsList.map((src) => `/api/proxy_image?url=${encodeURIComponent(src)}`)
+                : [];
+            const elProgress = document.getElementById("media-cycle-progress");
+            const elProgressFill = document.getElementById("media-cycle-progress-fill");
+
+            function clearMediaCycle() {
+                if (mediaCycleTimer) {
+                    clearTimeout(mediaCycleTimer);
+                    mediaCycleTimer = null;
+                }
+                if (progressRaf) {
+                    cancelAnimationFrame(progressRaf);
+                    progressRaf = 0;
+                }
+                if (elMainDirectVideo) {
+                    elMainDirectVideo.ontimeupdate = null;
+                }
+            }
+
+            function hideProgressBar() {
+                if (elProgress) elProgress.classList.remove("is-visible");
+                if (elProgressFill) {
+                    elProgressFill.style.transition = "none";
+                    elProgressFill.style.width = "0%";
+                }
+            }
+
+            function setProgressPct(pct) {
+                if (!elProgressFill) return;
+                const p = Math.max(0, Math.min(100, pct));
+                elProgressFill.style.width = p + "%";
+            }
+
+            /** Semi-transparent bar: linear for timed shots, live for video. */
+            function startShotProgress(durationMs) {
+                if (mediaUserStopped || !elProgress || !elProgressFill) return;
+                elProgress.classList.add("is-visible");
+                elProgressFill.style.transition = "none";
+                setProgressPct(0);
+                // Force reflow then animate to 100%
+                void elProgressFill.offsetWidth;
+                elProgressFill.style.transition = `width ${Math.max(200, durationMs)}ms linear`;
+                requestAnimationFrame(() => setProgressPct(100));
+            }
+
+            function startVideoProgress() {
+                if (mediaUserStopped || !elProgress || !elProgressFill || !elMainDirectVideo) return;
+                elProgress.classList.add("is-visible");
+                elProgressFill.style.transition = "none";
+                setProgressPct(0);
+                elMainDirectVideo.ontimeupdate = () => {
+                    if (mediaUserStopped) return;
+                    const d = elMainDirectVideo.duration;
+                    if (!d || !isFinite(d) || d <= 0) return;
+                    elProgressFill.style.transition = "none";
+                    setProgressPct((elMainDirectVideo.currentTime / d) * 100);
+                };
+            }
+
+            function markThumbActive(sel) {
+                elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img.ss-thumb")
+                    .forEach((i) => i.classList.remove("active"));
+                if (sel) sel.classList.add("active");
+            }
+
+            function markTrailerActive(idx) {
+                const nodes = elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper");
+                markThumbActive(nodes[idx] || nodes[0] || null);
+            }
+
+            function playTrailerAt(idx, { fromUser = false } = {}) {
+                if (!isLive() || !hasVideos) return;
+                mediaVideoIndex = ((idx % videosList.length) + videosList.length) % videosList.length;
+                clearMediaCycle();
+                playVideo(videosList[mediaVideoIndex], {
+                    userLoop: fromUser,
+                    showControls: fromUser, // auto-cycle: no native chrome → custom bar visible
+                });
+                markTrailerActive(mediaVideoIndex);
+                if (!fromUser && !mediaUserStopped && isLive()) {
+                    wireTrailerEnded();
+                    startVideoProgress();
+                    if (elMainDirectVideo) {
+                        elMainDirectVideo.loop = false;
+                        elMainDirectVideo.removeAttribute("loop");
+                    }
+                } else {
+                    hideProgressBar();
+                }
+            }
+
+            function showShotAt(idx, { fromUser = false } = {}) {
+                if (!isLive() || !shotProxied.length) return;
+                mediaShotIndex = ((idx % shotProxied.length) + shotProxied.length) % shotProxied.length;
+                const url = shotProxied[mediaShotIndex];
+                clearMediaCycle();
+                // Soft stop video (keep last frame under crossfade)
+                stopVideo({ hard: false });
+                showMainScreenshot(url, { instant: fromUser && !activeImgLayer?.src });
+                const thumbs = elScreenshotsContainer.querySelectorAll("img.ss-thumb");
+                markThumbActive(thumbs[mediaShotIndex] || null);
+                if (!fromUser && !mediaUserStopped && isLive()) {
+                    startShotProgress(SHOT_DWELL_MS);
+                    mediaCycleTimer = setTimeout(() => {
+                        if (mediaUserStopped || !isLive()) return;
+                        if (mediaShotIndex >= shotProxied.length - 1) {
+                            // After last shot → trailer 1 again (or first shot loop)
+                            if (hasVideos) {
+                                playTrailerAt(0);
+                            } else {
+                                showShotAt(0);
+                            }
+                        } else {
+                            showShotAt(mediaShotIndex + 1);
+                        }
+                    }, SHOT_DWELL_MS);
+                } else {
+                    hideProgressBar();
+                }
+            }
+
+            function wireTrailerEnded() {
+                if (!elMainDirectVideo) return;
+                elMainDirectVideo.onended = null;
+                elMainDirectVideo.onended = () => {
+                    if (mediaUserStopped || !isLive()) return;
+                    // Trailer N finished → next trailer, then shots
+                    if (mediaVideoIndex < videosList.length - 1) {
+                        playTrailerAt(mediaVideoIndex + 1);
+                    } else if (shotProxied.length) {
+                        showShotAt(0);
+                    } else if (hasVideos) {
+                        playTrailerAt(0);
+                    }
+                };
+            }
+
+            function stopMediaCycleForUser() {
+                mediaUserStopped = true;
+                clearMediaCycle();
+                hideProgressBar();
+                if (elMainDirectVideo) elMainDirectVideo.onended = null;
+            }
+
+            // Build strip: trailer1…N FIRST, then shots
+            const frag = document.createDocumentFragment();
+            const trailerNodes = [];
+
             if (hasVideos) {
                 videosList.forEach((videoUrl, vIdx) => {
                     const thumbWrapper = document.createElement("div");
                     thumbWrapper.className = "video-thumbnail-wrapper" + (vIdx === 0 ? " active" : "");
+                    thumbWrapper.style.order = String(-100 + vIdx);
+                    thumbWrapper.dataset.mediaKind = "trailer";
+                    thumbWrapper.dataset.trailerIndex = String(vIdx);
                     const ytPoster = youtubePoster(videoUrl);
                     const steamPoster = steamTrailerPoster(videoUrl);
-                    // NEVER use screenshots[0] as trailer fallback — that made trailer == first shot
                     const coverFallback = (typeof scrapedMetadata !== "undefined" && scrapedMetadata.cover_image)
                         ? (scrapedMetadata.cover_image.startsWith("/api/")
                             ? scrapedMetadata.cover_image
@@ -5285,73 +6202,81 @@ function renderScreenshots(screenshotsList, videosList) {
                         : (steamPoster
                             ? `/api/proxy_image?url=${encodeURIComponent(steamPoster)}`
                             : coverFallback);
+                    const label = videosList.length > 1 ? `Trailer ${vIdx + 1}` : "Trailer";
                     thumbWrapper.innerHTML = `
-                        <img class="video-thumb-poster" alt="Trailer" draggable="false" ${initialPoster ? `src="${initialPoster}"` : ""}>
+                        <img class="video-thumb-poster" alt="${label}" draggable="false" ${initialPoster ? `src="${initialPoster}"` : ""}>
                         <div class="video-thumbnail-overlay">
                             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
                                 <path d="M8 5v14l11-7z"/>
                             </svg>
                         </div>
-                        <span class="video-thumb-label">Trailer</span>
+                        <span class="video-thumb-label">${label}</span>
                     `;
-                    // Always try mid-frame (~50%) for direct trailers — upgrades steam/cover placeholder
                     if (isDirectVideo(videoUrl) || /microtrailer|store_trailers|\.mp4|\.webm/i.test(videoUrl)) {
                         captureVideoPoster(videoUrl).then((posterUrl) => {
                             if (!posterUrl || !thumbWrapper.isConnected) return;
-                            // Skip if mid-frame somehow equals first screenshot URL (shouldn't for data URLs)
                             const img = thumbWrapper.querySelector(".video-thumb-poster");
                             if (!img) return;
                             img.src = posterUrl;
-                            img.dataset.posterSource = posterUrl.startsWith("data:") ? "midframe" : "remote";
                         });
                     }
-                    
+
                     thumbWrapper.addEventListener("click", () => {
-                        playVideo(videoUrl);
-                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img.ss-thumb").forEach(i => i.classList.remove("active"));
-                        thumbWrapper.classList.add("active");
+                        stopMediaCycleForUser();
+                        mediaVideoIndex = vIdx;
+                        playVideo(videoUrl, { userLoop: true, showControls: true });
+                        markThumbActive(thumbWrapper);
+                        hideProgressBar();
                     });
-                    elScreenshotsContainer.appendChild(thumbWrapper);
+                    trailerNodes.push(thumbWrapper);
+                    frag.appendChild(thumbWrapper);
                 });
             }
 
-            // 2) Screenshot thumbs after trailer
             if (hasScreenshots) {
-                screenshotsList.forEach((src) => {
+                shotProxied.forEach((proxiedSrc, idx) => {
                     const img = document.createElement("img");
-                    const proxiedSrc = `/api/proxy_image?url=${encodeURIComponent(src)}`;
                     img.className = "ss-thumb";
                     img.src = proxiedSrc;
                     img.alt = "";
                     img.loading = "lazy";
                     img.draggable = false;
+                    img.style.order = String(idx + 1);
                     img.onerror = () => { img.style.display = "none"; };
-                    
+
                     img.addEventListener("click", () => {
-                        stopVideo();
+                        stopMediaCycleForUser();
+                        stopVideo({ hard: false });
                         showMainScreenshot(proxiedSrc);
-                        elScreenshotsContainer.querySelectorAll(".video-thumbnail-wrapper, img.ss-thumb").forEach(i => i.classList.remove("active"));
-                        img.classList.add("active");
+                        mediaShotIndex = idx;
+                        markThumbActive(img);
+                        hideProgressBar();
                     });
-                    elScreenshotsContainer.appendChild(img);
+                    frag.appendChild(img);
                 });
             }
 
-            // Main stage: trailer autoplays when present; else first screenshot
+            elScreenshotsContainer.appendChild(frag);
+            // Belt-and-suspenders: re-pin trailer nodes to absolute start of the strip
+            trailerNodes.slice().reverse().forEach((n) => {
+                elScreenshotsContainer.insertBefore(n, elScreenshotsContainer.firstChild);
+            });
+            elScreenshotsContainer.scrollLeft = 0;
+
+            // Main stage: trailer1 → … → trailerN → shots → trailer1
             if (hasVideos) {
-                playVideo(videosList[0]);
+                playTrailerAt(0);
             } else if (hasScreenshots) {
-                const firstScreenshotUrl = `/api/proxy_image?url=${encodeURIComponent(screenshotsList[0])}`;
-                showMainScreenshot(firstScreenshotUrl);
-                const firstImg = elScreenshotsContainer.querySelector("img.ss-thumb");
-                if (firstImg) firstImg.classList.add("active");
+                showShotAt(0);
             } else if (scrapedMetadata.cover_image) {
                 const coverProxied = scrapedMetadata.cover_image.startsWith("/api/")
                     ? scrapedMetadata.cover_image
                     : `/api/proxy_image?url=${encodeURIComponent(scrapedMetadata.cover_image)}`;
-                showMainScreenshot(coverProxied);
+                showMainScreenshot(coverProxied, { instant: true });
+                hideProgressBar();
             } else {
-                stopVideo();
+                stopVideo({ hard: true });
+                hideProgressBar();
                 if (elMainScreenshotShowcase) {
                     elMainScreenshotShowcase.classList.remove("is-loading");
                     elMainScreenshotShowcase.classList.add("preview-empty");
@@ -5402,10 +6327,79 @@ if (elWarpSkipBtn) {
 if (elWarpRetryBtn) {
     elWarpRetryBtn.addEventListener("click", async () => {
         try {
-            await fetch("/api/retry_warp");
+            await fetch("/api/retry_warp", { method: "POST" });
             fetchState();
         } catch (e) {
             console.error("Failed to retry WARP installer process:", e);
+        }
+    });
+}
+
+// Settings → WARP install / rotate
+const elWarpInstallBtn = document.getElementById("btn-warp-install");
+const elWarpRotateBtn = document.getElementById("btn-warp-rotate");
+if (elWarpInstallBtn) {
+    elWarpInstallBtn.addEventListener("click", async () => {
+        elWarpInstallBtn.disabled = true;
+        elWarpInstallBtn.innerText = "Working…";
+        try {
+            await fetch("/api/warp/install", { method: "POST" });
+            // poll status a few times while install runs
+            for (let i = 0; i < 20; i++) {
+                await new Promise((r) => setTimeout(r, 1500));
+                fetchState();
+                try {
+                    const r = await fetch("/api/warp/status");
+                    if (r.ok) {
+                        const d = await r.json();
+                        if (d.installed) break;
+                    }
+                } catch (_) { /* ignore */ }
+            }
+        } catch (e) {
+            console.error("WARP install failed:", e);
+            alert("WARP install request failed. Check logs / approve UAC if shown.");
+        } finally {
+            fetchState();
+        }
+    });
+}
+if (elWarpRotateBtn) {
+    elWarpRotateBtn.addEventListener("click", async () => {
+        elWarpRotateBtn.disabled = true;
+        const prev = elWarpRotateBtn.innerText;
+        elWarpRotateBtn.innerText = "Rotating…";
+        try {
+            const r = await fetch("/api/warp/rotate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: "{}",
+            });
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            // Backend force-rotates + restarts workers; poll until speed moves
+            for (let i = 0; i < 12; i++) {
+                await new Promise((res) => setTimeout(res, 1500));
+                fetchState();
+            }
+            if (typeof Swal !== "undefined") {
+                Swal.fire({
+                    toast: true,
+                    position: "top-end",
+                    timer: 4000,
+                    showConfirmButton: false,
+                    icon: "success",
+                    title: "WARP rotate done — reconnecting download",
+                    background: "#040409",
+                    color: "#e2e2ec",
+                });
+            }
+        } catch (e) {
+            console.error("WARP rotate failed:", e);
+            alert("WARP rotate failed. Is Cloudflare WARP installed and connected?");
+        } finally {
+            elWarpRotateBtn.disabled = false;
+            elWarpRotateBtn.innerText = prev || "Rotate IP now";
+            fetchState();
         }
     });
 }
@@ -5414,20 +6408,23 @@ if (elWarpRetryBtn) {
 const elBackToCatalogBtnDownload = document.getElementById("btn-back-to-catalog-download");
 if (elBackToCatalogBtnDownload) {
     elBackToCatalogBtnDownload.addEventListener("click", () => {
-        setViewState("catalog");
+        navigateBackToCatalog();
     });
 }
 
-// Bind floating mini download badge click and controls
+// Floating session pill: click body → download view; toggle → pause/resume
 const elMiniBadge = document.getElementById("floating-download-badge");
 if (elMiniBadge) {
-    const elClickArea = document.getElementById("floating-bar-click-area");
-    if (elClickArea) {
-        elClickArea.addEventListener("click", () => {
-            setViewState("downloading");
+    const openQueue = () => setViewState("downloading");
+    const shell = document.getElementById("floating-bar-click-area");
+    if (shell) {
+        shell.addEventListener("click", (e) => {
+            // don't open dashboard when pressing play/pause
+            if (e.target.closest("#mini-btn-play-pause")) return;
+            openQueue();
         });
     }
-    
+
     const playPauseBtn = document.getElementById("mini-btn-play-pause");
     if (playPauseBtn) {
         playPauseBtn.addEventListener("click", async (e) => {
@@ -5435,28 +6432,9 @@ if (elMiniBadge) {
             const api = appState.is_running ? "/api/pause" : "/api/start";
             try {
                 const response = await fetch(api, { method: "POST" });
-                if (response.ok) {
-                    fetchState();
-                }
-            } catch (e) {
-                console.error("Error toggling download status from floating bar:", e);
-            }
-        });
-    }
-    
-    const cancelBtn = document.getElementById("mini-btn-cancel");
-    if (cancelBtn) {
-        cancelBtn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            if (confirm("Вы уверены, что хотите остановить и сбросить текущую загрузку?")) {
-                try {
-                    const response = await fetch("/api/reset", { method: "POST" });
-                    if (response.ok) {
-                        fetchState();
-                    }
-                } catch (e) {
-                    console.error("Error resetting queue from floating bar:", e);
-                }
+                if (response.ok) fetchState();
+            } catch (err) {
+                console.error("Error toggling download from floating bar:", err);
             }
         });
     }

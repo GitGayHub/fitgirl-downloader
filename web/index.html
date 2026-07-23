@@ -4,10 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FitGirl Repack Automated Downloader</title>
-    <link rel="stylesheet" href="style.css?v=4.0">
-    <link rel="stylesheet" href="details-fix.css?v=4.0">
+    <link rel="stylesheet" href="style.css?v=4.6">
+    <link rel="stylesheet" href="details-fix.css?v=4.4">
+    <link rel="stylesheet" href="liquid-glass.css?v=3.2">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="app.js?v=4.0" defer></script>
+    <script src="liquid-glass.js?v=3.0" defer></script>
+    <script src="app.js?v=4.6" defer></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -108,12 +110,10 @@
                             <h2 id="catalog-title">Game Catalog</h2>
                             <p class="subtitle" id="catalog-subtitle">Browse popular repacks or search for games</p>
                         </div>
-                        <div class="catalog-toolbar-left apple-capsule-bar">
-                            <a id="btn-catalog-go-to-site" target="_blank" href="https://fitgirl-repacks.site/" class="apple-pill-btn apple-pill-primary" title="Open site">
-                                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                                    <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                                </svg>
-                                <span id="catalog-go-to-site-text">Site</span>
+                        <div class="catalog-toolbar-left apple-capsule-bar" style="display:none !important;" hidden aria-hidden="true">
+                            <!-- FitGirl "Site" removed from chrome (user request) — nodes kept for JS compat -->
+                            <a id="btn-catalog-go-to-site" target="_blank" href="/api/proxy_page?url=https%3A%2F%2Ffitgirl-repacks.site%2F" class="apple-pill-btn apple-pill-primary" style="display:none !important;" hidden aria-hidden="true" title="Open FitGirl">
+                                <span id="catalog-go-to-site-text" class="sr-only">Site</span>
                             </a>
                         </div>
                         <div class="header-right-actions catalog-toolbar-right apple-capsule-bar">
@@ -231,11 +231,8 @@
                         <div class="details-header-right apple-capsule-bar">
                             <!-- version badge intentionally omitted (e.g. v9.7 is meaningless in header) -->
                             <span id="details-version-badge" class="details-version-pill" style="display: none !important;" hidden></span>
-                            <a id="btn-open-browser-top" class="apple-icon-btn details-icon-btn" target="_blank" style="display: none; text-decoration: none;" title="Open on site">
-                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                                    <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                                </svg>
-                            </a>
+                            <!-- Open-on-site removed from details chrome (user request) — keep node hidden for JS compat -->
+                            <a id="btn-open-browser-top" class="apple-icon-btn details-icon-btn" target="_blank" style="display: none !important; text-decoration: none;" hidden title="Open on site" aria-hidden="true"></a>
                         </div>
                     </div>
 
@@ -298,9 +295,16 @@
                                  <!-- Preview title removed — media uses full card width -->
                                  <div class="screenshots-gallery-wrapper">
                                      <div class="screenshot-main-showcase" id="screenshot-main-showcase-container">
-                                         <img id="screenshot-main-img" class="screenshot-main-media" src="" alt="">
-                                         <video id="screenshot-main-direct-video" class="screenshot-main-media screenshot-main-video" autoplay muted loop playsinline></video>
-                                         <iframe id="screenshot-main-video" class="screenshot-main-media screenshot-main-iframe" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+                                         <!-- Dual image layers for smooth crossfade between shots -->
+                                         <img id="screenshot-main-img" class="screenshot-main-media media-layer is-active" src="" alt="">
+                                         <img id="screenshot-main-img-b" class="screenshot-main-media media-layer" src="" alt="" aria-hidden="true">
+                                         <!-- No loop by default — cycle mode needs 'ended' to start slideshow -->
+                                         <video id="screenshot-main-direct-video" class="screenshot-main-media screenshot-main-video media-layer" muted playsinline preload="metadata"></video>
+                                         <iframe id="screenshot-main-video" class="screenshot-main-media screenshot-main-iframe media-layer" src="" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+                                         <!-- Semi-transparent progress until next trailer/shot -->
+                                         <div class="media-cycle-progress" id="media-cycle-progress" aria-hidden="true">
+                                             <div class="media-cycle-progress-fill" id="media-cycle-progress-fill"></div>
+                                         </div>
                                      </div>
                                      <div id="game-screenshots-container" class="screenshots-grid"></div>
                                  </div>
@@ -372,10 +376,7 @@
                 <!-- Dashboard Header -->
                 <header class="download-dashboard-header">
                     <div class="header-right-actions dl-header-actions apple-capsule-bar">
-                        <a id="btn-go-to-site" target="_blank" href="https://fitgirl-repacks.site/" class="apple-icon-btn" title="Open site" style="text-decoration:none;">
-                            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                                <path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                            </svg>
+                        <a id="btn-go-to-site" target="_blank" href="/api/proxy_page?url=https%3A%2F%2Ffitgirl-repacks.site%2F" class="apple-icon-btn" title="Open FitGirl" style="display:none !important;text-decoration:none;" hidden aria-hidden="true">
                             <span id="go-to-site-text" class="sr-only">Go to site</span>
                         </a>
                         <button id="btn-back-to-catalog-download" class="apple-icon-btn" type="button" title="Back to catalog">
@@ -424,6 +425,16 @@
                                     <circle class="progress-circle-bar" id="dashboard-progress-bar" cx="50" cy="50" r="45" style="fill: none; stroke: var(--color-accent); stroke-width: 8; stroke-linecap: round; stroke-dasharray: 283; stroke-dashoffset: 283; transition: stroke-dashoffset 0.3s ease; filter: drop-shadow(0 0 6px var(--color-accent-glow));"></circle>
                                 </svg>
                                 <div class="progress-text-dashboard" id="total-progress-text" style="font-family: 'Outfit', sans-serif; font-size: 2.1rem; text-shadow: 0 0 15px var(--color-accent-glow);">0%</div>
+                            </div>
+                            <!-- Second line: active file · % · downloaded/total · speed -->
+                            <div class="current-file-progress-line" id="current-file-progress-line" aria-live="polite">
+                                <span class="current-file-name" id="current-file-name" title="">Waiting for file…</span>
+                                <span class="current-file-sep" aria-hidden="true">·</span>
+                                <span class="current-file-pct" id="current-file-pct">0%</span>
+                                <span class="current-file-sep" aria-hidden="true">·</span>
+                                <span class="current-file-size" id="current-file-size">0 / 0 MB</span>
+                                <span class="current-file-sep current-file-sep-speed" aria-hidden="true">·</span>
+                                <span class="current-file-speed" id="current-file-speed">0.0 MB/s</span>
                             </div>
                             
                             <div class="stat-grid-dashboard" style="width: 100%; margin-top: 0;">
@@ -560,6 +571,36 @@
                             <input type="checkbox" id="chk-hide-gdrive" style="width: auto; height: auto; margin: 0; cursor: pointer;">
                             <span>Hide Google Drive option (РЎРєСЂС‹С‚СЊ Google Drive)</span>
                         </label>
+                    </div>
+
+                    <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 15px 0 10px 0;">
+
+                    <div id="warp-settings-section" style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+                        <h4 style="margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--text-white); display: flex; align-items: center; gap: 8px;">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" style="color: #f48120;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h2v2h-2v-2zm1.07-7.75l-.9.92C10.45 10.9 10 11.5 10 13h2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
+                            <span>Cloudflare WARP (Pixeldrain speed)</span>
+                        </h4>
+                        <p style="margin: 0; font-size: 0.82rem; color: var(--text-muted); line-height: 1.45;">
+                            Free Pixeldrain caps ~1 MiB/s per IP after quota. WARP rotates your IP so the app can keep high speed automatically.
+                        </p>
+                        <div id="warp-settings-status" style="padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); font-size: 0.85rem; color: var(--text-white);">
+                            Checking WARP status…
+                        </div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                            <button type="button" class="btn btn-primary" id="btn-warp-install" style="padding: 8px 14px; font-size: 0.85rem; background-color: var(--color-accent); border-color: var(--color-accent-glow);">
+                                Download / Install WARP
+                            </button>
+                            <button type="button" class="btn btn-secondary" id="btn-warp-rotate" style="padding: 8px 14px; font-size: 0.85rem;">
+                                Rotate IP now
+                            </button>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 6px; width: 100%; margin-top: 6px;">
+                            <label style="color: var(--text-white); font-size: 0.82rem; font-weight: 500;">Captcha solver key (VikingFile Turnstile)</label>
+                            <input type="password" id="txt-captcha-api-key" placeholder="CapSolver CAP-... or 2Captcha key (optional)" style="padding: 10px 14px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; color: var(--text-white); font-size: 0.85rem; width: 100%; box-sizing: border-box;">
+                            <span style="font-size: 0.76rem; color: var(--text-muted); line-height: 1.4;">
+                                Optional. Without a key the app tries Playwright token capture + POST. With CapSolver/2Captcha VikingFile is reliable.
+                            </span>
+                        </div>
                     </div>
                     
                     <hr class="gdrive-ui-element" style="border: 0; border-top: 1px solid rgba(255,255,255,0.08); margin: 15px 0 10px 0;">
@@ -762,33 +803,40 @@
         </button>
     </div>
 
-    <!-- Floating Download Island (only when a real download session is active) -->
-    <div id="floating-download-badge" class="floating-download-bar dl-island" aria-hidden="true">
-        <div class="floating-bar-main-click" id="floating-bar-click-area" title="Open download view">
-            <div class="floating-bar-top-row">
-                <span class="floating-bar-title" id="mini-game-title">—</span>
-                <span class="floating-bar-pct" id="mini-game-pct">0%</span>
-                <span class="floating-bar-eta" id="mini-game-eta">—</span>
+    <!-- Floating download session chip — frosted glass: Title · % · status + play/pause -->
+    <div id="floating-download-badge" class="as-nav-pill dl-island" aria-hidden="true">
+        <div class="as-nav-pill-shell dl-session-shell" id="floating-bar-click-area" title="Open download view">
+            <div class="dl-session-info" id="floating-bar-caption">
+                <div class="dl-session-row-main">
+                    <span class="dl-session-title" id="mini-game-title">—</span>
+                    <span class="dl-session-dot" aria-hidden="true">·</span>
+                    <span class="dl-session-pct" id="mini-game-pct">0%</span>
+                    <span class="dl-session-status" id="mini-game-eta">—</span>
+                </div>
+                <div class="dl-session-row-file" id="mini-current-file-row" hidden>
+                    <span class="dl-session-file-name" id="mini-current-file-name">—</span>
+                    <span class="dl-session-dot" aria-hidden="true">·</span>
+                    <span class="dl-session-file-pct" id="mini-current-file-pct">0%</span>
+                    <span class="dl-session-dot" aria-hidden="true">·</span>
+                    <span class="dl-session-file-size" id="mini-current-file-size">0 / 0 MB</span>
+                    <span class="dl-session-dot dl-session-dot-speed" aria-hidden="true">·</span>
+                    <span class="dl-session-file-speed" id="mini-current-file-speed">0.0 MB/s</span>
+                </div>
             </div>
-            <div class="floating-bar-progress-container">
-                <div class="floating-bar-progress-fill" id="mini-progress-bar-fill" style="width: 0%;"></div>
-            </div>
-            <div class="floating-bar-meta">
-                <span class="floating-bar-status" id="mini-game-status">—</span>
-            </div>
-        </div>
-        <div class="floating-bar-controls">
-            <button type="button" class="floating-control-btn" id="mini-btn-play-pause" title="Resume" aria-label="Resume">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+            <button type="button" class="dl-session-toggle" id="mini-btn-play-pause" title="Resume" aria-label="Resume">
+                <span class="as-nav-center-ring" aria-hidden="true"></span>
+                <svg class="as-nav-center-icon" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
                     <path d="M8 5v14l11-7z"/>
                 </svg>
             </button>
-            <button type="button" class="floating-control-btn floating-control-cancel" id="mini-btn-cancel" title="Cancel" aria-label="Cancel">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M18.3 5.71 12 12.01 5.7 5.7 4.29 7.11 10.59 13.4 4.29 19.7 5.7 21.11 12 14.82l6.3 6.29 1.41-1.41-6.29-6.3 6.29-6.29z"/>
-                </svg>
-            </button>
         </div>
+        <!-- Legacy hooks (hidden) -->
+        <button type="button" id="mini-btn-open-queue" style="display:none!important" aria-hidden="true" tabindex="-1"></button>
+        <button type="button" id="mini-btn-cancel" style="display:none!important" aria-hidden="true" tabindex="-1"></button>
+        <div class="floating-bar-progress-container" style="display:none!important" aria-hidden="true">
+            <div class="floating-bar-progress-fill" id="mini-progress-bar-fill" style="width:0%"></div>
+        </div>
+        <span class="floating-bar-status" id="mini-game-status" style="display:none!important" aria-hidden="true"></span>
     </div>
 </body>
 </html>

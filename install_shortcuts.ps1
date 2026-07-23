@@ -1,13 +1,16 @@
 # Create Desktop + Start Menu shortcuts for FitGirl Downloader (this PC).
+# Points at Launch_Downloader.vbs → silent app start (no CMD windows).
 # Run: powershell -ExecutionPolicy Bypass -File .\install_shortcuts.ps1
 
 $ErrorActionPreference = "Stop"
 $project = Split-Path -Parent $MyInvocation.MyCommand.Path
-$bat = Join-Path $project "Run_Downloader.bat"
+$vbs = Join-Path $project "Launch_Downloader.vbs"
+$ps1 = Join-Path $project "Launch.ps1"
 $ico = Join-Path $project "assets\fitgirl-downloader.ico"
 
-if (-not (Test-Path $bat)) { throw "Missing: $bat" }
-if (-not (Test-Path $ico)) { throw "Missing icon: $ico (run assets icon generator first)" }
+if (-not (Test-Path $vbs)) { throw "Missing: $vbs" }
+if (-not (Test-Path $ps1)) { throw "Missing: $ps1" }
+if (-not (Test-Path $ico)) { throw "Missing icon: $ico" }
 
 $desktop = [Environment]::GetFolderPath("Desktop")
 $programs = [Environment]::GetFolderPath("Programs")
@@ -18,20 +21,22 @@ $shell = New-Object -ComObject WScript.Shell
 $targets = @(
     (Join-Path $desktop "FitGirl Downloader.lnk"),
     (Join-Path $programs "FitGirl Downloader.lnk"),
-    (Join-Path $folder "FitGirl Downloader.lnk")
+    (Join-Path $folder "FitGirl Downloader.lnk"),
+    (Join-Path $project "FitGirl Downloader.lnk")
 )
 
 foreach ($path in $targets) {
     $sc = $shell.CreateShortcut($path)
-    $sc.TargetPath = $bat
+    # VBS wrapper = no console flash; wscript.exe is the host
+    $sc.TargetPath = $vbs
     $sc.WorkingDirectory = $project
-    $sc.WindowStyle = 1
-    $sc.Description = "FitGirl Repack Downloader — start server and open dashboard"
+    $sc.WindowStyle = 7  # minimized host if anything flashes
+    $sc.Description = "FitGirl Repack Downloader - silent start, open dashboard"
     $sc.IconLocation = "$ico,0"
     $sc.Save()
     Write-Host "Created: $path"
 }
 
 Write-Host ""
-Write-Host "Done. Find 'FitGirl Downloader' on Desktop and in Start Menu search."
-Write-Host "Tip: right-click Start Menu entry → Pin to Start / Pin to taskbar."
+Write-Host "Done. Find 'FitGirl Downloader' on Desktop and in Start Menu."
+Write-Host "Launch is silent: no CMD pile. Re-open just focuses the web UI if already running."

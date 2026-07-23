@@ -5,6 +5,9 @@
 - Python `ThreadingHTTPServer` on **port 8000** (`main.py`)
 - UI: `web/index.html`, `web/app.js`, `web/style.css`, `web/details-fix.css` (loaded last)
 - Session: open `http://127.0.0.1:8000/`
+- **Silent launch (preferred):** shortcut → `Launch_Downloader.vbs` → `Launch.ps1` → `pythonw main.py` (no CMD). Re-run only opens the browser if already up.
+- Kill zombies: `kill_old_servers.ps1` (port 8000 + this project's `main.py` + old `Run_Downloader.bat` CMDs)
+- Reinstall shortcuts: `install_shortcuts.ps1`
 
 ## Important UI systems
 

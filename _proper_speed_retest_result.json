@@ -1,0 +1,86 @@
+{
+  "rank": [
+    "Pixeldrain",
+    "Rootz",
+    "FileDitch",
+    "Gofile",
+    "VikingFile"
+  ],
+  "speeds_mib": {
+    "FileDitch": 0.0,
+    "Rootz": 0.12996542764272428,
+    "Pixeldrain": 0.5189618700018336,
+    "Gofile": 0.0,
+    "VikingFile": 0.0
+  },
+  "details": [
+    {
+      "mirror": "FileDitch",
+      "probe": {
+        "success": false,
+        "error": "Got HTML instead of binary (extractor missed CDN URL)",
+        "bps": 0.0,
+        "mib": 0.0,
+        "direct": "https://fileditchfiles.st/alpha16/c43f49faec22658ab9a0/01-Forza.Horizon.6.Update.v354.221.to.v398.092.AiO-OFME.rar"
+      },
+      "sample": "01-Forza.Horizon.6.Update.v354.221.to.v398.092.AiO-OFME.rar",
+      "took": 0.41972923278808594
+    },
+    {
+      "mirror": "Rootz",
+      "probe": {
+        "success": true,
+        "error": "",
+        "bps": 136278.62825589726,
+        "mib": 0.12996542764272428,
+        "bytes": 2097152,
+        "seconds": 15.388707876205444,
+        "direct": "https://rootz-files.85a231f67cabccb38b67ab26e81ec217.r2.cloudflarestorage.com/users/0375ac0c-633b-4ad9-b030-f34a642621e8/1778797060402-Forza.Horizon.6.v354.221-OFME.part01.rar?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=7c930334f9457380ee8c83b46068f82d%2F20260718%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20260718T041050Z&X-Amz-Expires=86400&X-Amz-Signature=7039a4d81b0376b16ecefc3a6500ff71f36da4083277146e97bf85ca363594c2&X-Amz-SignedHeaders=host&response-content-disposition=attachment%3B%20filename%3D%22Forza.Horizon.6.v354.221-OFME.part01.rar%22%3B%20filename%2A%3DUTF-8%27%27Forza.Horizon.6.v354.221-OFME.part01.rar&x-amz-checksum-mode=ENABLED&x-id=GetObject",
+        "http_status": 206,
+        "hoster": "VikingFile"
+      },
+      "sample": "Forza.Horizon.6.v354.221-OFME.part01.rar",
+      "took": 28.820335149765015
+    },
+    {
+      "mirror": "Pixeldrain",
+      "probe": {
+        "success": true,
+        "error": "",
+        "bps": 544170.9617990426,
+        "mib": 0.5189618700018336,
+        "bytes": 8388608,
+        "seconds": 15.415390729904175,
+        "direct": "https://pixeldrain.com/api/file/pgnHhaYJ",
+        "http_status": 206,
+        "hoster": "Pixeldrain"
+      },
+      "sample": "Forza.Horizon.6.v354.221-OFME.part01.rar",
+      "took": 15.436008214950562
+    },
+    {
+      "mirror": "Gofile",
+      "probe": {
+        "success": false,
+        "error": "Could not resolve direct link",
+        "bps": 0.0,
+        "mib": 0.0,
+        "direct": ""
+      },
+      "sample": "Forza.Horizon.6.v354.221-OFME.part01.rar",
+      "took": 11.43656849861145
+    },
+    {
+      "mirror": "VikingFile",
+      "probe": {
+        "success": false,
+        "error": "Could not resolve direct link",
+        "bps": 0.0,
+        "mib": 0.0,
+        "direct": ""
+      },
+      "sample": "Forza.Horizon.6.v354.221-OFME.part01.rar",
+      "took": 29.892679929733276
+    }
+  ]
+}

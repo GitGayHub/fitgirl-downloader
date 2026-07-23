@@ -51,10 +51,8 @@ canvas.haze-mesh-layer.is-active {
     will-change: opacity !important;
 }
 /* Idle catalog: slightly dimmer mesh */
-#haze-background.haze-idle canvas.haze-mesh-layer.is-active {
-    opacity: 0.7 !important;
-}
-/* Game open: full bright mesh — must win over idle */
+/* Never dim mesh on catalog — idle blink was caused by opacity 0.55↔1 flips */
+#haze-background.haze-idle canvas.haze-mesh-layer.is-active,
 #haze-background.haze-active canvas.haze-mesh-layer.is-active,
 #haze-background.haze-active #haze-mesh-a.is-active,
 #haze-background.haze-active #haze-mesh-b.is-active {
@@ -243,61 +241,149 @@ canvas.haze-mesh-layer.is-active {
     max-width: 100% !important;
     box-sizing: border-box !important;
 }
+/* Stage size is set in JS — always full width of right column */
 #game-details-container .screenshot-main-showcase {
     position: relative !important;
     display: block !important;
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;
-    min-height: clamp(280px, 38vh, 480px) !important;
-    max-height: min(64vh, 920px) !important;
+    min-height: 0 !important;
+    max-height: none !important;
     aspect-ratio: var(--ss-ar, 16 / 9) !important;
-    margin: 0 !important; /* never auto/side gutters */
+    margin: 0 !important;
     border-radius: 12px !important;
     overflow: hidden !important;
-    background: #0c0c14 !important;
+    background: transparent !important;
     box-sizing: border-box !important;
 }
-#game-details-container .screenshot-main-showcase img,
-#game-details-container #screenshot-main-img {
-    position: absolute !important;
-    inset: 0 !important;
+#game-details-container .details-media-card,
+#game-details-container .screenshots-gallery-wrapper {
     width: 100% !important;
-    height: 100% !important;
-    object-fit: contain !important; /* full screenshot visible — taller box */
-    object-position: center !important;
-    background: #0c0c14 !important;
-    border: none !important;
+    max-width: 100% !important;
 }
+/* Box is sized to image AR → fill = full image, no crop, no bars */
+#game-details-container .screenshot-main-showcase img,
 #game-details-container .screenshot-main-showcase video,
 #game-details-container .screenshot-main-showcase iframe,
+#game-details-container #screenshot-main-img,
 #game-details-container #screenshot-main-direct-video,
-#game-details-container #screenshot-main-video {
+#game-details-container #screenshot-main-video,
+#game-details-container .screenshot-main-media {
     position: absolute !important;
     inset: 0 !important;
     width: 100% !important;
     height: 100% !important;
-    object-fit: cover !important;
-    object-position: center !important;
-    background: #0c0c14 !important;
+    max-width: none !important;
+    max-height: none !important;
+    object-fit: fill !important;
+    object-position: center center !important;
+    background: transparent !important;
     border: none !important;
 }
 
 #game-details-container .screenshots-grid {
     display: flex !important;
+    flex-direction: row !important;
     flex-wrap: nowrap !important;
     gap: 8px !important;
     width: 100% !important;
     overflow-x: auto !important;
     padding-bottom: 2px !important;
+    direction: ltr !important;
 }
-#game-details-container .screenshots-grid img.ss-thumb,
-#game-details-container .video-thumbnail-wrapper {
+/* Trailer chip ALWAYS first in the strip (visual + flex order) */
+#game-details-container .screenshots-grid .video-thumbnail-wrapper {
+    order: -100 !important;
     flex: 0 0 auto !important;
     width: clamp(96px, 10vw, 140px) !important;
     height: clamp(54px, 5.6vw, 79px) !important;
     border-radius: 10px !important;
     object-fit: cover !important;
+}
+#game-details-container .screenshots-grid img.ss-thumb {
+    order: 0 !important;
+    flex: 0 0 auto !important;
+    width: clamp(96px, 10vw, 140px) !important;
+    height: clamp(54px, 5.6vw, 79px) !important;
+    border-radius: 10px !important;
+    object-fit: cover !important;
+}
+
+/* Smooth dual-layer crossfade on main media stage */
+#game-details-container .screenshot-main-showcase .media-layer {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    opacity: 0 !important;
+    transition: opacity 0.55s ease !important;
+    pointer-events: none !important;
+    z-index: 1 !important;
+}
+#game-details-container .screenshot-main-showcase .media-layer.is-active {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    z-index: 3 !important;
+}
+#game-details-container .screenshot-main-showcase video.media-layer.is-active {
+    z-index: 4 !important;
+}
+
+/* Cycle progress bar — bottom of stage, tall enough to notice (not under native controls) */
+#game-details-container .screenshot-main-showcase {
+    position: relative !important;
+}
+#game-details-container .media-cycle-progress {
+    position: absolute !important;
+    left: 10px !important;
+    right: 10px !important;
+    bottom: 10px !important;
+    height: 5px !important;
+    border-radius: 999px !important;
+    background: rgba(0, 0, 0, 0.45) !important;
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+    z-index: 30 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    overflow: hidden !important;
+    transition: opacity 0.25s ease !important;
+    backdrop-filter: blur(6px) !important;
+}
+#game-details-container .media-cycle-progress.is-visible {
+    opacity: 1 !important;
+}
+#game-details-container .media-cycle-progress-fill {
+    display: block !important;
+    height: 100% !important;
+    /* width driven by inline style from JS — do NOT lock with !important */
+    width: 0%;
+    min-width: 0;
+    max-width: 100%;
+    background: linear-gradient(
+        90deg,
+        rgba(255, 255, 255, 0.55),
+        rgba(192, 38, 211, 0.95),
+        rgba(236, 72, 153, 0.9)
+    ) !important;
+    box-shadow: 0 0 12px rgba(192, 38, 211, 0.55) !important;
+    border-radius: 999px !important;
+    will-change: width;
+}
+
+/* No zoom/scale on thumb hover — only subtle border highlight */
+#game-details-container .screenshots-grid img.ss-thumb,
+#game-details-container .screenshots-grid img,
+#game-details-container .screenshots-grid .video-thumbnail-wrapper {
+    transform: none !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease !important;
+}
+#game-details-container .screenshots-grid img.ss-thumb:hover,
+#game-details-container .screenshots-grid img:hover,
+#game-details-container .screenshots-grid .video-thumbnail-wrapper:hover {
+    transform: none !important;
+    scale: none !important;
+    border-color: rgba(255, 255, 255, 0.28) !important;
 }
 
 /* Description lives under media — full width of right column, fluid with media */
@@ -562,9 +648,31 @@ body > #details-bottom-bar.is-visible,
 
 #games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card:hover,
 .games-grid:not(.is-onlinefix-home) > .game-card:hover {
-    /* lift only — never scale (scale causes neighbor overlap) */
-    transform: translateY(-4px) !important;
+    /* No scale / stretch — only soft lift (no layout jerk) */
+    transform: translateY(-2px) !important;
     z-index: 4 !important;
+}
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card,
+.games-grid:not(.is-onlinefix-home) > .game-card,
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card img,
+.games-grid:not(.is-onlinefix-home) > .game-card img,
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card .card-cover,
+.games-grid:not(.is-onlinefix-home) > .game-card .card-cover {
+    transition:
+        transform 0.2s ease,
+        box-shadow 0.2s ease,
+        filter 0.2s ease,
+        border-color 0.2s ease !important;
+}
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card:hover .card-cover,
+.games-grid:not(.is-onlinefix-home) > .game-card:hover .card-cover,
+#games-grid-container.games-grid:not(.is-onlinefix-home) > .game-card:hover img,
+.games-grid:not(.is-onlinefix-home) > .game-card:hover img {
+    transform: none !important;
+    scale: none !important;
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
 }
 
 /* Cover fills the card; absolute children do not escape */
@@ -598,4 +706,39 @@ body > #details-bottom-bar.is-visible,
 .games-grid-wrapper:has(.browse-nav-pills:not([style*="display: none"]))
     #games-grid-container.games-grid:not(.is-onlinefix-home) {
     padding-top: 96px !important;
+}
+
+/* Smart-fit media: stage AR matches shot → fill, no crop, no bars */
+#game-details-container .screenshot-main-showcase img,
+#game-details-container .screenshot-main-showcase video,
+#game-details-container .screenshot-main-showcase iframe,
+#game-details-container .screenshot-main-media,
+#game-details-container #screenshot-main-img,
+#game-details-container #screenshot-main-direct-video,
+#game-details-container #screenshot-main-video {
+    object-fit: fill !important;
+    object-position: center center !important;
+    width: 100% !important;
+    height: 100% !important;
+    background: transparent !important;
+}
+#game-details-container .screenshot-main-showcase {
+    background: transparent !important;
+    min-height: 0 !important;
+}
+
+/* Nuclear: kill catalog card hover scale/stretch everywhere */
+.games-grid .game-card:hover,
+.games-grid .game-card:hover .card-cover,
+.games-grid .game-card:hover img.card-cover,
+.of-latest-grid .game-card:hover,
+.popular-slider-scroll .game-card:hover {
+    transform: translateY(-2px) !important;
+}
+.games-grid .game-card:hover .card-cover,
+.games-grid .game-card:hover img,
+.of-latest-grid .game-card:hover .card-cover,
+.popular-slider-scroll .game-card:hover .card-cover {
+    transform: none !important;
+    scale: 1 !important;
 }

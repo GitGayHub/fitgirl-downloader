@@ -1,44 +1,24 @@
 @echo off
+REM Debug / console launcher. Normal users should use the Start Menu shortcut
+REM (Launch_Downloader.vbs) which starts the app with no CMD window.
 setlocal EnableExtensions
-title FitGirl Repack Downloader
 cd /d "%~dp0"
 
-echo ==============================================
-echo        FitGirl Repack Downloader
-echo ==============================================
-echo.
-
-echo Closing previous FitGirl servers (keeping this window)...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kill_old_servers.ps1"
-if errorlevel 1 (
-    echo Warning: cleanup script reported an error, continuing anyway...
+REM Prefer silent app launch (no pause, no console pile-up)
+if exist "%~dp0Launch.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0Launch.ps1"
+    exit /b %ERRORLEVEL%
 )
 
-echo.
-echo Opening dashboard in browser in 2s...
-start "" cmd /c "timeout /t 2 /nobreak >nul & start http://localhost:8000/"
-
-echo Starting server...
+REM Fallback: kill old + run python in this console (dev only)
 if not exist ".venv\Scripts\python.exe" (
     echo ERROR: .venv\Scripts\python.exe not found
-    echo Run from C:\VibeCoding\fitgirl-downloader after creating the venv.
     pause
     exit /b 1
 )
-if not exist "main.py" (
-    echo ERROR: main.py not found in %CD%
-    pause
-    exit /b 1
-)
-
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0kill_old_servers.ps1" >nul 2>&1
+start /b "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "for($i=0;$i -lt 50;$i++){ try { $r=Invoke-WebRequest -Uri 'http://127.0.0.1:8000/' -UseBasicParsing -TimeoutSec 1; if($r.StatusCode -eq 200){ Start-Process 'http://127.0.0.1:8000/'; exit 0 } } catch {} ; Start-Sleep -Milliseconds 100 }"
 ".venv\Scripts\python.exe" main.py
-set ERR=%ERRORLEVEL%
-
-echo.
-if not "%ERR%"=="0" (
-    echo Server exited with code %ERR%
-) else (
-    echo Server stopped.
-)
+echo Server stopped with code %ERRORLEVEL%
 pause
 endlocal

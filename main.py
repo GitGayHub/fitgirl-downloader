@@ -227,8 +227,13 @@ state = {
     "extraction_progress": 0,
     "average_download_speed": 5000000.0,
     "active_mirror": "",
-    "warp_status": "checking",
+    "warp_status": "checking",  # checking|installing|installed|error|skipped
     "warp_error_message": "",
+    "warp_connected": False,
+    "warp_last_rotate_ts": 0,
+    "warp_rotating": False,
+    # Bumped after auto IP rotate — download workers reconnect streams
+    "reconnect_gen": 0,
     "pixeldrain_limit_reached": False,
     "gofile_proxy": False,
     "gdrive_accounts": [],
@@ -236,12 +241,33 @@ state = {
     "gdrive_session_cookies": {},
     "gdrive_client_id": "",
     "gdrive_client_secret": "",
-    "original_size": ""
+    "original_size": "",
+    # High-speed multi-mirror keep-alive:
+    # catalog[mirror][filename] = page/direct url from Online-Fix hosters
+    "mirror_catalog": {},
+    # ranked preferred mirrors by measured MiB/s (best first)
+    "mirror_rank": [],
+    "mirror_speeds": {},  # mirror -> bytes/sec sample
+    "high_speed_mode": True,
+    # sustained below this → treat as throttled / bad host
+    "min_acceptable_speed": 2 * 1024 * 1024,  # 2 MiB/s
+    # track which mirrors already failed for a given filename this session
+    "file_mirror_blacklist": {},  # filename -> [mirror names]
+    # Optional Turnstile solver key (CapSolver CAP-... or 2Captcha)
+    "captcha_api_key": "",
+    "captcha_provider": "",  # capsolver | 2captcha | auto
+    # Post-download smart pipeline
+    "post_download_running": False,
+    "post_download_status": "",  # checking|extracting|ready|needs_install|incomplete|...
+    "post_download_message": "",
+    "post_download_report": {},
 }
 
 state_lock = threading.RLock()
 extraction_lock = threading.Lock()
 gdrive_oauth_lock = threading.Lock()
+warp_rotate_lock = threading.Lock()
+_speed_watchdog_started = False
 
 # Cache mechanism for file sizes
 cache_path = os.path.join(os.path.dirname(__file__), "sizes_cache.json")
@@ -286,6 +312,12 @@ def save_session_state():
                 "average_download_speed": state.get("average_download_speed", 5000000.0),
                 "original_size": state.get("original_size", ""),
                 "is_extracted": state.get("is_extracted", False),
+                "mirror_catalog": state.get("mirror_catalog") or {},
+                "mirror_rank": state.get("mirror_rank") or [],
+                "mirror_speeds": state.get("mirror_speeds") or {},
+                "high_speed_mode": bool(state.get("high_speed_mode", True)),
+                "min_acceptable_speed": int(state.get("min_acceptable_speed", 2 * 1024 * 1024)),
+                "pixeldrain_limit_reached": bool(state.get("pixeldrain_limit_reached", False)),
             }
         with open(session_state_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -317,6 +349,17 @@ def load_session_state():
                 state["average_download_speed"] = data.get("average_download_speed", 5000000.0)
                 state["original_size"] = data.get("original_size", state.get("original_size", ""))
                 state["is_extracted"] = bool(data.get("is_extracted", False))
+                state["mirror_catalog"] = data.get("mirror_catalog") or {}
+                state["mirror_rank"] = data.get("mirror_rank") or []
+                state["mirror_speeds"] = data.get("mirror_speeds") or {}
+                state["high_speed_mode"] = bool(data.get("high_speed_mode", True))
+                state["min_acceptable_speed"] = int(
+                    data.get("min_acceptable_speed", 2 * 1024 * 1024)
+                )
+                state["pixeldrain_limit_reached"] = bool(
+                    data.get("pixeldrain_limit_reached", False)
+                )
+                state["file_mirror_blacklist"] = {}
 
                 # Ensure path = base / Game / Cloud (per-provider folders)
                 try:
@@ -411,137 +454,857 @@ def add_log(message):
         except Exception:
             print(f"[{timestamp}] [Log encoding error] " + "".join(c if ord(c) < 128 else '?' for c in message))
 
-def is_warp_available():
+def get_warp_cli():
+    """Locate warp-cli.exe (PATH or standard Cloudflare install dirs)."""
     import shutil
-    warp_cli = shutil.which("warp-cli")
-    if not warp_cli:
-        std_path = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
-        if os.path.exists(std_path):
-            warp_cli = std_path
-    return warp_cli is not None
+    candidates = [
+        shutil.which("warp-cli"),
+        r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe",
+        r"C:\Program Files (x86)\Cloudflare\Cloudflare WARP\warp-cli.exe",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    # Last resort: shallow search under Cloudflare Program Files
+    for root in (
+        r"C:\Program Files\Cloudflare",
+        r"C:\Program Files (x86)\Cloudflare",
+    ):
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirs, files in os.walk(root):
+            if "warp-cli.exe" in files:
+                return os.path.join(dirpath, "warp-cli.exe")
+    return None
+
+
+def is_warp_available():
+    return get_warp_cli() is not None
+
+
+def _warp_run(cli, args, timeout=30):
+    try:
+        return subprocess.run(
+            [cli] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except Exception as e:
+        class _R:
+            returncode = 1
+            stdout = ""
+            stderr = str(e)
+        return _R()
+
+
+def get_warp_connection_info():
+    """Return {installed, connected, status_text, cli}."""
+    cli = get_warp_cli()
+    if not cli:
+        return {
+            "installed": False,
+            "connected": False,
+            "status_text": "Not installed",
+            "cli": None,
+        }
+    res = _warp_run(cli, ["status"], timeout=15)
+    out = (res.stdout or "") + "\n" + (res.stderr or "")
+    connected = "Status update: Connected" in out or (
+        "Connected" in out and "Disconnected" not in out.split("Status update:")[-1][:80]
+    )
+    if "Registration Missing" in out or "Unable" in out:
+        connected = False
+    return {
+        "installed": True,
+        "connected": connected,
+        "status_text": "Connected" if connected else "Installed (not connected)",
+        "cli": cli,
+        "raw": out[:500],
+    }
+
+
+def ensure_warp_connected(cli=None):
+    """Register (if needed) + connect WARP. Returns True if Connected."""
+    cli = cli or get_warp_cli()
+    if not cli:
+        return False
+    info = get_warp_connection_info()
+    if info.get("connected"):
+        return True
+    add_log("WARP: Ensuring registration and connection...")
+    # registration new is idempotent-ish; ignore failures if already registered
+    _warp_run(cli, ["registration", "new"], timeout=60)
+    _warp_run(cli, ["mode", "warp"], timeout=15)
+    _warp_run(cli, ["connect"], timeout=30)
+    for _ in range(15):
+        time.sleep(1)
+        info = get_warp_connection_info()
+        if info.get("connected"):
+            add_log("WARP: Connected.")
+            with state_lock:
+                state["warp_status"] = "installed"
+                state["warp_connected"] = True
+            return True
+    add_log("WARP: Failed to reach Connected state.")
+    with state_lock:
+        state["warp_connected"] = False
+    return False
+
 
 def get_effective_max_workers():
+    """Pixeldrain free tier: max concurrent downloads per IP is low — stay at 1
+    only while the *active* queue still uses pixeldrain URLs.
+    After failover to Viking/Gofile/etc, allow full parallelism.
+    """
     with state_lock:
+        active_urls = [
+            (f.get("url") or "")
+            for f in state.get("files", [])
+            if f.get("status") in ("waiting", "connecting", "downloading", "copying")
+        ]
+        if any("pixeldrain.com" in u for u in active_urls):
+            return 1
         if state.get("active_mirror") and "pixeldrain" in state["active_mirror"].lower():
-            return 1
-        if any("pixeldrain.com" in f.get("url", "") for f in state.get("files", [])):
-            return 1
+            # mirror label still Pixeldrain but URLs may have failed over
+            if any("pixeldrain.com" in u for u in active_urls) or not active_urls:
+                # if all remaining non-finished still on PD → 1 worker
+                unfinished = [
+                    f for f in state.get("files", [])
+                    if f.get("status") not in ("finished",)
+                ]
+                if unfinished and all("pixeldrain.com" in (f.get("url") or "") for f in unfinished):
+                    return 1
         return state.get("max_workers", 4)
 
-def rotate_warp_ip():
-    add_log("Attempting to rotate IP using Cloudflare WARP...")
-    import shutil
-    warp_cli = shutil.which("warp-cli")
-    if not warp_cli:
-        std_path = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
-        if os.path.exists(std_path):
-            warp_cli = std_path
-            
-    if not warp_cli:
-        add_log("WARP CLI not found in PATH or standard Program Files location. Please install Cloudflare WARP to enable automatic IP rotation.")
-        return False
-        
+
+def _hoster_name_from_url(url: str) -> str:
+    u = (url or "").lower()
+    if "pixeldrain.com" in u:
+        return "Pixeldrain"
+    if "gofile.io" in u:
+        return "Gofile"
+    if "vikingfile.com" in u or "vik1ngfile.site" in u or "cloudflarestorage" in u:
+        return "VikingFile"
+    if "rootz.so" in u or "rootz.cc" in u:
+        return "Rootz"
+    if "fileditch" in u:
+        return "FileDitch"
+    if "datanodes" in u:
+        return "DataNodes"
+    if "fuckingfast" in u:
+        return "FuckingFast"
+    if "drive.online-fix.me" in u or "drive.google.com" in u:
+        return "GoogleDrive"
+    return "Unknown"
+
+
+def resolve_direct_link_for_probe(page_url: str):
+    """Resolve hoster page → real CDN URL (used by speed probe)."""
+    if not page_url:
+        return None
+    # Already a direct/binary endpoint
+    if "pixeldrain.com/api/file/" in page_url:
+        return page_url
+    if "pixeldrain.com/u/" in page_url:
+        return page_url.replace("pixeldrain.com/u/", "pixeldrain.com/api/file/")
     try:
-        add_log("WARP: Disconnecting...")
-        subprocess.run([warp_cli, "disconnect"], capture_output=True, text=True, check=True)
-        time.sleep(2)
-        
+        if "fuckingfast.co" in page_url:
+            return extract_direct_link(page_url)
+        if "datanodes.to" in page_url:
+            return extract_datanodes_link(page_url)
+        if "fileditchfiles.me" in page_url or "fileditch.com" in page_url:
+            return extract_fileditch_link(page_url)
+        if "gofile.io" in page_url:
+            link = extract_gofile_link(page_url)
+            if link and not str(link).startswith("ERROR_"):
+                return link
+            return None
+        if "rootz.so" in page_url or "rootz.cc" in page_url:
+            link = extract_rootz_link(page_url)
+            if link and not str(link).startswith("ERROR_"):
+                return link
+            return None
+        if "vikingfile.com" in page_url or "vik1ngfile.site" in page_url:
+            link = extract_viking_link(page_url)
+            if link and not str(link).startswith("ERROR_"):
+                return link
+            return None
+        # Assume already direct (CDN, S3, etc.)
+        if page_url.startswith("http"):
+            return page_url
+    except Exception as e:
+        add_log(f"resolve_direct_link_for_probe error: {e}")
+    return None
+
+
+def probe_url_speed(page_or_direct_url: str, seconds: float = 12.0, max_bytes: int = 20 * 1024 * 1024):
+    """Download a sample after resolving the real CDN link. Returns dict with bps/mib."""
+    direct = resolve_direct_link_for_probe(page_or_direct_url)
+    if not direct:
+        return {"success": False, "error": "Could not resolve direct link", "bps": 0.0, "mib": 0.0, "direct": ""}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Range": f"bytes=0-{max_bytes - 1}",
+    }
+    # Gofile token cookie if we have one
+    if "gofile.io" in direct:
+        tok = state.get("gofile_account_token")
+        if tok:
+            headers["Cookie"] = f"accountToken={tok}"
+    t0 = time.time()
+    total = 0
+    status = 0
+    try:
+        resp = requests.get(direct, headers=headers, stream=True, timeout=25)
+        status = resp.status_code
+        if status not in (200, 206):
+            body = ""
+            try:
+                body = resp.content[:300].decode("utf-8", "replace")
+            except Exception:
+                pass
+            resp.close()
+            return {
+                "success": False,
+                "error": f"HTTP {status}: {body[:120]}",
+                "bps": 0.0,
+                "mib": 0.0,
+                "direct": direct,
+                "http_status": status,
+            }
+        ctype = (resp.headers.get("content-type") or "").lower()
+        if "text/html" in ctype:
+            resp.close()
+            return {
+                "success": False,
+                "error": "Got HTML instead of binary (extractor missed CDN URL)",
+                "bps": 0.0,
+                "mib": 0.0,
+                "direct": direct,
+            }
+        for chunk in resp.iter_content(256 * 1024):
+            if not chunk:
+                break
+            total += len(chunk)
+            if time.time() - t0 >= seconds or total >= max_bytes:
+                break
+        resp.close()
+    except Exception as e:
+        return {"success": False, "error": str(e), "bps": 0.0, "mib": 0.0, "direct": direct or ""}
+    elapsed = max(0.001, time.time() - t0)
+    bps = total / elapsed
+    return {
+        "success": total > 64 * 1024,  # at least 64KB to count as real
+        "error": "" if total > 64 * 1024 else f"Only got {total} bytes",
+        "bps": bps,
+        "mib": bps / (1024 * 1024),
+        "bytes": total,
+        "seconds": elapsed,
+        "direct": direct,
+        "http_status": status,
+        "hoster": _hoster_name_from_url(direct),
+    }
+
+
+def register_mirror_catalog(catalog: dict, speeds: dict | None = None, rank: list | None = None):
+    """catalog: {MirrorName: {filename: url}} or {MirrorName: [filedicts]}"""
+    normalized = {}
+    for name, payload in (catalog or {}).items():
+        fmap = {}
+        if isinstance(payload, dict):
+            # either filename->url or already nested
+            for k, v in payload.items():
+                if isinstance(v, str):
+                    fmap[k] = v
+                elif isinstance(v, dict) and v.get("url"):
+                    fmap[v.get("filename") or k] = v["url"]
+        elif isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                fn = item.get("filename")
+                url = item.get("url")
+                if fn and url:
+                    fmap[fn] = url
+        if fmap:
+            normalized[name] = fmap
+    with state_lock:
+        state["mirror_catalog"] = normalized
+        if speeds is not None:
+            state["mirror_speeds"] = {k: float(v) for k, v in speeds.items()}
+        if rank is not None:
+            state["mirror_rank"] = list(rank)
+        elif speeds:
+            state["mirror_rank"] = sorted(
+                speeds.keys(), key=lambda m: float(speeds.get(m) or 0), reverse=True
+            )
+    save_session_state()
+    add_log(
+        f"[SPEED] Registered mirror catalog: {list(normalized.keys())} "
+        f"rank={state.get('mirror_rank')}"
+    )
+
+
+def pick_failover_url(filename: str, current_url: str):
+    """Pick next-best mirror URL for the same filename (same download folder, just swap URL)."""
+    if not state.get("high_speed_mode", True):
+        return None, None
+    catalog = state.get("mirror_catalog") or {}
+    if not catalog:
+        return None, None
+    rank = list(state.get("mirror_rank") or [])
+    speeds = state.get("mirror_speeds") or {}
+    # append any mirrors not in rank
+    for m in catalog.keys():
+        if m not in rank:
+            rank.append(m)
+    # When Pixeldrain free limit is active, demote it hard
+    if state.get("pixeldrain_limit_reached"):
+        rank = [m for m in rank if "pixeldrain" not in m.lower()] + [
+            m for m in rank if "pixeldrain" in m.lower()
+        ]
+    blacklist = set((state.get("file_mirror_blacklist") or {}).get(filename) or [])
+    cur_host = _hoster_name_from_url(current_url)
+    blacklist.add(cur_host)
+    cur_bps = float(speeds.get(cur_host) or speeds.get(state.get("active_mirror") or "") or 0)
+    # Prefer measured rank; skip dead/broken free hosts for auto
+    candidates = []
+    for mirror in rank:
+        if mirror in blacklist:
+            continue
+        ml = mirror.lower()
+        if "google" in ml or "own" in ml:
+            continue
+        # Gofile Online-Fix folders need premium (API error-notPremium)
+        if "gofile" in ml:
+            continue
+        # FileDitch on OF often only has fix packs / HTML gate — not full multi-part
+        if "fileditch" in ml:
+            continue
+        # Viking: captcha can be solved (Playwright token/POST or CapSolver/2Captcha key)
+        # Keep it available — zero sample speed no longer means unusable
+        bps = float(speeds.get(mirror) or 0)
+        fmap = catalog.get(mirror) or {}
+        url = fmap.get(filename)
+        if not url or url == current_url:
+            continue
+        candidates.append((mirror, url, bps))
+
+    # Only switch if alternate is meaningfully faster than current sample,
+    # OR current host is hard-blocked (0 bps / PD limit with near-zero speed).
+    for mirror, url, bps in candidates:
+        if bps <= 0:
+            continue
+        if cur_bps > 0 and bps < cur_bps * 1.15:
+            # not faster — skip (don't trade 1.0 MiB/s PD for 0.13 Rootz)
+            continue
+        return mirror, url
+
+    # Hard block path: no useful current speed → take best positive alternate even if slow
+    if cur_bps < 80_000:  # < ~80 KB/s
+        best = None
+        for mirror, url, bps in candidates:
+            if bps <= 0:
+                continue
+            if best is None or bps > best[2]:
+                best = (mirror, url, bps)
+        if best:
+            return best[0], best[1]
+    return None, None
+
+
+def apply_file_failover(index: int, reason: str) -> bool:
+    """Swap file URL to next mirror in-place (keeps path for resume). Returns True if swapped."""
+    with state_lock:
+        if index < 0 or index >= len(state["files"]):
+            return False
+        f = state["files"][index]
+        filename = f.get("filename") or ""
+        current = f.get("url") or ""
+        cur_host = _hoster_name_from_url(current)
+        bl = state.setdefault("file_mirror_blacklist", {})
+        bl.setdefault(filename, [])
+        if cur_host not in bl[filename]:
+            bl[filename].append(cur_host)
+    mirror, url = pick_failover_url(filename, current)
+    if not mirror or not url:
+        add_log(f"[SPEED] No failover mirror left for {filename} ({reason})")
+        return False
+    with state_lock:
+        if index < len(state["files"]):
+            state["files"][index]["url"] = url
+            state["files"][index]["error"] = ""
+            # stay waiting/connecting so worker retries
+            if state["files"][index].get("status") not in ("finished",):
+                state["files"][index]["status"] = "waiting"
+            # active_mirror label: keep original for UI, but log host switch
+    save_session_state()
+    add_log(
+        f"[SPEED] Failover {filename}: {cur_host} → {mirror} ({reason}). "
+        f"Resume from disk at same path."
+    )
+    # Spawn extra workers if we left Pixeldrain constraint
+    try:
+        with state_lock:
+            if state.get("is_running"):
+                needed = get_effective_max_workers() - state.get("active_workers_count", 0)
+                if needed > 0:
+                    for _ in range(needed):
+                        threading.Thread(target=download_worker, daemon=True).start()
+    except Exception:
+        pass
+    return True
+
+def rotate_warp_ip():
+    """Disconnect/reconnect WARP to obtain a new egress IP (resets Pixeldrain free quota)."""
+    add_log("Attempting to rotate IP using Cloudflare WARP...")
+    warp_cli = get_warp_cli()
+    if not warp_cli:
+        add_log(
+            "WARP CLI not found. Install Cloudflare WARP from Settings "
+            "(or allow the startup installer)."
+        )
+        return False
+
+    try:
+        # Ensure registered/connected once, then cycle disconnect→connect for new IP
+        ensure_warp_connected(warp_cli)
+
+        add_log("WARP: Disconnecting for IP rotation (hold 6s for new egress)...")
+        _warp_run(warp_cli, ["disconnect"], timeout=30)
+        time.sleep(6)
+
         add_log("WARP: Reconnecting...")
-        subprocess.run([warp_cli, "connect"], capture_output=True, text=True, check=True)
-        
-        # Wait up to 10 seconds for connection to be active
-        for _ in range(10):
+        _warp_run(warp_cli, ["connect"], timeout=30)
+
+        for _ in range(20):
             time.sleep(1)
-            status_res = subprocess.run([warp_cli, "status"], capture_output=True, text=True)
-            if "Connected" in status_res.stdout:
+            info = get_warp_connection_info()
+            if info.get("connected"):
                 add_log("WARP: Reconnected successfully with a new IP!")
+                with state_lock:
+                    state["pixeldrain_limit_reached"] = False
+                    state["warp_connected"] = True
+                    state["warp_status"] = "installed"
+                    state["warp_last_rotate_ts"] = time.time()
+                    state["reconnect_gen"] = int(state.get("reconnect_gen") or 0) + 1
+                clear_pixeldrain_cookies()
                 return True
+
+        # One more hard reset attempt
+        add_log("WARP: First reconnect timed out — trying registration + connect...")
+        _warp_run(warp_cli, ["registration", "new"], timeout=60)
+        _warp_run(warp_cli, ["connect"], timeout=30)
+        for _ in range(15):
+            time.sleep(1)
+            if get_warp_connection_info().get("connected"):
+                add_log("WARP: Connected after re-registration.")
+                with state_lock:
+                    state["pixeldrain_limit_reached"] = False
+                    state["warp_connected"] = True
+                    state["warp_status"] = "installed"
+                    state["warp_last_rotate_ts"] = time.time()
+                    state["reconnect_gen"] = int(state.get("reconnect_gen") or 0) + 1
+                clear_pixeldrain_cookies()
+                return True
+
         add_log("WARP: Reconnection timed out.")
         return False
     except Exception as e:
         add_log(f"WARP: Failed to rotate IP: {e}")
         return False
 
-def check_and_install_warp():
-    """Checks if Cloudflare WARP is installed, and if not, attempts to download and install it silently."""
+
+def try_auto_warp_rotate(
+    reason: str, min_interval_sec: float = 25.0, force: bool = False
+) -> bool:
+    """Single-flight auto rotate when Pixeldrain free-tier caps speed (~1 MiB/s).
+
+    Called from download workers AND background speed watchdog — only one rotate
+    runs at a time. On success bumps reconnect_gen so open streams reconnect.
+
+    force=True: ignore cooldown (manual UI / Settings button).
+    """
+    if not is_warp_available():
+        add_log(f"[AUTO-WARP] Skip rotate ({reason}): WARP not installed.")
+        return False
+
+    # Non-blocking: if another rotate is in progress, skip (caller should wait on gen)
+    if not warp_rotate_lock.acquire(blocking=False):
+        add_log(f"[AUTO-WARP] Rotate already in progress ({reason}) — wait for reconnect_gen.")
+        return False
+
+    try:
+        with state_lock:
+            last = float(state.get("warp_last_rotate_ts") or 0)
+            remaining = min_interval_sec - (time.time() - last)
+            if not force and remaining > 0:
+                add_log(
+                    f"[AUTO-WARP] Cooldown {remaining:.0f}s left ({reason}) — "
+                    f"will retry after cooldown (not 'no WARP')."
+                )
+                return False
+            if state.get("warp_rotating"):
+                return False
+            state["warp_rotating"] = True
+            state["pixeldrain_limit_reached"] = True
+
+        add_log(f"[AUTO-WARP] Rotating IP now. Reason: {reason} force={force}")
+        ok = rotate_warp_ip()
+        if ok:
+            add_log(
+                "[AUTO-WARP] IP rotated OK. Download workers will reconnect streams "
+                f"(reconnect_gen={state.get('reconnect_gen')})."
+            )
+        else:
+            add_log("[AUTO-WARP] IP rotate FAILED — will keep trying on next throttle window.")
+        return ok
+    finally:
+        with state_lock:
+            state["warp_rotating"] = False
+        try:
+            warp_rotate_lock.release()
+        except Exception:
+            pass
+
+
+def wait_for_warp_rotate_or_do(
+    reason: str, min_interval_sec: float = 25.0, wait_sec: int = 55
+) -> bool:
+    """Ensure a WARP rotate happens: do it, or wait for in-flight/cooldown rotate.
+
+    Always preferred over the misleading 'No WARP' reconnect path.
+    """
+    if not is_warp_available():
+        return False
+
+    with state_lock:
+        gen0 = int(state.get("reconnect_gen") or 0)
+
+    if try_auto_warp_rotate(reason, min_interval_sec=min_interval_sec):
+        return True
+
+    # Wait for another thread's rotate, or cooldown to expire then force
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        with state_lock:
+            gen = int(state.get("reconnect_gen") or 0)
+            rotating = bool(state.get("warp_rotating"))
+            last = float(state.get("warp_last_rotate_ts") or 0)
+        if gen != gen0:
+            add_log(f"[AUTO-WARP] Saw reconnect_gen {gen0}→{gen} while waiting ({reason}).")
+            return True
+        if not rotating and (time.time() - last) >= min_interval_sec:
+            if try_auto_warp_rotate(f"{reason} (after wait)", min_interval_sec=min_interval_sec):
+                return True
+        time.sleep(1)
+
+    # Last resort: force through cooldown
+    add_log(f"[AUTO-WARP] Force-rotate after wait timeout ({reason}).")
+    return try_auto_warp_rotate(f"{reason} (force)", min_interval_sec=0, force=True)
+
+
+def is_pixeldrain_throttle_speed(speed_bps: float) -> bool:
+    """True if speed looks like Pixeldrain free-tier throttle / dead link.
+
+    Free PD typically sits ~1.0–1.15 MiB/s when quota is exhausted, but can also
+    drop near-zero during connect storms / soft blocks. Treat everything from
+    a few KB/s up to ~1.25 MiB/s as "need IP rotate" while actively downloading.
+    """
+    if speed_bps is None:
+        return False
+    s = float(speed_bps)
+    # ~8 KB/s .. 1.25 MiB/s  (was 200KB+ only — missed 0.04 MiB/s dead crawl)
+    return (8 * 1024) <= s <= (1.25 * 1024 * 1024)
+
+
+def bulk_failover_unfinished_to_mirror(mirror_name: str = "Rootz") -> int:
+    """Rewrite unfinished file URLs to another hoster from mirror_catalog.
+
+    Keeps the same download_dir so partials resume. Used when Pixeldrain free-cap
+    survives multiple WARP rotates (WARP IP pool also throttled).
+    """
+    catalog = (state.get("mirror_catalog") or {}).get(mirror_name) or {}
+    if not catalog:
+        add_log(f"[ESCAPE] No catalog entries for mirror {mirror_name}.")
+        return 0
+
+    switched = 0
+    with state_lock:
+        # Stop current workers so they re-pick with new URLs
+        state["should_stop"] = True
+        state["is_running"] = False
+        for f in state.get("files") or []:
+            if f.get("status") == "finished":
+                continue
+            fn = f.get("filename") or ""
+            url = catalog.get(fn)
+            if not url:
+                continue
+            old = f.get("url") or ""
+            if url == old:
+                continue
+            f["url"] = url
+            if f.get("status") in ("downloading", "connecting", "failed", "copying"):
+                f["status"] = "waiting"
+                f["speed"] = 0
+                f["error"] = ""
+            switched += 1
+        if switched:
+            state["active_mirror"] = f"{mirror_name} (auto-escape PD)"
+            state["max_workers"] = max(int(state.get("max_workers") or 4), 4)
+            state["pixeldrain_limit_reached"] = False
+            # clear PD blacklists so Rootz is clean
+            state["file_mirror_blacklist"] = {}
+
+    if switched:
+        add_log(
+            f"[ESCAPE] Switched {switched} unfinished file(s) → {mirror_name}. "
+            f"Same folder for resume. Workers={state.get('max_workers')}."
+        )
+        save_session_state()
+        time.sleep(1.5)
+        with state_lock:
+            state["should_stop"] = False
+            state["is_running"] = True
+            n = get_effective_max_workers()
+            for _ in range(n):
+                threading.Thread(target=download_worker, daemon=True).start()
+        add_log(f"[ESCAPE] Resumed with {get_effective_max_workers()} parallel workers.")
+    return switched
+
+
+def speed_watchdog_loop():
+    """Background: WARP-rotate on PD free-cap; after repeated fails → escape to Rootz."""
+    add_log("[AUTO-WARP] Speed watchdog started (auto-rotate + multi-host escape).")
+    throttle_streak = 0
+    samples = []  # last N total_speed samples while PD active
+    pd_escape_strikes = 0  # free-cap windows that survived a WARP rotate
+    last_escape_ts = 0.0
+    while True:
+        try:
+            time.sleep(2)
+            with state_lock:
+                running = bool(state.get("is_running"))
+                files = list(state.get("files") or [])
+                total_spd = float(state.get("total_speed") or 0)
+                rotating = bool(state.get("warp_rotating"))
+
+            if not running or rotating:
+                throttle_streak = 0
+                samples = []
+                continue
+
+            pd_active = any(
+                f.get("status") == "downloading"
+                and "pixeldrain.com" in (f.get("url") or "").lower()
+                for f in files
+            )
+            if not pd_active:
+                # Not on PD anymore — reset escape counter slowly
+                throttle_streak = 0
+                samples = []
+                if total_spd > 2 * 1024 * 1024:
+                    pd_escape_strikes = 0
+                continue
+
+            samples.append(total_spd)
+            if len(samples) > 20:
+                samples = samples[-20:]
+
+            if is_pixeldrain_throttle_speed(total_spd):
+                throttle_streak += 1
+            else:
+                if total_spd > 1.5 * 1024 * 1024:
+                    throttle_streak = 0
+                    pd_escape_strikes = 0
+                else:
+                    throttle_streak = max(0, throttle_streak - 1)
+
+            # ~16s sustained free-cap
+            if throttle_streak >= 8 and len(samples) >= 6:
+                recent = samples[-8:]
+                avg = sum(recent) / max(1, len(recent))
+                if is_pixeldrain_throttle_speed(avg):
+                    gen_before = int(state.get("reconnect_gen") or 0)
+                    wait_for_warp_rotate_or_do(
+                        f"watchdog: avg {avg/1024/1024:.2f} MiB/s for ~{throttle_streak*2}s",
+                        min_interval_sec=20,
+                        wait_sec=45,
+                    )
+                    # Observe speed 25s after rotate
+                    time.sleep(25)
+                    with state_lock:
+                        spd2 = float(state.get("total_speed") or 0)
+                        gen_after = int(state.get("reconnect_gen") or 0)
+                    if is_pixeldrain_throttle_speed(spd2) or spd2 < 1.3 * 1024 * 1024:
+                        pd_escape_strikes += 1
+                        add_log(
+                            f"[ESCAPE] Still throttled after WARP "
+                            f"(spd={spd2/1024/1024:.2f} MiB/s, strikes={pd_escape_strikes}, "
+                            f"gen {gen_before}→{gen_after})."
+                        )
+                    else:
+                        pd_escape_strikes = 0
+                        add_log(
+                            f"[AUTO-WARP] Recovered after rotate: {spd2/1024/1024:.2f} MiB/s"
+                        )
+
+                    # After 2 failed recoveries → Rootz multi-worker escape
+                    if pd_escape_strikes >= 2 and (time.time() - last_escape_ts) > 120:
+                        n = bulk_failover_unfinished_to_mirror("Rootz")
+                        if n > 0:
+                            last_escape_ts = time.time()
+                            pd_escape_strikes = 0
+                        else:
+                            # try Viking if Rootz catalog empty
+                            bulk_failover_unfinished_to_mirror("VikingFile")
+                            last_escape_ts = time.time()
+                            pd_escape_strikes = 0
+
+                    throttle_streak = 0
+                    samples = []
+        except Exception as e:
+            try:
+                add_log(f"[AUTO-WARP] Watchdog error: {e}")
+            except Exception:
+                pass
+            time.sleep(5)
+
+
+def ensure_speed_watchdog():
+    global _speed_watchdog_started
+    if _speed_watchdog_started:
+        return
+    _speed_watchdog_started = True
+    threading.Thread(target=speed_watchdog_loop, daemon=True, name="speed-watchdog").start()
+
+
+def check_and_install_warp(force=False):
+    """Detect / install / connect Cloudflare WARP for Pixeldrain free-limit bypass.
+
+    force=True: ignore warp_skipped.txt (Settings → Install button).
+    """
     add_log("Checking Cloudflare WARP status...")
-    import shutil
-    warp_cli = shutil.which("warp-cli")
-    if not warp_cli:
-        std_path = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
-        if os.path.exists(std_path):
-            warp_cli = std_path
-            
+    with state_lock:
+        state["warp_status"] = "checking"
+        state["warp_error_message"] = ""
+
+    warp_cli = get_warp_cli()
     if warp_cli:
         with state_lock:
             state["warp_status"] = "installed"
-        add_log("Cloudflare WARP is installed and ready.")
+        add_log("Cloudflare WARP is installed — connecting if needed...")
+        ok = ensure_warp_connected(warp_cli)
+        with state_lock:
+            state["warp_connected"] = bool(ok)
+            state["warp_status"] = "installed"
         return True
 
-    # If missing, try downloading and running silent install
+    # Respect skip only for *auto* install at startup
+    if not force and os.path.exists("warp_skipped.txt"):
+        with state_lock:
+            state["warp_status"] = "skipped"
+        add_log("WARP auto-install skipped (user chose Skip earlier). Install from Settings anytime.")
+        return False
+
     add_log("Cloudflare WARP not detected. Initializing silent installation...")
     with state_lock:
         state["warp_status"] = "installing"
-        
+
     try:
         msi_url = "https://1111-releases.cloudflareclient.com/windows/Cloudflare_WARP_Release-x64.msi"
         temp_dir = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "fg_warp")
         os.makedirs(temp_dir, exist_ok=True)
         msi_path = os.path.join(temp_dir, "warp.msi")
-        
+
         add_log(f"Downloading WARP installer from {msi_url}...")
-        r = requests.get(msi_url, stream=True, timeout=60, verify=False)
+        r = requests.get(msi_url, stream=True, timeout=120, verify=False)
         r.raise_for_status()
         with open(msi_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=256*1024):
+            for chunk in r.iter_content(chunk_size=256 * 1024):
                 if chunk:
                     f.write(chunk)
-        add_log("Download complete. Triggering silent installation with administrator UAC privileges...")
-        
+        add_log("Download complete. Triggering silent installation (may show UAC)...")
+
+        installed_ok = False
+        res_execute = 0
         try:
             import ctypes
-            # runas verb triggers UAC prompt in interactive sessions
-            res_execute = ctypes.windll.shell32.ShellExecuteW(None, "runas", "msiexec", f'/i "{msi_path}" /qn /norestart', None, 1)
+            res_execute = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", "msiexec", f'/i "{msi_path}" /qn /norestart', None, 1
+            )
             add_log(f"UAC elevation request returned code: {res_execute}")
         except Exception as shell_err:
             add_log(f"ShellExecuteW elevation request failed: {shell_err}")
             res_execute = 0
-            
-        if res_execute > 32:
-            add_log("UAC dialog triggered. Please approve the prompt if visible to allow installation.")
-            # Wait up to 30 seconds, checking for warp-cli existence periodically
-            installed_ok = False
-            for check_sec in range(30):
-                time.sleep(1)
-                warp_cli = shutil.which("warp-cli")
-                if not warp_cli and os.path.exists(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"):
-                    warp_cli = r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
-                if warp_cli:
-                    installed_ok = True
-                    break
-        else:
-            add_log("UAC elevation request denied or canceled by user.")
-            installed_ok = False
-            
+
+        # Also try winget non-interactive (works if already elevated / allowed)
+        if res_execute <= 32:
+            try:
+                add_log("Trying winget install Cloudflare.Warp ...")
+                wg = subprocess.run(
+                    [
+                        "winget",
+                        "install",
+                        "--id",
+                        "Cloudflare.Warp",
+                        "-e",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                        "--disable-interactivity",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                add_log(f"winget exit={wg.returncode}")
+            except Exception as wg_err:
+                add_log(f"winget install failed: {wg_err}")
+
+        # Wait for warp-cli to appear (install can take a while)
+        for check_sec in range(90):
+            time.sleep(1)
+            warp_cli = get_warp_cli()
+            if warp_cli:
+                installed_ok = True
+                break
+
         if installed_ok:
+            # Clear skip flag after successful install
+            try:
+                if os.path.exists("warp_skipped.txt"):
+                    os.remove("warp_skipped.txt")
+            except Exception:
+                pass
             with state_lock:
                 state["warp_status"] = "installed"
-            add_log("Cloudflare WARP silently installed successfully.")
+            add_log("Cloudflare WARP installed successfully — connecting...")
+            ensure_warp_connected(warp_cli)
             return True
+
+        if res_execute <= 32:
+            err_msg = (
+                "Cloudflare WARP not installed. Silent install needs Administrator (UAC). "
+                "Approve the UAC prompt, or install from Settings → Download WARP, "
+                "or: winget install Cloudflare.Warp"
+            )
         else:
-            if res_execute <= 32:
-                err_msg = "Cloudflare WARP not installed. Silent installation requires Administrator privileges (UAC prompt was denied or cancelled). You can click 'Skip & Continue' to run the app without automatic IP rotation."
-            else:
-                err_msg = "Silent installation failed. Please verify that you have Administrator privileges, approve the UAC prompt, or manually install Cloudflare WARP from: https://1111-releases.cloudflareclient.com/windows/Cloudflare_WARP_Release-x64.msi"
-                
-            add_log("Silent installation failed: WARP could not be installed.")
-            with state_lock:
-                state["warp_status"] = "error"
-                state["warp_error_message"] = err_msg
-            return False
-            
+            err_msg = (
+                "Silent installation did not finish in time. Approve UAC if shown, "
+                "or install manually: https://1111-releases.cloudflareclient.com/windows/Cloudflare_WARP_Release-x64.msi"
+            )
+        add_log("Silent installation failed: WARP could not be installed.")
+        with state_lock:
+            state["warp_status"] = "error"
+            state["warp_error_message"] = err_msg
+        return False
+
     except Exception as e:
-        err_msg = f"Failed to download or silently install WARP: {str(e)}"
+        err_msg = f"Failed to download or install WARP: {str(e)}"
         add_log(err_msg)
         with state_lock:
             state["warp_status"] = "error"
@@ -549,15 +1312,18 @@ def check_and_install_warp():
         return False
 
 def clear_pixeldrain_cookies():
-    """Clears python requests default cookies and browser sqlite cookie databases to bypass session tracking."""
+    """Clears local cookie jars / chrome profile cookies used for Pixeldrain tracking."""
     add_log("Clearing Pixeldrain cookies and browser profile session state...")
     try:
-        requests.cookies.clear()
+        s = requests.Session()
+        s.cookies.clear()
+        s.close()
     except Exception as e:
         add_log(f"Error clearing requests cookies: {e}")
         
     try:
-        cf_requests.cookies.clear()
+        if hasattr(cf_requests, "cookies") and hasattr(cf_requests.cookies, "clear"):
+            cf_requests.cookies.clear()
     except Exception:
         pass
         
@@ -1253,25 +2019,123 @@ def extract_datanodes_link(page_url):
             return None
 
 def extract_fileditch_link(page_url):
+    """FileDitch / fileditchfiles — often already a direct CDN URL from Online-Fix hosters.
+
+    Strategies:
+      1) URL already looks like direct file host → use as-is
+      2) curl_cffi page scrape for Download button / CDN hrefs
+      3) Playwright fallback for JS-rendered pages
+    """
     try:
         add_log(f"Extracting direct link for FileDitch: {page_url}")
-        response = cf_requests.get(page_url, impersonate="chrome120", timeout=20, verify=False)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            for a in soup.find_all('a', href=True):
-                if "Download" in a.text:
-                    direct_link = a['href']
-                    add_log(f"Successfully extracted FileDitch direct link!")
-                    return direct_link
-            # Fallback to regex search if no download text
-            match = re.search(r'href="([^"]+)"[^>]*>\s*⬇ Download', response.text)
-            if match:
-                return match.group(1)
-            add_log("Error: Direct link button not found in FileDitch HTML.")
-            return None
-        else:
+        u = (page_url or "").strip()
+        low = u.lower()
+        # Already a direct file URL from OF data-links
+        if any(
+            x in low
+            for x in (
+                "fileditchfiles.me/",
+                "fileditchfiles.st/",
+                "fileditch.com/",
+            )
+        ) and not low.rstrip("/").endswith(
+            (".html", "/download", "/d")
+        ):
+            # path with hash-like segment + filename
+            if re.search(r"/[a-f0-9]{8,}/[^/]+\.(rar|zip|7z|bin|exe|iso)", low):
+                add_log("FileDitch: URL already looks direct — using as-is.")
+                return u
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://online-fix.me/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        response = cf_requests.get(
+            u, headers=headers, impersonate="chrome120", timeout=25, verify=False
+        )
+        if response.status_code != 200:
             add_log(f"Error: FileDitch responded with status code {response.status_code}")
-            return None
+            # still try playwright
+        else:
+            soup = BeautifulSoup(response.text, "html.parser")
+            candidates = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                text = (a.get_text() or "").strip().lower()
+                href_l = href.lower()
+                if any(x in text for x in ("download", "скачать", "⬇")):
+                    candidates.append(href)
+                if any(
+                    x in href_l
+                    for x in (
+                        "fileditchfiles",
+                        ".rar",
+                        ".zip",
+                        ".7z",
+                        "download",
+                        "getfile",
+                    )
+                ):
+                    candidates.append(href)
+            # absolute-ize
+            for href in candidates:
+                full = urllib.parse.urljoin(u, href)
+                if full.startswith("http") and "javascript:" not in full.lower():
+                    add_log("Successfully extracted FileDitch direct link!")
+                    return full
+            match = re.search(
+                r'href=["\'](https?://[^"\']*fileditch[^"\']+)["\']',
+                response.text,
+                re.I,
+            )
+            if match:
+                add_log("FileDitch: regex CDN hit.")
+                return match.group(1)
+            match = re.search(
+                r'href=["\']([^"\']+\.(?:rar|zip|7z|bin|exe))["\']',
+                response.text,
+                re.I,
+            )
+            if match:
+                return urllib.parse.urljoin(u, match.group(1))
+
+        # Playwright fallback for JS pages
+        with extraction_lock:
+            from playwright.sync_api import sync_playwright
+
+            add_log("FileDitch: Playwright fallback...")
+            with sync_playwright() as p:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                )
+                page = browser.new_page()
+                try:
+                    page.goto(u, wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(3000)
+                    for sel in (
+                        "a:has-text('Download')",
+                        "a:has-text('download')",
+                        "a[href*='fileditch']",
+                        "a[href*='.rar']",
+                    ):
+                        loc = page.locator(sel)
+                        if loc.count() > 0:
+                            href = loc.first.get_attribute("href")
+                            if href:
+                                browser.close()
+                                add_log("FileDitch: Playwright link OK.")
+                                return urllib.parse.urljoin(u, href)
+                except Exception as e:
+                    add_log(f"FileDitch Playwright error: {e}")
+                browser.close()
+
+        add_log("Error: Direct link button not found in FileDitch HTML.")
+        return None
     except Exception as e:
         add_log(f"FileDitch extraction exception: {str(e)}")
         return None
@@ -1426,63 +2290,378 @@ def extract_rootz_link(page_url):
             add_log(f"Rootz extraction exception: {str(e)}")
             return None
 
+# VikingFile Cloudflare Turnstile sitekey (from their page JS)
+VIKING_TURNSTILE_SITEKEY = "0x4AAAAAAAgbsMNBuk2d3Qp6"
+# file_id -> (cdn_url, expiry_unix)
+_viking_link_cache = {}
+
+
+def _viking_file_id(url: str):
+    m = re.search(r"/f/([A-Za-z0-9_-]+)", url or "")
+    return m.group(1) if m else None
+
+
+def _viking_normalize_page_url(page_url: str) -> str:
+    """vikingfile.com redirects to vik1ngfile.site — normalize to host that accepts POST."""
+    u = (page_url or "").strip()
+    fid = _viking_file_id(u)
+    if fid:
+        return f"https://vik1ngfile.site/f/{fid}"
+    if "vikingfile.com" in u:
+        return u.replace("vikingfile.com", "vik1ngfile.site")
+    return u
+
+
+def _viking_post_turnstile_token(page_url: str, token: str, cookie_header: str = ""):
+    """After Turnstile solve: POST cf-turnstile-response to file page → JSON.link CDN URL.
+
+    Site JS (custom-*.js):
+      xhr.open("POST", window.location.href)
+      xhr.send("cf-turnstile-response=" + token)
+      // response.link  (NOT direct-link — old code was wrong)
+    """
+    url = _viking_normalize_page_url(page_url)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://vik1ngfile.site",
+        "Referer": url,
+        "Accept": "application/json, text/plain, */*",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    try:
+        # Prefer curl_cffi chrome impersonation (better TLS fingerprint)
+        try:
+            r = cf_requests.post(
+                url,
+                data={"cf-turnstile-response": token},
+                headers=headers,
+                impersonate="chrome120",
+                timeout=30,
+                verify=False,
+            )
+        except Exception:
+            r = requests.post(
+                url,
+                data={"cf-turnstile-response": token},
+                headers=headers,
+                timeout=30,
+                verify=False,
+            )
+        if r.status_code != 200:
+            add_log(f"VikingFile: token POST HTTP {r.status_code}: {r.text[:160]}")
+            return None
+        data = r.json()
+        link = data.get("link") or data.get("direct-link") or data.get("url")
+        if link:
+            return link
+        err = data.get("error") or data.get("message") or r.text[:120]
+        add_log(f"VikingFile: token POST no link: {err}")
+        return None
+    except Exception as e:
+        add_log(f"VikingFile: token POST exception: {e}")
+        return None
+
+
+def _solve_turnstile_external(sitekey: str, page_url: str):
+    """Optional paid/free solvers via API key (CapSolver or 2Captcha).
+
+    Keys (first found wins):
+      state['captcha_api_key'] / env CAPSOLVER_API_KEY / env TWOCAPTCHA_API_KEY
+    """
+    api_key = (
+        (state.get("captcha_api_key") or "").strip()
+        or os.environ.get("CAPSOLVER_API_KEY", "").strip()
+        or os.environ.get("TWOCAPTCHA_API_KEY", "").strip()
+        or os.environ.get("CAPTCHA_API_KEY", "").strip()
+    )
+    if not api_key:
+        return None
+
+    page_url = _viking_normalize_page_url(page_url)
+
+    # CapSolver
+    if api_key.startswith("CAP-") or os.environ.get("CAPSOLVER_API_KEY") or state.get("captcha_provider") == "capsolver":
+        try:
+            add_log("VikingFile: Solving Turnstile via CapSolver...")
+            create = requests.post(
+                "https://api.capsolver.com/createTask",
+                json={
+                    "clientKey": api_key if not api_key.startswith("CAP-") else api_key,
+                    "task": {
+                        "type": "AntiTurnstileTaskProxyLess",
+                        "websiteURL": page_url,
+                        "websiteKey": sitekey,
+                    },
+                },
+                timeout=30,
+            ).json()
+            task_id = create.get("taskId")
+            if not task_id:
+                # try with CAP- key as-is
+                create = requests.post(
+                    "https://api.capsolver.com/createTask",
+                    json={
+                        "clientKey": api_key,
+                        "task": {
+                            "type": "AntiTurnstileTaskProxyLess",
+                            "websiteURL": page_url,
+                            "websiteKey": sitekey,
+                        },
+                    },
+                    timeout=30,
+                ).json()
+                task_id = create.get("taskId")
+            if not task_id:
+                add_log(f"VikingFile: CapSolver createTask failed: {create}")
+            else:
+                for _ in range(40):
+                    time.sleep(3)
+                    res = requests.post(
+                        "https://api.capsolver.com/getTaskResult",
+                        json={"clientKey": api_key, "taskId": task_id},
+                        timeout=30,
+                    ).json()
+                    if res.get("status") == "ready":
+                        tok = (res.get("solution") or {}).get("token")
+                        if tok:
+                            add_log("VikingFile: CapSolver token OK.")
+                            return tok
+                    if res.get("status") == "failed" or res.get("errorId"):
+                        add_log(f"VikingFile: CapSolver failed: {res}")
+                        break
+        except Exception as e:
+            add_log(f"VikingFile: CapSolver exception: {e}")
+
+    # 2Captcha Turnstile
+    try:
+        add_log("VikingFile: Solving Turnstile via 2Captcha...")
+        in_url = (
+            "http://2captcha.com/in.php"
+            f"?key={api_key}&method=turnstile&sitekey={sitekey}"
+            f"&pageurl={urllib.parse.quote(page_url)}&json=1"
+        )
+        created = requests.get(in_url, timeout=30).json()
+        if created.get("status") != 1:
+            add_log(f"VikingFile: 2Captcha in.php failed: {created}")
+            return None
+        req_id = created.get("request")
+        for _ in range(40):
+            time.sleep(5)
+            polled = requests.get(
+                f"http://2captcha.com/res.php?key={api_key}&action=get&id={req_id}&json=1",
+                timeout=30,
+            ).json()
+            if polled.get("status") == 1:
+                tok = polled.get("request")
+                if tok:
+                    add_log("VikingFile: 2Captcha token OK.")
+                    return tok
+            if polled.get("request") not in ("CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"):
+                if polled.get("status") == 0 and "NOT_READY" not in str(polled.get("request")):
+                    add_log(f"VikingFile: 2Captcha error: {polled}")
+                    break
+    except Exception as e:
+        add_log(f"VikingFile: 2Captcha exception: {e}")
+    return None
+
+
 def extract_viking_link(page_url):
+    """Resolve VikingFile page → CDN link.
+
+    Flow reverse-engineered from their frontend:
+      1) Cloudflare Turnstile (sitekey 0x4AAAAAAAgbsMNBuk2d3Qp6)
+      2) POST same URL with cf-turnstile-response=<token>
+      3) JSON { "link": "https://...cdn..." }
+
+    Strategies:
+      A) Cache hit
+      B) External solver (CapSolver / 2Captcha) if API key set
+      C) Playwright stealth: wait for token in DOM → POST ourselves
+      D) Playwright: capture POST JSON.response.link (field name was wrong before!)
+    """
     with extraction_lock:
-        from playwright.sync_api import sync_playwright
-        import os
         add_log(f"Extracting VikingFile direct link for: {page_url}")
+        page_url = _viking_normalize_page_url(page_url)
+        fid = _viking_file_id(page_url)
+
+        # A) Cache
+        if fid and fid in _viking_link_cache:
+            link, exp = _viking_link_cache[fid]
+            if time.time() < exp and link:
+                add_log("VikingFile: Using cached CDN link.")
+                return link
+
+        def _cache(link):
+            if fid and link:
+                _viking_link_cache[fid] = (link, time.time() + 6 * 3600)
+            return link
+
+        # B) External Turnstile solver
+        try:
+            token = _solve_turnstile_external(VIKING_TURNSTILE_SITEKEY, page_url)
+            if token:
+                link = _viking_post_turnstile_token(page_url, token)
+                if link:
+                    add_log("Successfully extracted VikingFile link via captcha solver!")
+                    return _cache(link)
+        except Exception as e:
+            add_log(f"VikingFile: external solver path error: {e}")
+
+        # C+D) Playwright multi-attempt
+        from playwright.sync_api import sync_playwright
+
+        launch_attempts = [
+            {"headless": True, "channel": None},
+            {"headless": True, "channel": "chrome"},
+            {"headless": False, "channel": "chrome"},
+        ]
+
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox"
-                    ]
-                )
-                context = browser.new_context()
-                page = context.new_page()
-                
-                direct_link = [None]
-                
-                def on_response(response):
-                    if "vik1ngfile.site" in response.url and response.request.method == "POST":
+                for attempt in launch_attempts:
+                    found_link = [None]
+                    found_token = [None]
+                    try:
+                        launch_kwargs = {
+                            "headless": attempt["headless"],
+                            "args": [
+                                "--disable-blink-features=AutomationControlled",
+                                "--no-sandbox",
+                                "--disable-dev-shm-usage",
+                                "--disable-infobars",
+                            ],
+                        }
+                        if attempt.get("channel"):
+                            launch_kwargs["channel"] = attempt["channel"]
                         try:
-                            data = response.json()
-                            dl = data.get("direct-link")
-                            if dl:
-                                direct_link[0] = dl
+                            browser = p.chromium.launch(**launch_kwargs)
+                        except Exception as launch_err:
+                            add_log(f"VikingFile: launch skip {attempt}: {launch_err}")
+                            continue
+
+                        context = browser.new_context(
+                            user_agent=(
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                            ),
+                            locale="en-US",
+                            viewport={"width": 1400, "height": 900},
+                        )
+                        page = context.new_page()
+                        page.add_init_script(
+                            """
+                            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                            window.chrome = { runtime: {} };
+                            Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+                            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                            """
+                        )
+
+                        def on_response(response):
+                            try:
+                                if response.request.method != "POST":
+                                    return
+                                u = response.url or ""
+                                if "vik1ngfile.site" not in u and "vikingfile.com" not in u:
+                                    return
+                                data = response.json()
+                                # CRITICAL: real field is "link", old code looked for "direct-link"
+                                dl = (
+                                    data.get("link")
+                                    or data.get("direct-link")
+                                    or data.get("url")
+                                )
+                                if dl:
+                                    found_link[0] = dl
+                            except Exception:
+                                pass
+
+                        page.on("response", on_response)
+
+                        try:
+                            page.goto(page_url, wait_until="domcontentloaded", timeout=45000)
+                        except Exception as e:
+                            add_log(f"VikingFile navigation warning: {e}")
+
+                        # Wait up to 50s: auto-turnstile token OR network JSON link
+                        for sec in range(50):
+                            if found_link[0]:
+                                break
+                            try:
+                                tok = page.evaluate(
+                                    """() => {
+                                        const el = document.querySelector('[name="cf-turnstile-response"]');
+                                        if (el && el.value && el.value.length > 20) return el.value;
+                                        const el2 = document.querySelector('#cf-chl-widget-response, textarea[name="cf-turnstile-response"]');
+                                        if (el2 && el2.value && el2.value.length > 20) return el2.value;
+                                        return '';
+                                    }"""
+                                )
+                                if tok and len(tok) > 20:
+                                    found_token[0] = tok
+                                    break
+                            except Exception:
+                                pass
+                            # poke turnstile iframe
+                            try:
+                                for frame in page.frames:
+                                    fu = frame.url or ""
+                                    if "challenges.cloudflare.com" in fu:
+                                        try:
+                                            frame.locator("body").click(timeout=300)
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            page.wait_for_timeout(1000)
+
+                        # If we got a token but no network link yet — POST ourselves
+                        if not found_link[0] and found_token[0]:
+                            cookies = context.cookies()
+                            cookie_header = "; ".join(
+                                f"{c['name']}={c['value']}" for c in cookies
+                            )
+                            add_log("VikingFile: Turnstile token captured — POSTing for CDN link...")
+                            found_link[0] = _viking_post_turnstile_token(
+                                page.url or page_url, found_token[0], cookie_header
+                            )
+
+                        # DOM fallback
+                        if not found_link[0]:
+                            try:
+                                dl = page.locator("#download-link")
+                                if dl.count() > 0:
+                                    href = dl.get_attribute("href")
+                                    if href and href.startswith("http"):
+                                        found_link[0] = href
+                            except Exception:
+                                pass
+
+                        browser.close()
+
+                        if found_link[0]:
+                            add_log(
+                                f"Successfully extracted VikingFile link "
+                                f"(attempt={attempt})!"
+                            )
+                            return _cache(found_link[0])
+                    except Exception as e:
+                        add_log(f"VikingFile attempt {attempt} error: {e}")
+                        try:
+                            browser.close()
                         except Exception:
                             pass
-                page.on("response", on_response)
-                
-                try:
-                    page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
-                except Exception as e:
-                    add_log(f"VikingFile navigation error/timeout: {e}")
-                    
-                # Wait up to 20 seconds for the Turnstile response with direct-link
-                for _ in range(20):
-                    if direct_link[0]:
-                        break
-                    page.wait_for_timeout(1000)
-                
-                # Fallback: check DOM #download-link
-                if not direct_link[0]:
-                    dl_link = page.locator("#download-link")
-                    if dl_link.count() > 0:
-                        href = dl_link.get_attribute("href")
-                        if href and ("vikingfile" in href or "cloudflarestorage" in href):
-                            direct_link[0] = href
-                
-                browser.close()
-                
-                if direct_link[0]:
-                    add_log("Successfully extracted VikingFile direct link!")
-                    return direct_link[0]
-                else:
-                    add_log("VikingFile: Failed to extract direct link (possibly captcha unsolved).")
-                    return "ERROR_CAPTCHA_REQUIRED"
+
+                add_log(
+                    "VikingFile: Captcha not solved. Set CAPSOLVER_API_KEY or "
+                    "TWOCAPTCHA_API_KEY (or Settings captcha key) for reliable bypass."
+                )
+                return "ERROR_CAPTCHA_REQUIRED"
         except Exception as e:
             add_log(f"VikingFile extraction exception: {str(e)}")
             return None
@@ -1600,40 +2779,83 @@ def safe_folder_name(name):
     return re.sub(r'[:\/\\\*\?"<>\|]', '', name).strip()
 
 
+def _is_bonus_content_header(line):
+    """True for FitGirl 'Included Bonus Content / Soundtracks' section titles."""
+    low = re.sub(r"\s+", " ", (line or "").strip().lower())
+    low = low.lstrip("•·*-–— ").rstrip(":").strip()
+    if not low:
+        return False
+    # e.g. Included Bonus Content (non-audio) / Included Bonus Content (Soundtracks)
+    if re.match(
+        r"^(included\s+)?bonus\s+(content|soundtracks?|osts?|materials?|extras?)(\s*\([^)]*\))?$",
+        low,
+    ):
+        return True
+    if re.match(
+        r"^включ[её]нн\w*\s+бонусн\w*(\s+(контент|саундтрек\w*|материалы|дополнения))?(\s*\([^)]*\))?$",
+        low,
+    ):
+        return True
+    if "included bonus" in low and any(
+        x in low for x in ("content", "soundtrack", "ost", "non-audio", "audio")
+    ):
+        return True
+    return False
+
+
+def _is_game_desc_resume_header(line):
+    """Sections that end a bonus dump and resume real description (rare)."""
+    low = re.sub(r"\s+", " ", (line or "").strip().lower()).rstrip(":")
+    low = low.lstrip("•·*-–— ").strip()
+    return low in (
+        "game features",
+        "features",
+        "pc features",
+        "about this game",
+        "about the game",
+        "story",
+        "plot",
+        "описание",
+        "особенности игры",
+        "системные требования",
+        "system requirements",
+    )
+
+
 def _strip_bonus_soundtrack_section(text):
-    """Remove Included Bonus Soundtracks / OST dump from Game Description."""
+    """Remove Included Bonus Content / Soundtracks / OST dumps from Game Description.
+
+    FitGirl often appends long bonus lists (PDFs, wallpapers, radio OST albums)
+    after the actual story blurb — keep only the game description itself.
+    """
     if not text:
         return text
-    # Cut from soundtrack header to end (or next major section if any)
+    # Hard-cut from first bonus header to end (most pages put them last)
     patterns = [
-        r"(?is)\n?\s*included\s+bonus\s+soundtracks?\s*:?\s*\n.*$",
-        r"(?is)\n?\s*bonus\s+soundtracks?\s*:?\s*\n.*$",
-        r"(?is)\n?\s*included\s+bonus\s+osts?\s*:?\s*\n.*$",
-        r"(?is)\n?\s*включ[её]нные\s+бонусные\s+саундтреки\s*:?\s*\n.*$",
+        r"(?is)\n?\s*(?:•\s*)?included\s+bonus\s+content(?:\s*\([^)]*\))?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*(?:•\s*)?included\s+bonus\s+soundtracks?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*(?:•\s*)?bonus\s+soundtracks?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*(?:•\s*)?included\s+bonus\s+osts?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*(?:•\s*)?bonus\s+content(?:\s*\([^)]*\))?\s*:?\s*\n.*$",
+        r"(?is)\n?\s*(?:•\s*)?включ[её]нн\w*\s+бонусн\w*.*$",
     ]
     out = text
     for pat in patterns:
         out = re.sub(pat, "", out)
-    # Also drop trailing lone soundtrack-ish bullet lines if header was mid-block
+    # Line-wise skip for headers mid-block (or if regex missed)
     lines = out.split("\n")
     cleaned = []
     skip_mode = False
     for ln in lines:
-        low = ln.strip().lower().rstrip(":")
-        if re.match(
-            r"^(included\s+)?bonus\s+(soundtracks?|osts?)|включ[её]нные\s+бонусные\s+саундтреки$",
-            low,
-        ):
+        stripped = ln.strip()
+        if _is_bonus_content_header(stripped):
             skip_mode = True
             continue
         if skip_mode:
-            # stop skipping if a real new section starts
-            if low in ("game features", "особенности игры", "pc features", "features") or (
-                ln.strip().endswith(":") and len(ln.strip()) < 48 and "soundtrack" not in low
-            ):
+            if _is_game_desc_resume_header(stripped):
                 skip_mode = False
                 cleaned.append(ln)
-            # otherwise drop OST bullets / names
+            # drop bonus bullets / album names / file counts
             continue
         cleaned.append(ln)
     out = "\n".join(cleaned).strip()
@@ -1832,7 +3054,11 @@ def download_worker():
                     if not active_workers:
                         state["is_running"] = False
                         state["total_speed"] = 0
-                        add_log("🎉 ALL DOWNLOADS COMPLETED SUCCESSFULLY!")
+                        all_ok = all(f.get("status") == "finished" for f in state["files"]) if state["files"] else False
+                        if all_ok:
+                            add_log("🎉 ALL DOWNLOADS COMPLETED SUCCESSFULLY!")
+                        else:
+                            add_log("Download queue idle (some files may have failed).")
                     break
                     
                 file_info = state["files"][target_idx]
@@ -1844,6 +3070,9 @@ def download_worker():
                     if state["should_stop"]:
                         break
                     time.sleep(5)
+            # After each successful file, check if entire queue is done → auto extract
+            if success:
+                maybe_auto_extract_if_complete()
     finally:
         with state_lock:
             state["active_workers_count"] -= 1
@@ -1851,6 +3080,8 @@ def download_worker():
                 state["is_running"] = False
                 state["total_speed"] = 0
                 state["should_stop"] = False
+        # Last worker out: try auto-extract once more
+        maybe_auto_extract_if_complete()
 
 def extract_gdrive_id(text):
     if not text:
@@ -2229,6 +3460,7 @@ def download_file(index, file_info):
     downloaded = resume_byte
     low_speed_seconds = 0
     last_low_speed_warning_time = 0
+    speed_window = []  # last N 1s samples for throttle detection
     proxy_server = None
     
     # If using proxy for Gofile:
@@ -2236,6 +3468,9 @@ def download_file(index, file_info):
         proxy_server = get_working_gofile_proxy()
         
     while True:
+        with state_lock:
+            stream_gen = int(state.get("reconnect_gen") or 0)
+
         # Prepare headers & mode
         if downloaded > 0:
             headers["Range"] = f"bytes={downloaded}-"
@@ -2286,23 +3521,28 @@ def download_file(index, file_info):
                 continue
                 
             if is_limit:
-                add_log("[WARNING] Pixeldrain Daily Bandwidth Limit Reached (6 GB exceeded)!")
-                with state_lock:
-                    state["pixeldrain_limit_reached"] = True
-                add_log("Attempting automatic IP rotation via WARP...")
+                # Official PD API: transfer_limit_exceeded / download_limit_exceeded /
+                # ip_download_limited_captcha_required / file_rate_limited_captcha_required
+                add_log(
+                    "[WARNING] Pixeldrain free-tier HARD limit (HTTP) — auto WARP rotate..."
+                )
                 response.close()
                 clear_pixeldrain_cookies()
-                if rotate_warp_ip():
-                    add_log("WARP IP rotated successfully. Retrying connection...")
+                # 1) Auto WARP IP rotation (script-driven, no human watcher)
+                if try_auto_warp_rotate("pixeldrain HTTP limit response", min_interval_sec=30):
                     time.sleep(2)
                     continue
-                else:
-                    add_log("WARP IP rotation failed or unavailable.")
-                    with state_lock:
-                        if index < len(state["files"]):
-                            state["files"][index]["status"] = "failed"
-                            state["files"][index]["error"] = "Pixeldrain Daily Limit (6 GB) Reached. Please enable VPN / WARP or wait."
-                    return False
+                # 2) Failover this file to next-fastest hoster (keep local partial)
+                if apply_file_failover(index, "pixeldrain hard limit"):
+                    return False  # worker will pick file again with new URL
+                with state_lock:
+                    if index < len(state["files"]):
+                        state["files"][index]["status"] = "failed"
+                        state["files"][index]["error"] = (
+                            "Pixeldrain free limit reached and no alternate mirror "
+                            "available. Enable WARP/VPN, wait 24h, or premium."
+                        )
+                return False
                     
             if response.status_code not in [200, 206]:
                 if response.status_code == 416:
@@ -2349,6 +3589,7 @@ def download_file(index, file_info):
             last_time = time.time()
             bytes_in_sec = 0
             throttled_trigger = False
+            reconnect_requested = False
             
             with open(file_path, mode) as f:
                 for chunk in response.iter_content(chunk_size=chunk_size):
@@ -2360,6 +3601,17 @@ def download_file(index, file_info):
                             state["files"][index]["speed"] = 0
                             state["total_speed"] = sum(x["speed"] for x in state["files"] if x["status"] == "downloading")
                             return False
+                        # Watchdog / other worker rotated WARP → drop stream and reopen
+                        if int(state.get("reconnect_gen") or 0) != stream_gen:
+                            reconnect_requested = True
+                            
+                    if reconnect_requested:
+                        response.close()
+                        add_log(
+                            f"[AUTO-WARP] Reconnect gen changed — reopening stream for {filename} "
+                            f"from byte {downloaded}."
+                        )
+                        break
                             
                     if chunk:
                         f.write(chunk)
@@ -2385,43 +3637,91 @@ def download_file(index, file_info):
                                     
                             recalculate_total_progress()
                             
-                            # Speed drop monitoring for Pixeldrain
-                            if "pixeldrain.com" in direct_link:
-                                # We check if speed is under 1.15 MB/s (to catch the 1.05 MB/s throttle limit)
-                                if speed < 1150 * 1024:
+                            # --- Pixeldrain free-cap auto-detect (in worker) ---
+                            # Classic free throttle sits ~1.00–1.15 MiB/s constantly.
+                            is_pd = "pixeldrain.com" in (direct_link or "")
+                            if is_pd:
+                                speed_window.append(speed)
+                                if len(speed_window) > 25:
+                                    speed_window = speed_window[-25:]
+                                if is_pixeldrain_throttle_speed(speed):
                                     low_speed_seconds += int(elapsed)
-                                    if low_speed_seconds >= 15:
-                                        curr_time = time.time()
-                                        if curr_time - last_low_speed_warning_time > 300: # 5 minutes cooldown
+                                elif speed > 1.5 * 1024 * 1024:
+                                    low_speed_seconds = 0
+                                    speed_window = []
+                                # Sustained ~1 MiB/s for 12s with window avg also in band
+                                if low_speed_seconds >= 12 and len(speed_window) >= 10:
+                                    avg = sum(speed_window[-12:]) / min(12, len(speed_window))
+                                    if is_pixeldrain_throttle_speed(avg):
+                                        if curr_time - last_low_speed_warning_time > 30:
                                             last_low_speed_warning_time = curr_time
-                                            add_log(f"[WARNING] Pixeldrain: Low download speed detected ({speed/1024:.1f} KB/s). Daily limit may be reached (throttled to 1 MB/s).")
-                                            
-                                            with state_lock:
-                                                state["pixeldrain_limit_reached"] = True
-                                                    
-                                        if is_warp_available():
-                                            add_log("Triggering IP auto-rotation via Cloudflare WARP...")
-                                            throttled_trigger = True
-                                            break
+                                            add_log(
+                                                f"[AUTO-WARP] Worker saw sustained PD free-cap: "
+                                                f"now {speed/1024/1024:.2f} MiB/s, "
+                                                f"avg {avg/1024/1024:.2f} MiB/s over {low_speed_seconds}s"
+                                            )
+                                        throttled_trigger = True
+                                        break
+                            else:
+                                dead_floor = 80 * 1024
+                                if speed < dead_floor:
+                                    low_speed_seconds += int(elapsed)
+                                    if low_speed_seconds >= 30:
+                                        throttled_trigger = True
+                                        break
                                 else:
                                     low_speed_seconds = 0
                                     
                             bytes_in_sec = 0
                             last_time = curr_time
                             
-            response.close()
+            try:
+                response.close()
+            except Exception:
+                pass
             
+            if reconnect_requested:
+                # New IP already applied by rotate; just reopen stream
+                low_speed_seconds = 0
+                speed_window = []
+                time.sleep(1)
+                continue
+
             if throttled_trigger:
                 clear_pixeldrain_cookies()
-                if rotate_warp_ip():
-                    add_log("WARP IP rotated. Reconnecting download...")
+                # Script MUST auto-rotate WARP on free-cap — never leave user clicking forever
+                if "pixeldrain.com" in (direct_link or "") and is_warp_available():
+                    rotated = wait_for_warp_rotate_or_do(
+                        f"worker free-cap on {filename}",
+                        min_interval_sec=20,
+                        wait_sec=50,
+                    )
+                    add_log(
+                        f"[AUTO-WARP] Reconnecting stream after rotate attempt "
+                        f"(ok={rotated}, gen={state.get('reconnect_gen')})..."
+                    )
                     time.sleep(2)
                     low_speed_seconds = 0
+                    speed_window = []
                     continue
-                else:
-                    add_log("WARP IP rotation failed during active throttling. Continuing at throttled speed...")
-                    low_speed_seconds = 0
+                # No WARP installed → try other hosters only then
+                if apply_file_failover(index, f"sustained low speed on {_hoster_name_from_url(direct_link)}"):
+                    with state_lock:
+                        if index < len(state["files"]):
+                            state["files"][index]["status"] = "waiting"
+                            state["files"][index]["speed"] = 0
+                    return False
+                # IMPORTANT: do NOT break the download loop — that falsely marks the file finished.
+                add_log(
+                    "[AUTO-WARP] WARP missing and no alternate mirror — "
+                    "reconnecting (install WARP in Settings for auto IP rotate)."
+                )
+                low_speed_seconds = 0
+                speed_window = []
+                time.sleep(2)
+                continue
                     
+            # Normal completion of this HTTP stream (server closed / EOF)
             break
             
         except Exception as e:
@@ -2435,11 +3735,38 @@ def download_file(index, file_info):
             state["files"][index]["error"] = "Downloaded 0 bytes. Connection failed or direct link expired."
         save_session_state()
         return False
+
+    # Incomplete stream (throttle reconnect path, server hang, etc.) — resume later
+    if total_size > 0 and downloaded < total_size * 0.995:
+        add_log(
+            f"Incomplete download for {filename}: {downloaded}/{total_size} bytes "
+            f"({100.0 * downloaded / total_size:.1f}%). Will retry/resume."
+        )
+        with state_lock:
+            if index < len(state["files"]):
+                state["files"][index]["status"] = "waiting"
+                state["files"][index]["downloaded"] = downloaded
+                state["files"][index]["progress"] = min(99, int((downloaded / total_size) * 100))
+                state["files"][index]["speed"] = 0
+                state["files"][index]["error"] = "Incomplete — resuming"
+        save_session_state()
+        return False
         
     if file_id and "drive.online-fix.me" in page_url and access_token:
         add_log(f"GDrive: Automatically deleting temporary copy {filename} from Google Drive...")
         delete_gdrive_file(file_id, access_token)
         
+    # Mark complete only when fully on disk
+    with state_lock:
+        if index < len(state["files"]):
+            state["files"][index]["status"] = "finished"
+            state["files"][index]["progress"] = 100
+            state["files"][index]["downloaded"] = downloaded if downloaded > 0 else state["files"][index].get("downloaded", 0)
+            if total_size > 0:
+                state["files"][index]["size"] = total_size
+            state["files"][index]["speed"] = 0
+            state["files"][index]["error"] = ""
+    recalculate_total_progress()
     add_log(f"Successfully downloaded {filename}.")
     save_session_state()
     return True
@@ -2470,8 +3797,323 @@ def recalculate_total_progress():
                 break
         state["active_index"] = active_idx
 
+def _looks_like_extracted_game(download_dir):
+    """Detect FitGirl .bin setup OR Online-Fix ready-to-play folder layout."""
+    if not download_dir or not os.path.isdir(download_dir):
+        return False
+    try:
+        entries = os.listdir(download_dir)
+    except Exception:
+        return False
+    if any(e.lower().endswith(".bin") for e in entries):
+        return True
+    # Online-Fix FAQ: after unpack you get the game tree (not selective .bin parts)
+    for e in entries:
+        low = e.lower()
+        if low.endswith(".rar") or re.search(r"\.part\d+\.rar$", low):
+            continue
+        path = os.path.join(download_dir, e)
+        if os.path.isdir(path):
+            try:
+                sub = [x.lower() for x in os.listdir(path)]
+            except Exception:
+                continue
+            if any(x.endswith(".exe") for x in sub) or "steam_api64.dll" in sub or "steam_api.dll" in sub:
+                return True
+            # nested game folder one level deeper
+            for s in sub[:30]:
+                sp = os.path.join(path, s)
+                if os.path.isdir(sp):
+                    try:
+                        sub2 = [x.lower() for x in os.listdir(sp)]
+                    except Exception:
+                        continue
+                    if any(x.endswith(".exe") for x in sub2) or "steam_api64.dll" in sub2:
+                        return True
+        if low.endswith(".exe") and "setup" not in low and "unins" not in low:
+            return True
+    return False
+
+
+def _find_setup_exe(download_dir):
+    if not download_dir or not os.path.isdir(download_dir):
+        return None
+    try:
+        for f in os.listdir(download_dir):
+            if f.lower().endswith(".exe") and "setup" in f.lower():
+                return os.path.join(download_dir, f)
+        for f in os.listdir(download_dir):
+            if f.lower().endswith(".exe") and "unins" not in f.lower():
+                # prefer setup-like names only for install step
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def analyze_post_download(download_dir=None, files=None):
+    """Smart check: need extract? already unpacked? FitGirl vs Online-Fix? missing parts?
+
+    Returns a dict used by auto pipeline + /api/post_download_check.
+    """
+    download_dir = download_dir or state.get("download_dir") or ""
+    files = files if files is not None else list(state.get("files") or [])
+    result = {
+        "download_dir": download_dir,
+        "all_downloads_finished": bool(files) and all(f.get("status") == "finished" for f in files),
+        "file_count": len(files),
+        "finished_count": sum(1 for f in files if f.get("status") == "finished"),
+        "has_rar": False,
+        "has_part01": False,
+        "multipart": False,
+        "missing_on_disk": [],
+        "tiny_on_disk": [],
+        "already_extracted": False,
+        "needs_extract": False,
+        "needs_install": False,
+        "has_setup_exe": False,
+        "setup_exe": None,
+        "content_type": "unknown",  # online_fix | fitgirl | mixed | unknown
+        "archives_to_extract": [],
+        "message": "",
+        "ready_to_play": False,
+    }
+    if not download_dir:
+        result["message"] = "No download directory."
+        return result
+
+    names = [(f.get("filename") or "") for f in files]
+    names_l = [n.lower() for n in names]
+    of_hint = any("ofme" in n or "online-fix" in n or "onlinefix" in n for n in names_l)
+    of_hint = of_hint or "online" in (state.get("active_mirror") or "").lower() or "rootz" in (
+        state.get("active_mirror") or ""
+    ).lower() or "pixeldrain" in (state.get("active_mirror") or "").lower()
+    fg_hint = any(n.endswith(".bin") for n in names_l) or any("fitgirl" in n for n in names_l)
+
+    rar_names = [n for n in names if n.lower().endswith(".rar")]
+    result["has_rar"] = bool(rar_names)
+    part_nums = []
+    for n in rar_names:
+        m = re.search(r"\.part(\d+)\.rar$", n, re.I)
+        if m:
+            part_nums.append(int(m.group(1)))
+            if int(m.group(1)) == 1:
+                result["has_part01"] = True
+                result["archives_to_extract"].append(n)
+        else:
+            # single-volume rar (updates, fix packs)
+            result["archives_to_extract"].append(n)
+    result["multipart"] = bool(part_nums)
+    if part_nums and 1 not in part_nums:
+        result["message"] = "Multi-part RAR set without part01 — cannot start unpack."
+        result["needs_extract"] = False
+
+    # Disk presence / size sanity
+    for f in files:
+        fn = f.get("filename") or ""
+        if not fn:
+            continue
+        path = os.path.join(download_dir, fn)
+        if not os.path.isfile(path):
+            result["missing_on_disk"].append(fn)
+            continue
+        try:
+            sz = os.path.getsize(path)
+        except OSError:
+            result["missing_on_disk"].append(fn)
+            continue
+        expected = int(f.get("size") or 0)
+        # tiny incomplete masquerading as finished
+        if expected > 50 * 1024 * 1024 and sz < expected * 0.95:
+            result["tiny_on_disk"].append({"filename": fn, "disk": sz, "expected": expected})
+        elif expected <= 0 and fn.lower().endswith(".rar") and sz < 1024 * 1024:
+            result["tiny_on_disk"].append({"filename": fn, "disk": sz, "expected": expected})
+
+    already = _looks_like_extracted_game(download_dir)
+    result["already_extracted"] = already
+    setup = _find_setup_exe(download_dir)
+    # also search after-extract dirs for setup
+    if not setup and os.path.isdir(download_dir):
+        try:
+            for e in os.listdir(download_dir):
+                p = os.path.join(download_dir, e)
+                if os.path.isdir(p):
+                    for f in os.listdir(p):
+                        if f.lower().endswith(".exe") and "setup" in f.lower():
+                            setup = os.path.join(p, f)
+                            break
+                if setup:
+                    break
+        except Exception:
+            pass
+    result["setup_exe"] = setup
+    result["has_setup_exe"] = bool(setup)
+
+    if of_hint and not fg_hint:
+        result["content_type"] = "online_fix"
+    elif fg_hint and not of_hint:
+        result["content_type"] = "fitgirl"
+    elif of_hint and fg_hint:
+        result["content_type"] = "mixed"
+    elif result["has_rar"]:
+        # default: try OF password path first in worker anyway
+        result["content_type"] = "online_fix" if result["multipart"] else "unknown"
+
+    # Decision tree
+    if not result["all_downloads_finished"]:
+        result["message"] = (
+            f"Downloads incomplete ({result['finished_count']}/{result['file_count']})."
+        )
+        result["needs_extract"] = False
+    elif result["missing_on_disk"]:
+        result["message"] = f"Missing on disk: {len(result['missing_on_disk'])} file(s)."
+        result["needs_extract"] = False
+    elif result["tiny_on_disk"]:
+        result["message"] = (
+            f"Incomplete files on disk (size mismatch): {len(result['tiny_on_disk'])}."
+        )
+        result["needs_extract"] = False
+    elif already:
+        result["needs_extract"] = False
+        if result["content_type"] == "fitgirl" and result["has_setup_exe"]:
+            result["needs_install"] = True
+            result["message"] = "Already extracted — FitGirl setup.exe found (can install)."
+            result["ready_to_play"] = False
+        else:
+            result["ready_to_play"] = True
+            result["message"] = (
+                "Already extracted — looks playable "
+                f"({result['content_type']}). No unpack needed."
+            )
+    elif result["has_rar"] and result["archives_to_extract"]:
+        result["needs_extract"] = True
+        result["message"] = (
+            f"Need unpack: {len(result['archives_to_extract'])} archive head(s) "
+            f"(multipart={result['multipart']}, type={result['content_type']})."
+        )
+    elif result["has_setup_exe"]:
+        result["needs_install"] = True
+        result["message"] = "No RAR left to unpack; setup.exe present."
+    else:
+        result["message"] = "Complete download, but no clear extract/install target found."
+
+    return result
+
+
+def maybe_auto_extract_if_complete():
+    """If queue is fully finished, run smart post-download pipeline (check → extract)."""
+    with state_lock:
+        if not state.get("files"):
+            return
+        if state.get("is_extracting"):
+            return
+        if state.get("post_download_running"):
+            return
+        statuses = [f.get("status") for f in state["files"]]
+        if not statuses or any(s != "finished" for s in statuses):
+            return
+        state["post_download_running"] = True
+    threading.Thread(target=post_download_smart_pipeline, daemon=True, name="post-dl").start()
+
+
+def post_download_smart_pipeline():
+    """Auto: analyze → extract if needed → re-check → report install/play ready."""
+    try:
+        with state_lock:
+            state["post_download_status"] = "checking"
+            state["post_download_message"] = "Analyzing finished download..."
+        report = analyze_post_download()
+        add_log(f"[AUTO-CHECK] {report.get('message')}")
+        add_log(
+            f"[AUTO-CHECK] finished={report['finished_count']}/{report['file_count']} "
+            f"type={report['content_type']} needs_extract={report['needs_extract']} "
+            f"already={report['already_extracted']} missing={len(report['missing_on_disk'])} "
+            f"tiny={len(report['tiny_on_disk'])}"
+        )
+        with state_lock:
+            state["post_download_report"] = report
+            state["post_download_message"] = report.get("message") or ""
+
+        if report.get("missing_on_disk") or report.get("tiny_on_disk"):
+            with state_lock:
+                state["post_download_status"] = "incomplete"
+                state["is_extracted"] = False
+            add_log("[AUTO-CHECK] Not starting extract — fix incomplete/missing files first.")
+            return
+
+        if report.get("already_extracted"):
+            with state_lock:
+                state["is_extracted"] = True
+                state["post_download_status"] = (
+                    "needs_install" if report.get("needs_install") else "ready"
+                )
+            if report.get("needs_install"):
+                add_log(
+                    f"[AUTO-CHECK] Extracted FitGirl pack — setup: {report.get('setup_exe')}"
+                )
+            else:
+                add_log("[AUTO-CHECK] Game looks ready to play (Online-Fix style).")
+            return
+
+        if not report.get("needs_extract"):
+            with state_lock:
+                state["post_download_status"] = "noop"
+            add_log("[AUTO-CHECK] No extraction required.")
+            return
+
+        add_log(
+            "[AUTO] Starting extraction — "
+            f"heads={report.get('archives_to_extract')} "
+            f"(OF password online-fix.me tried first)..."
+        )
+        with state_lock:
+            state["post_download_status"] = "extracting"
+        extraction_worker()
+
+        # Re-analyze after unpack
+        report2 = analyze_post_download()
+        with state_lock:
+            state["post_download_report"] = report2
+            state["post_download_message"] = report2.get("message") or ""
+            state["is_extracted"] = bool(report2.get("already_extracted"))
+            if report2.get("already_extracted"):
+                if report2.get("needs_install"):
+                    state["post_download_status"] = "needs_install"
+                    add_log(
+                        "[AUTO] Unpack done — FitGirl setup detected. "
+                        "Use Install button (not auto-launched)."
+                    )
+                else:
+                    state["post_download_status"] = "ready"
+                    add_log(
+                        "[AUTO] Unpack done — Online-Fix/game content ready to play "
+                        "(password was online-fix.me if protected)."
+                    )
+            else:
+                state["post_download_status"] = "extract_uncertain"
+                add_log(
+                    "[AUTO] Unpack finished but game markers not clearly found — check folder manually."
+                )
+    except Exception as e:
+        add_log(f"[AUTO-CHECK] Pipeline error: {e}")
+        with state_lock:
+            state["post_download_status"] = "error"
+            state["post_download_message"] = str(e)
+    finally:
+        with state_lock:
+            state["post_download_running"] = False
+        try:
+            save_session_state()
+        except Exception:
+            pass
+
+
 def extraction_worker():
-    """Background thread worker to extract split RAR volumes using unrar.exe."""
+    """Background thread worker to extract split RAR volumes using unrar.exe.
+
+    Online-Fix FAQ: the only archive password is online-fix.me
+    Multi-part: unpack only part01 / first volume; other parts follow automatically.
+    """
     with state_lock:
         if state.get("is_extracting"):
             add_log("Extraction already in progress. Skipping thread launch.")
@@ -2489,16 +4131,25 @@ def extraction_worker():
     download_dir = state["download_dir"]
     finished_files = [f["filename"] for f in state["files"] if f["status"] == "finished"]
     
+    # Prefer smart list from analyzer (part01 + single-volume only)
+    report = analyze_post_download(download_dir, list(state.get("files") or []))
     archives_to_extract = []
-    for filename in finished_files:
-        if filename.endswith(".rar"):
-            part_match = re.search(r'\.part(\d+)\.rar$', filename, re.IGNORECASE)
-            if part_match:
-                part_num = int(part_match.group(1))
-                if part_num == 1:
-                    archives_to_extract.append((filename, f"Archive Part 1: {filename}"))
-            else:
-                archives_to_extract.append((filename, f"Single Archive: {filename}"))
+    for filename in report.get("archives_to_extract") or []:
+        if re.search(r"\.part(\d+)\.rar$", filename, re.I):
+            archives_to_extract.append((filename, f"Archive Part 1: {filename}"))
+        else:
+            archives_to_extract.append((filename, f"Single Archive: {filename}"))
+
+    if not archives_to_extract:
+        for filename in finished_files:
+            if filename.endswith(".rar"):
+                part_match = re.search(r'\.part(\d+)\.rar$', filename, re.IGNORECASE)
+                if part_match:
+                    part_num = int(part_match.group(1))
+                    if part_num == 1:
+                        archives_to_extract.append((filename, f"Archive Part 1: {filename}"))
+                else:
+                    archives_to_extract.append((filename, f"Single Archive: {filename}"))
                 
     if not archives_to_extract:
         add_log("No RAR archives found to extract among completed downloads.")
@@ -2506,59 +4157,78 @@ def extraction_worker():
             state["is_extracting"] = False
         return
         
+    # Online-Fix FAQ password; also works on unprotected FitGirl RARs with modern unrar
+    of_password = "online-fix.me"
+    # Prefer OF password when content looks like Online-Fix; still try both
+    prefer_of = report.get("content_type") in ("online_fix", "mixed", "unknown")
+
     for filename, label in archives_to_extract:
         archive_path = os.path.join(download_dir, filename)
         if not os.path.exists(archive_path):
+            add_log(f"Skip missing archive head: {filename}")
             continue
             
         add_log(f"Unpacking {label}... This may take a while...")
         
         try:
-            cmd = [unrar_path, "x", "-y", archive_path]
-            process = subprocess.Popen(
-                cmd,
-                cwd=download_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-                universal_newlines=True,
-                encoding='cp866',
-                errors='replace'
-            )
-            
-            last_progress = -1
-            buffer = ""
-            while True:
-                char = process.stdout.read(1)
-                if not char:
+            cmds = [
+                [unrar_path, "x", "-y", f"-p{of_password}", archive_path],
+                [unrar_path, "x", "-y", archive_path],
+            ]
+            if not prefer_of:
+                cmds = list(reversed(cmds))
+            ok = False
+            for cmd in cmds:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=download_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    bufsize=1,
+                    universal_newlines=True,
+                    encoding='cp866',
+                    errors='replace'
+                )
+                
+                last_progress = -1
+                buffer = ""
+                while True:
+                    char = process.stdout.read(1)
+                    if not char:
+                        break
+                    buffer += char
+                    if char in ['\r', '\n']:
+                        matches = re.findall(r'(\d+)%', buffer)
+                        if matches:
+                            pct = int(matches[-1])
+                            if pct != last_progress:
+                                last_progress = pct
+                                with state_lock:
+                                    state["extraction_progress"] = pct
+                                if pct % 5 == 0:
+                                    add_log(f"Extraction progress ({label}): {pct}%")
+                        buffer = ""
+                        
+                process.wait()
+                if process.returncode == 0:
+                    add_log(f"Successfully unpacked {label}.")
+                    ok = True
                     break
-                buffer += char
-                if char in ['\r', '\n']:
-                    matches = re.findall(r'(\d+)%', buffer)
-                    if matches:
-                        pct = int(matches[-1])
-                        if pct != last_progress:
-                            last_progress = pct
-                            with state_lock:
-                                state["extraction_progress"] = pct
-                            if pct % 5 == 0:
-                                add_log(f"Extraction progress ({label}): {pct}%")
-                    buffer = ""
-                    
-            process.wait()
-            if process.returncode == 0:
-                add_log(f"Successfully unpacked {label}.")
-            else:
-                add_log(f"Unpacker finished with exit code {process.returncode} for {label}.")
+                else:
+                    add_log(f"Unpacker exit {process.returncode} for {label} (cmd={' '.join(cmd[1:4])}…); trying next strategy if any.")
+            if not ok:
+                add_log(f"Failed to unpack {label} with all strategies.")
         except Exception as e:
             add_log(f"Exception during extraction of {label}: {str(e)}")
             
     with state_lock:
         state["is_extracting"] = False
         state["extraction_progress"] = 100
-        state["is_extracted"] = any(f.endswith(".bin") for f in os.listdir(download_dir)) if os.path.exists(download_dir) else False
+        state["is_extracted"] = _looks_like_extracted_game(download_dir)
         
     add_log("Extraction workflow complete!")
+    if state.get("is_extracted"):
+        add_log("[AUTO] Game content detected after unpack. Ready to launch installer / play (Online-Fix is usually already playable).")
 
 def clean_size(size_str):
     if not size_str:
@@ -2566,7 +4236,23 @@ def clean_size(size_str):
     s = re.sub(r'^from\s+', '', size_str, flags=re.IGNORECASE)
     s = re.sub(r'\s*\[Selective\s+Download[^\]]*\]', '', s, flags=re.IGNORECASE)
     s = re.sub(r'\s*\(\s*Selective\s+Download[^\)]*\)', '', s, flags=re.IGNORECASE)
-    return s.strip()
+    # FitGirl get_text often glues next section: "55/55.1 GB Download Mirrors..."
+    s = re.sub(
+        r'\s+(?:Download\s+Mirrors?|Filehoster|Genres?/Tags?|Companies?|Languages?|Repack\s+Size|Original\s+Size).*$',
+        '',
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = s.strip(" \t,;|")
+    # Selective dual size "55/55.1 GB" → "55–55.1 GB" (not progress-looking)
+    m = re.match(
+        r'^([\d]+(?:[.,][\d]+)?)\s*/\s*([\d]+(?:[.,][\d]+)?)\s*([A-Za-z]+)?\s*$',
+        s,
+    )
+    if m:
+        unit = (m.group(3) or "GB").strip()
+        s = f"{m.group(1)}–{m.group(2)} {unit}"
+    return s.strip() or "Unknown"
 
 def clean_cover_url(url):
     if not url:
@@ -2633,25 +4319,82 @@ def clean_and_parse_title(raw_title):
     title = re.sub(r'\s+', ' ', title)
     return title, version
 
+def _steam_movie_play_urls(movie):
+    """Build browser-playable trailer URLs from a Steam appdetails movie entry.
+
+    Modern appdetails often only returns DASH/HLS — classic CDN mp4/webm still
+    works via movie id: /steam/apps/{movie_id}/movie_max.mp4 etc.
+    Prefer short microtrailer for autoplay cycle, then 480p, then max.
+    """
+    if not isinstance(movie, dict):
+        return []
+    urls = []
+    # Prefer explicit mp4/webm maps when present (legacy payload)
+    for container in ("mp4", "webm"):
+        block = movie.get(container) or {}
+        if isinstance(block, dict):
+            for key in ("480", "max"):
+                u = (block.get(key) or "").strip()
+                if u:
+                    if u.startswith("//"):
+                        u = "https:" + u
+                    urls.append(u)
+    mid = movie.get("id")
+    if mid:
+        base = f"https://cdn.cloudflare.steamstatic.com/steam/apps/{mid}/"
+        # microtrailer first (short loop-friendly cycle), then progressive mp4
+        for name in ("microtrailer.webm", "movie480.mp4", "movie_max.mp4"):
+            urls.append(base + name)
+    # de-dupe preserve order
+    seen = set()
+    out = []
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 def fetch_steam_metadata(game_title):
-    import urllib.request, urllib.parse, json, re
+    import urllib.request, urllib.parse, json, re, unicodedata
     # Clean the title slightly to improve search match
-    search_query = game_title
+    search_query = game_title or ""
     # Replace common unicode replacements and curly quotes
     search_query = search_query.replace('\ufffd', "'").replace('’', "'").replace('‘', "'")
-    search_query = re.sub(r'[^a-zA-Z0-9\s\'\-\:]', '', search_query)
+    # Fold accents: Ragnarök → Ragnarok (NOT Ragnark — keep base letters)
+    search_query = unicodedata.normalize("NFKD", search_query)
+    search_query = "".join(ch for ch in search_query if not unicodedata.combining(ch))
+    # Keep letters/digits/spaces/simple punctuation (unicode letters via \w after ascii fold)
+    search_query = re.sub(r"[^\w\s'\-:]", " ", search_query, flags=re.UNICODE)
+    search_query = re.sub(r"\s+", " ", search_query).strip()
     # Strip year from search query (e.g. "Game 2024" -> "Game") to improve search success
     search_query = re.sub(r'\b\d{4}\b', '', search_query).strip()
+    # Drop common FitGirl noise for better Steam match
+    search_query = re.sub(
+        r'\b(repack|fitgirl|v\d+(\.\d+)*|update|dlc|bonus)\b',
+        '',
+        search_query,
+        flags=re.I,
+    ).strip()
+    # Secondary query without subtitle after colon if primary fails
+    alt_query = search_query.split(":")[0].strip() if ":" in search_query else ""
+
+    def _search(term):
+        if not term:
+            return None
+        url = 'https://store.steampowered.com/api/storesearch/?term=' + urllib.parse.quote(term) + '&l=english&cc=US'
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        res = urllib.request.urlopen(req, timeout=10).read()
+        return json.loads(res)
     
     try:
         with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
             f_dbg.write(f"Steam API Search Query: '{search_query}' (original: '{game_title}')\n")
-        url = 'https://store.steampowered.com/api/storesearch/?term=' + urllib.parse.quote(search_query) + '&l=english&cc=US'
-        with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
-            f_dbg.write(f"Steam API Search URL: {url}\n")
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        res = urllib.request.urlopen(req, timeout=10).read()
-        data = json.loads(res)
+        data = _search(search_query)
+        if (not data or not data.get("items")) and alt_query and alt_query != search_query:
+            with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
+                f_dbg.write(f"Steam API retry alt query: '{alt_query}'\n")
+            data = _search(alt_query)
         with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
             f_dbg.write(f"Steam API search results: {list(data.keys()) if data else 'Empty'}\n")
             if data and data.get('items'):
@@ -2659,8 +4402,14 @@ def fetch_steam_metadata(game_title):
         if data.get('items'):
             # Match the closest item by title or fallback to first
             appid = data['items'][0]['id']
+            def _norm(s):
+                s = unicodedata.normalize("NFKD", s or "")
+                s = "".join(ch for ch in s if not unicodedata.combining(ch))
+                return re.sub(r'[^a-z0-9]+', '', s.lower())
+            title_l = _norm(game_title)
             for item in data['items']:
-                if item.get('name', '').lower() == game_title.lower():
+                name_l = _norm(item.get('name'))
+                if name_l == title_l or (title_l and title_l in name_l) or (name_l and name_l in title_l):
                     appid = item['id']
                     break
             
@@ -2689,6 +4438,16 @@ def fetch_steam_metadata(game_title):
                         rating_str = f"{pct}% ({desc})"
                 except Exception:
                     pass
+
+                # Trailer URLs — highlight movie first
+                videos = []
+                movies = list(g.get('movies') or [])
+                movies.sort(key=lambda m: (0 if m.get('highlight') else 1, m.get('id') or 0))
+                for movie in movies[:3]:
+                    play_urls = _steam_movie_play_urls(movie)
+                    # One playable URL per movie (prefer first = microtrailer/short)
+                    if play_urls:
+                        videos.append(play_urls[0])
                 
                 return {
                     'description': g.get('short_description', ''),
@@ -2699,7 +4458,9 @@ def fetch_steam_metadata(game_title):
                     'metacritic': g.get('metacritic', {}).get('score'),
                     'screenshots': [s.get('path_full') for s in g.get('screenshots', [])],
                     'header_image': g.get('header_image', ''),
-                    'steam_rating': rating_str
+                    'steam_rating': rating_str,
+                    'videos': videos,
+                    'appid': appid,
                 }
     except Exception as e:
         with open("steam_debug.log", "a", encoding="utf-8") as f_dbg:
@@ -2806,9 +4567,10 @@ def fetch_repack_details_helper(item):
             if cover_image:
                 cover_image = urllib.parse.urljoin(url, cover_image)
             
-            text_all = soup.get_text()
-            orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
-            repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+            text_all = soup.get_text("\n")
+            size_val_re = r'([0-9][\d.,/\s–—-]*?(?:GB|MB|TB|GiB|MiB|gb|mb|tb)\b)'
+            orig_match = re.search(r'Original\s+Size:\s*' + size_val_re, text_all, re.IGNORECASE)
+            repack_match = re.search(r'Repack\s+Size:\s*' + size_val_re, text_all, re.IGNORECASE)
             company_match = re.search(r'Companies:\s*([^\n]+)', text_all, re.IGNORECASE)
             
             item['cover_image'] = clean_cover_url(cover_image)
@@ -2879,6 +4641,370 @@ def prefetch_covers_background(results):
             except Exception:
                 pass
     threading.Thread(target=download_worker, daemon=True).start()
+
+# ---------------------------------------------------------------------------
+# Local FitGirl site proxy (bypasses German CUII / ISP DNS block via DoH)
+# Browser cannot reach fitgirl-repacks.site; Python can → reverse-proxy HTML+assets.
+# ---------------------------------------------------------------------------
+PROXY_ALLOWED_HOST_SUFFIXES = (
+    "fitgirl-repacks.site",
+    "imageban.ru",
+    "fastpic.org",
+    "fastpic.ru",
+    "imgur.com",
+    "i.imgur.com",
+    "wp.com",
+    "gravatar.com",
+    "w.org",
+    "wordpress.com",
+    "cloudflare.com",
+    "cdnjs.cloudflare.com",
+    "unpkg.com",
+    "jsdelivr.net",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "riotpixels.com",
+    "riotpixels.net",
+    "steamstatic.com",
+    "akamaihd.net",
+    "pinimg.com",
+    "ibb.co",
+    "i.ibb.co",
+    "imgbb.com",
+    "duckduckgo.com",
+)
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".svg", ".ico", ".bmp")
+_FONT_EXTS = (".woff", ".woff2", ".ttf", ".otf", ".eot")
+
+def _proxy_host_allowed(host):
+    if not host:
+        return False
+    host = host.lower().rstrip(".")
+    for suf in PROXY_ALLOWED_HOST_SUFFIXES:
+        if host == suf or host.endswith("." + suf):
+            return True
+    return False
+
+def _proxy_guess_kind(url):
+    """Return 'image' | 'css' | 'js' | 'font' | 'html' | 'other' from URL path."""
+    try:
+        path = urllib.parse.urlparse(url).path.lower()
+    except Exception:
+        path = (url or "").lower()
+    # strip wp.com resize query noise from path check
+    if any(path.endswith(ext) for ext in _IMAGE_EXTS):
+        return "image"
+    if ".jpg" in path or ".jpeg" in path or ".png" in path or ".webp" in path or "/out/" in path:
+        # imageban /out/HASH.jpg style
+        if any(x in path for x in (".jpg", ".jpeg", ".png", ".webp", ".gif", "/out/")):
+            return "image"
+    if path.endswith(".css") or ".css?" in (url or "").lower():
+        return "css"
+    if path.endswith(".js") or ".js?" in (url or "").lower():
+        return "js"
+    if any(path.endswith(ext) for ext in _FONT_EXTS):
+        return "font"
+    return "other"
+
+def _proxy_abs_url(raw, base_url):
+    if not raw or raw.startswith(("#", "data:", "javascript:", "mailto:", "blob:")):
+        return None
+    raw = raw.strip().strip("'\"")
+    if not raw:
+        return None
+    return urllib.parse.urljoin(base_url, raw)
+
+def _unwrap_cdn_image_url(url):
+    """
+    WordPress.com Photon wraps hotlink hosts:
+      https://i0.wp.com/i2.imageban.ru/out/...jpg?resize=150%2C200&ssl=1
+    → https://i2.imageban.ru/out/...jpg  (direct imageban works; photon often  fails via proxy)
+    Also upgrade http→https for known CDNs.
+    """
+    if not url:
+        return url
+    try:
+        u = url.strip()
+        # Photon: iN.wp.com/<host>/<path>
+        m = re.match(r"^https?://i\d+\.wp\.com/([^/?#]+)/(.+?)(?:\?|#|$)", u, flags=re.I)
+        if m:
+            host = m.group(1)
+            path = m.group(2)
+            # drop photon resize query — full original is more reliable
+            return f"https://{host}/{path}"
+        # force https on imageban / riotpixels
+        p = urllib.parse.urlparse(u)
+        host = (p.hostname or "").lower()
+        if host.endswith("imageban.ru") or host.endswith("riotpixels.net") or host.endswith("riotpixels.com"):
+            if p.scheme == "http":
+                u = "https://" + u[len("http://"):]
+        return u
+    except Exception:
+        return url
+
+def _proxy_local_url(abs_url):
+    """Map remote URL → local proxy endpoint (same origin, unblocked)."""
+    if not abs_url:
+        return abs_url
+    try:
+        abs_url = _unwrap_cdn_image_url(abs_url)
+        p = urllib.parse.urlparse(abs_url)
+        if p.scheme not in ("http", "https"):
+            return abs_url
+        if not _proxy_host_allowed(p.hostname):
+            return abs_url
+        kind = _proxy_guess_kind(abs_url)
+        # Images use dedicated endpoint (proper Accept + cache, works for imageban)
+        if kind == "image":
+            return "/api/proxy_image?url=" + urllib.parse.quote(abs_url, safe="")
+        return "/api/proxy_page?url=" + urllib.parse.quote(abs_url, safe="")
+    except Exception:
+        return abs_url
+
+def _proxy_rewrite_css(css_text, base_url):
+    def repl_url(m):
+        inner = m.group(1).strip().strip("'\"")
+        abs_u = _proxy_abs_url(inner, base_url)
+        if not abs_u:
+            return m.group(0)
+        local = _proxy_local_url(abs_u)
+        return f"url({local})"
+    return re.sub(r"url\(\s*([^)]+?)\s*\)", repl_url, css_text, flags=re.IGNORECASE)
+
+def _proxy_rewrite_srcset(srcset, base_url):
+    parts = []
+    for chunk in srcset.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        bits = chunk.split()
+        u = bits[0]
+        rest = " ".join(bits[1:])
+        abs_u = _proxy_abs_url(u, base_url)
+        if abs_u:
+            u = _proxy_local_url(abs_u)
+        parts.append((u + (" " + rest if rest else "")).strip())
+    return ", ".join(parts)
+
+def _proxy_rewrite_html(html_text, page_url):
+    """Rewrite FitGirl HTML so every asset/link loads through local proxy (DoH unblocked)."""
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+    except Exception:
+        return html_text
+
+    # Attrs that hold a single URL
+    ATTR_MAP = {
+        "a": ["href"],
+        "link": ["href"],
+        "script": ["src"],
+        "img": [
+            "src", "data-src", "data-lazy-src", "data-original", "data-lazy",
+            "data-large_image", "data-srcset", "data-full-url", "data-url",
+        ],
+        "source": ["src", "srcset"],
+        "video": ["src", "poster"],
+        "audio": ["src"],
+        "iframe": ["src"],
+        "form": ["action"],
+        "embed": ["src"],
+        "object": ["data"],
+        "use": ["href", "xlink:href"],
+        "image": ["href", "xlink:href", "src"],
+    }
+
+    for tag_name, attrs in ATTR_MAP.items():
+        for el in soup.find_all(tag_name):
+            for attr in attrs:
+                val = el.get(attr)
+                if not val:
+                    continue
+                if attr == "srcset" or attr.endswith("srcset"):
+                    el[attr] = _proxy_rewrite_srcset(val, page_url)
+                    continue
+                abs_u = _proxy_abs_url(val, page_url)
+                if abs_u:
+                    el[attr] = _proxy_local_url(abs_u)
+            # srcset separate common attr
+            if el.get("srcset"):
+                el["srcset"] = _proxy_rewrite_srcset(el.get("srcset"), page_url)
+
+    # Inline style url(...)
+    for el in soup.find_all(style=True):
+        try:
+            el["style"] = _proxy_rewrite_css(el.get("style") or "", page_url)
+        except Exception:
+            pass
+
+    # <style> blocks
+    for st in soup.find_all("style"):
+        if st.string:
+            try:
+                st.string = _proxy_rewrite_css(str(st.string), page_url)
+            except Exception:
+                pass
+
+    # Remove base tags that would break relative paths outside proxy
+    for b in soup.find_all("base"):
+        b.decompose()
+
+    # Inject chrome so user knows it's the real site via local unblock
+    # Client-side fixer: catch Photon/wp.com, riotpixels, imageban that bypassed HTML rewrite
+    # (lazy-load JS, srcset, dynamic attrs) and route them through /api/proxy_image.
+    fix_script = r"""
+<script>
+(function(){
+  function unwrapPhoton(u){
+    try{
+      var m=String(u).match(/^https?:\/\/i\d+\.wp\.com\/([^\/?#]+)\/(.+?)(?:\?|#|$)/i);
+      if(m) return 'https://'+m[1]+'/'+m[2];
+    }catch(e){}
+    return u;
+  }
+  function shouldProxy(u){
+    if(!u||u.indexOf('/api/proxy_')===0||u.indexOf('data:')===0) return false;
+    return /fitgirl-repacks\.site|imageban\.ru|riotpixels\.(net|com)|i\d+\.wp\.com|imgur\.com|ibb\.co/i.test(u);
+  }
+  function toProxy(u){
+    u=unwrapPhoton(u);
+    if(/^http:\/\//i.test(u) && /imageban\.ru|riotpixels\./i.test(u)) u=u.replace(/^http:/i,'https:');
+    if(/\.(jpg|jpeg|png|webp|gif|avif|ico)(\?|$)/i.test(u) || /\/out\/[a-f0-9]+\.jpg/i.test(u) || /riotpixels\./i.test(u))
+      return '/api/proxy_image?url='+encodeURIComponent(u);
+    return '/api/proxy_page?url='+encodeURIComponent(u);
+  }
+  function fixEl(el){
+    if(!el||!el.getAttribute) return;
+    ['src','data-src','data-lazy-src','data-original','data-large_image','href'].forEach(function(a){
+      var v=el.getAttribute(a); if(!v||!shouldProxy(v)) return;
+      el.setAttribute(a, toProxy(v));
+    });
+    var ss=el.getAttribute('srcset');
+    if(ss && /imageban|riotpixels|wp\.com|fitgirl/i.test(ss)){
+      el.setAttribute('srcset', ss.split(',').map(function(part){
+        var p=part.trim().split(/\s+/); if(!p[0]) return part;
+        if(shouldProxy(p[0])) p[0]=toProxy(p[0]);
+        return p.join(' ');
+      }).join(', '));
+    }
+  }
+  function scan(root){
+    (root||document).querySelectorAll('img,source,a,link,video').forEach(fixEl);
+  }
+  function retryBroken(){
+    document.querySelectorAll('img').forEach(function(img){
+      if(img.complete && img.naturalWidth>1) return;
+      var s=img.getAttribute('src')||img.src||'';
+      if(!s) return;
+      var bare=s;
+      if(s.indexOf('/api/proxy_image?url=')>=0){
+        try{
+          var q=s.split('/api/proxy_image?url=')[1]||'';
+          q=q.split('&')[0]; // drop any extra query junk
+          bare=decodeURIComponent(q);
+        }catch(e){}
+      }
+      bare=unwrapPhoton(bare);
+      // imageban paths are stable without query; strip cache-busters that break fetch
+      if(/imageban\.ru\/out\//i.test(bare)) bare=bare.split('?')[0];
+      if(shouldProxy(bare) || /imageban\.ru|riotpixels\./i.test(bare)){
+        img.src='/api/proxy_image?url='+encodeURIComponent(bare);
+      }
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', function(){ scan(); setTimeout(retryBroken, 800); setTimeout(retryBroken, 2500); });
+  else { scan(); setTimeout(retryBroken, 800); setTimeout(retryBroken, 2500); }
+  try{
+    new MutationObserver(function(muts){
+      muts.forEach(function(m){ m.addedNodes && m.addedNodes.forEach(function(n){ if(n.nodeType===1){ fixEl(n); if(n.querySelectorAll) scan(n); } }); });
+    }).observe(document.documentElement,{childList:true,subtree:true});
+  }catch(e){}
+})();
+</script>
+"""
+    banner_html = (
+        '<div id="fg-local-proxy-banner" style="position:fixed;top:0;left:0;right:0;'
+        'z-index:2147483647;background:#1a1028;color:#f3e8ff;font:600 12px/1.4 system-ui,sans-serif;'
+        'padding:8px 14px;border-bottom:1px solid rgba(255,255,255,.12);display:flex;gap:12px;'
+        'align-items:center;justify-content:space-between;">'
+        "<span>FitGirl via local proxy (ISP block bypass) — real site content</span>"
+        '<a href="http://127.0.0.1:8000/" style="color:#c4b5fd;text-decoration:underline;">Back to app</a>'
+        "</div>"
+        "<style>body{padding-top:42px !important;}#fg-local-proxy-banner a:hover{color:#fff;}</style>"
+        + fix_script
+    )
+
+    # meta charset
+    if soup.head and not soup.head.find("meta", attrs={"charset": True}):
+        mc = soup.new_tag("meta", charset="utf-8")
+        soup.head.insert(0, mc)
+
+    out = str(soup)
+    # Inject banner right after <body ...> (handles multi-line tags)
+    low = out.lower()
+    bidx = low.find("<body")
+    if bidx >= 0:
+        end = out.find(">", bidx)
+        if end >= 0:
+            out = out[: end + 1] + banner_html + out[end + 1 :]
+        else:
+            out = banner_html + out
+    else:
+        out = banner_html + out
+    return out
+
+def proxy_fetch_remote(page_url, kind=None):
+    """GET remote URL with chrome impersonation + DoH (works when browser DNS is blocked)."""
+    kind = kind or _proxy_guess_kind(page_url)
+    if kind == "image":
+        accept = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    elif kind == "css":
+        accept = "text/css,*/*;q=0.1"
+    elif kind == "js":
+        accept = "*/*"
+    elif kind == "font":
+        accept = "font/woff2,font/woff,application/font-woff,*/*;q=0.1"
+    else:
+        accept = (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": accept,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://fitgirl-repacks.site/",
+        "Sec-Fetch-Dest": "image" if kind == "image" else "document",
+        "Sec-Fetch-Mode": "no-cors" if kind == "image" else "navigate",
+        "Sec-Fetch-Site": "cross-site" if kind == "image" else "none",
+    }
+    r = cf_requests.get(
+        page_url,
+        impersonate="chrome120",
+        timeout=35,
+        verify=False,
+        headers=headers,
+        allow_redirects=True,
+    )
+    # imageban sometimes returns HTML interstitial if Accept wrong — retry as pure image
+    if kind == "image" and r is not None:
+        body = r.content or b""
+        ctype = (r.headers.get("Content-Type") or "").lower()
+        if "text/html" in ctype or body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
+            headers["Accept"] = "image/*,*/*;q=0.8"
+            headers["Referer"] = "https://imageban.ru/"
+            r = cf_requests.get(
+                page_url,
+                impersonate="chrome120",
+                timeout=35,
+                verify=False,
+                headers=headers,
+                allow_redirects=True,
+            )
+    return r
 
 # HTTP Web Server
 class APIRequestHandler(BaseHTTPRequestHandler):
@@ -3013,25 +5139,53 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             try:
                 with open("warp_skipped.txt", "w") as f:
                     f.write("1")
-            except:
+            except Exception:
                 pass
-            add_log("User skipped Cloudflare WARP installer check.")
+            add_log("User skipped Cloudflare WARP installer check (can install later from Settings).")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode())
             return
             
-        elif path == "/api/retry_warp":
+        elif path == "/api/warp/status":
+            info = get_warp_connection_info()
             with state_lock:
-                state["warp_status"] = "checking"
-                state["warp_error_message"] = ""
-            add_log("Retrying Cloudflare WARP install process...")
-            threading.Thread(target=check_and_install_warp, daemon=True).start()
+                if info.get("installed"):
+                    state["warp_status"] = "installed"
+                    state["warp_connected"] = bool(info.get("connected"))
+                elif state.get("warp_status") not in ("installing", "checking", "error"):
+                    state["warp_status"] = "skipped" if os.path.exists("warp_skipped.txt") else "error"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"success": True}).encode())
+            self.wfile.write(json.dumps({
+                "success": True,
+                "installed": info.get("installed"),
+                "connected": info.get("connected"),
+                "status_text": info.get("status_text"),
+                "warp_status": state.get("warp_status"),
+                "warp_error_message": state.get("warp_error_message", ""),
+                "last_rotate_ts": state.get("warp_last_rotate_ts", 0),
+            }).encode())
+            return
+
+        # Also accept GET for escape (legacy) — preferred is POST
+        elif path == "/api/escape_pixeldrain":
+            mirror = "Rootz"
+            qs = urllib.parse.parse_qs(url_parsed.query)
+            if qs.get("mirror"):
+                mirror = (qs.get("mirror")[0] or "Rootz").strip() or "Rootz"
+
+            def _do_escape_get():
+                n = bulk_failover_unfinished_to_mirror(mirror)
+                add_log(f"[ESCAPE] API escape done: {n} file(s) → {mirror}")
+
+            threading.Thread(target=_do_escape_get, daemon=True).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "started": True, "mirror": mirror}).encode())
             return
             
         elif path == "/api/proxy_image":
@@ -3086,30 +5240,100 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             self.wfile.write(f.read())
                         return
 
-                # Download and cache using raw urllib.request
-                add_log(f"Proxying image: {img_url}")
-                req = urllib.request.Request(
-                    img_url,
-                    headers={'User-Agent': 'Mozilla/5.0'}
-                )
-                with urllib.request.urlopen(req, timeout=15) as response:
-                    content = response.read()
-                    content_type = response.headers.get("Content-Type", "image/jpeg")
-                    is_success = (response.status == 200) and not (content.startswith(b'<!DOCTYPE') or content.startswith(b'<html') or content.startswith(b'<'))
-                    
-                    if is_success:
-                        with open(cache_path, "wb") as f:
-                            f.write(content)
-                        
+                # Unwrap Photon CDN → direct imageban/etc (more reliable)
+                img_url = _unwrap_cdn_image_url(img_url)
+                # re-hash after unwrap for cache key consistency on first miss path
+                url_hash = hashlib.md5(img_url.encode("utf-8")).hexdigest()
+                cache_path = os.path.join(cache_dir, f"{url_hash}.{ext}")
+                if os.path.exists(cache_path):
+                    with open(cache_path, "rb") as f:
+                        header = f.read(15)
+                        rest = f.read()
+                    if not (header.startswith(b"<!DOCTYPE") or header.startswith(b"<html") or header.startswith(b"<")):
+                        content_type = "image/jpeg"
+                        if ext.lower() == "png":
+                            content_type = "image/png"
+                        elif ext.lower() == "gif":
+                            content_type = "image/gif"
+                        elif ext.lower() == "webp":
+                            content_type = "image/webp"
                         self.send_response(200)
                         self.send_header("Content-Type", content_type)
                         self.send_header("Access-Control-Allow-Origin", "*")
                         self.send_header("Cache-Control", "public, max-age=31536000")
                         self.end_headers()
-                        self.wfile.write(content)
-                    else:
-                        self.send_response(404)
+                        self.wfile.write(header + rest)
+                        return
+
+                # Download via curl_cffi + DoH (urllib fails under DE DNS block / hotlink HTML)
+                add_log(f"Proxying image: {img_url}")
+                try:
+                    response = proxy_fetch_remote(img_url, kind="image")
+                    content = response.content or b""
+                    content_type = response.headers.get("Content-Type", "image/jpeg")
+                    is_success = (
+                        response.status_code == 200
+                        and content
+                        and not content.lstrip()[:15].lower().startswith((b"<!doctype", b"<html", b"<"))
+                    )
+                    if is_success:
+                        # normalize content-type if server lied
+                        if "image" not in (content_type or "").lower():
+                            if content[:3] == b"\xff\xd8\xff":
+                                content_type = "image/jpeg"
+                            elif content[:8] == b"\x89PNG\r\n\x1a\n":
+                                content_type = "image/png"
+                            elif content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+                                content_type = "image/webp"
+                            else:
+                                content_type = "image/jpeg"
+                        try:
+                            with open(cache_path, "wb") as f:
+                                f.write(content)
+                        except Exception:
+                            pass
+                        self.send_response(200)
+                        self.send_header("Content-Type", content_type.split(";")[0].strip())
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Cache-Control", "public, max-age=31536000")
+                        self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
                         self.end_headers()
+                        self.wfile.write(content)
+                        return
+                except Exception as img_e:
+                    add_log(f"proxy_image cf fetch failed: {img_e}")
+                # fallback urllib
+                try:
+                    req = urllib.request.Request(
+                        img_url,
+                        headers={
+                            "User-Agent": "Mozilla/5.0",
+                            "Accept": "image/*,*/*;q=0.8",
+                            "Referer": "https://fitgirl-repacks.site/",
+                        },
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        content = response.read()
+                        content_type = response.headers.get("Content-Type", "image/jpeg")
+                        is_success = (response.status == 200) and not (
+                            content.startswith(b"<!DOCTYPE")
+                            or content.startswith(b"<html")
+                            or content.startswith(b"<")
+                        )
+                        if is_success:
+                            with open(cache_path, "wb") as f:
+                                f.write(content)
+                            self.send_response(200)
+                            self.send_header("Content-Type", content_type)
+                            self.send_header("Access-Control-Allow-Origin", "*")
+                            self.send_header("Cache-Control", "public, max-age=31536000")
+                            self.end_headers()
+                            self.wfile.write(content)
+                            return
+                except Exception:
+                    pass
+                self.send_response(404)
+                self.end_headers()
             except Exception as e:
                 add_log(f"Proxy image exception: {str(e)}")
                 self.send_response(500)
@@ -3168,41 +5392,137 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             return
             
         elif path == "/api/proxy_page":
+            # Full reverse proxy for FitGirl (+ hotlinked assets). Browser uses localhost
+            # while Python fetches via DoH — bypasses German ISP / CUII DNS blocks.
             try:
                 query_params = urllib.parse.parse_qs(url_parsed.query)
-                page_url = query_params.get("url", [""])[0]
+                page_url = (query_params.get("url", [""])[0] or "").strip()
                 if not page_url:
                     self.send_response(400)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
                     self.end_headers()
+                    self.wfile.write(b"Missing url= parameter")
                     return
-                
+
+                # Allow already-decoded or double-encoded
+                if page_url.startswith("//"):
+                    page_url = "https:" + page_url
+                parsed_target = urllib.parse.urlparse(page_url)
+                if parsed_target.scheme not in ("http", "https") or not parsed_target.hostname:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b"Invalid url")
+                    return
+                if not _proxy_host_allowed(parsed_target.hostname):
+                    self.send_response(403)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(f"Host not allowed for proxy: {parsed_target.hostname}".encode())
+                    return
+
                 add_log(f"Proxying page request: {page_url}")
-                response = cf_requests.get(page_url, impersonate="chrome120", timeout=20, verify=False)
-                
-                if response.status_code == 200:
-                    html = response.text
-                    
-                    def link_replacer(match):
-                        matched_url = match.group(1)
-                        if "fitgirl-repacks.site" in matched_url and not matched_url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".torrent", ".zip", ".rar")):
-                            return f'href="/api/proxy_page?url={urllib.parse.quote(matched_url)}"'
-                        return match.group(0)
-                        
-                    html = re.sub(r'href="([^"]+)"', link_replacer, html)
-                    html = re.sub(r"href='([^']+)'", link_replacer, html)
-                    
-                    self.send_response(200)
+                response = None
+                last_err = None
+                fetch_kind = _proxy_guess_kind(page_url)
+                for attempt in range(3):
+                    try:
+                        response = proxy_fetch_remote(page_url, kind=fetch_kind)
+                        if response is not None and response.status_code < 500:
+                            break
+                    except Exception as se:
+                        last_err = se
+                        add_log(f"Proxy fetch attempt {attempt + 1}/3 failed: {se}")
+                        time.sleep(0.5 * (attempt + 1))
+
+                if response is None:
+                    self.send_response(502)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(
+                        f"<h1>Proxy fetch failed</h1><p>{last_err}</p>"
+                        f"<p><a href='{urllib.parse.quote(page_url, safe=':/?=&')}'>Retry</a></p>".encode("utf-8")
+                    )
+                    return
+
+                ctype = (response.headers.get("Content-Type") or "").lower()
+                status = int(response.status_code or 200)
+                body = response.content or b""
+
+                # HTML → rewrite all links/assets through this proxy
+                if "text/html" in ctype or body.lstrip()[:32].lower().startswith((b"<!doctype", b"<html", b"<head", b"<body")):
+                    try:
+                        text = body.decode(response.encoding or "utf-8", errors="replace")
+                    except Exception:
+                        text = body.decode("utf-8", errors="replace")
+                    text = _proxy_rewrite_html(text, page_url)
+                    out = text.encode("utf-8")
+                    self.send_response(status if status < 400 else 200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache")
                     self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(out)))
                     self.end_headers()
-                    self.wfile.write(html.encode("utf-8"))
-                else:
-                    self.send_response(response.status_code)
+                    self.wfile.write(out)
+                    return
+
+                # CSS → rewrite url(...)
+                if "text/css" in ctype or page_url.lower().split("?")[0].endswith(".css"):
+                    try:
+                        text = body.decode(response.encoding or "utf-8", errors="replace")
+                    except Exception:
+                        text = body.decode("utf-8", errors="replace")
+                    text = _proxy_rewrite_css(text, page_url)
+                    out = text.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/css; charset=utf-8")
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(out)))
                     self.end_headers()
+                    self.wfile.write(out)
+                    return
+
+                # Binary / JS / fonts / images — pass through with original type
+                out_type = ctype.split(";")[0].strip() if ctype else "application/octet-stream"
+                if not out_type or out_type == "application/octet-stream":
+                    low = page_url.lower().split("?")[0]
+                    if low.endswith(".js"):
+                        out_type = "application/javascript"
+                    elif low.endswith(".woff2"):
+                        out_type = "font/woff2"
+                    elif low.endswith(".woff"):
+                        out_type = "font/woff"
+                    elif low.endswith(".png"):
+                        out_type = "image/png"
+                    elif low.endswith((".jpg", ".jpeg")):
+                        out_type = "image/jpeg"
+                    elif low.endswith(".webp"):
+                        out_type = "image/webp"
+                    elif low.endswith(".svg"):
+                        out_type = "image/svg+xml"
+                    elif low.endswith(".gif"):
+                        out_type = "image/gif"
+
+                self.send_response(status if 200 <= status < 400 else 200)
+                self.send_header("Content-Type", out_type)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(body)))
+                # Avoid browser blocking mixed content / CORP
+                self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+                self.end_headers()
+                self.wfile.write(body)
             except Exception as e:
                 add_log(f"Proxy page exception: {str(e)}")
-                self.send_response(500)
-                self.end_headers()
+                try:
+                    self.send_response(500)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(
+                        f"<h1>Proxy error</h1><pre>{urllib.parse.quote(str(e), safe='')}</pre>".encode("utf-8")
+                    )
+                except Exception:
+                    pass
             return
             
         elif path == "/api/popular":
@@ -3413,35 +5733,47 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
             return
             
-        # Serve static web files
-        if path == "/" or path == "/index.html":
-            file_to_serve = os.path.join(os.path.dirname(__file__), "web", "index.html")
-            content_type = "text/html"
-        elif path == "/style.css":
-            file_to_serve = os.path.join(os.path.dirname(__file__), "web", "style.css")
-            content_type = "text/css"
-        elif path == "/details-fix.css":
-            file_to_serve = os.path.join(os.path.dirname(__file__), "web", "details-fix.css")
-            content_type = "text/css"
-        elif path == "/app.js":
-            file_to_serve = os.path.join(os.path.dirname(__file__), "web", "app.js")
-            content_type = "application/javascript"
-        else:
+        # Serve static web files (whitelist under /web)
+        web_dir = os.path.join(os.path.dirname(__file__), "web")
+        static_map = {
+            "/": ("index.html", "text/html"),
+            "/index.html": ("index.html", "text/html"),
+            "/style.css": ("style.css", "text/css"),
+            "/details-fix.css": ("details-fix.css", "text/css"),
+            "/liquid-glass.css": ("liquid-glass.css", "text/css"),
+            "/app.js": ("app.js", "application/javascript"),
+            "/liquid-glass.js": ("liquid-glass.js", "application/javascript"),
+        }
+        if path not in static_map:
             self.send_error(404, "File Not Found")
             return
-            
+        fname, content_type = static_map[path]
+        file_to_serve = os.path.join(web_dir, fname)
+
         try:
             if path == "/" or path == "/index.html":
                 with open(file_to_serve, "r", encoding="utf-8") as f:
                     content_str = f.read()
                 import time
                 ts = str(int(time.time()))
-                content_str = content_str.replace("style.css?v=2.1", f"style.css?v={ts}")
-                content_str = content_str.replace("app.js?v=2.1", f"app.js?v={ts}")
-                for ver in ("2.1", "3.9", "4.0"):
-                    content_str = content_str.replace(f"style.css?v={ver}", f"style.css?v={ts}")
-                    content_str = content_str.replace(f"app.js?v={ver}", f"app.js?v={ts}")
-                    content_str = content_str.replace(f"details-fix.css?v={ver}", f"details-fix.css?v={ts}")
+                # Bust all local asset query strings so UI always loads latest glass/nav
+                for name in (
+                    "style.css",
+                    "app.js",
+                    "details-fix.css",
+                    "liquid-glass.css",
+                    "liquid-glass.js",
+                ):
+                    content_str = re.sub(
+                        rf'{re.escape(name)}\?v=[^"\']+',
+                        f"{name}?v={ts}",
+                        content_str,
+                    )
+                    content_str = content_str.replace(
+                        f'href="{name}"', f'href="{name}?v={ts}"'
+                    ).replace(
+                        f'src="{name}"', f'src="{name}?v={ts}"'
+                    )
                 content = content_str.encode("utf-8")
             else:
                 with open(file_to_serve, "rb") as f:
@@ -3468,12 +5800,126 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     add_log(f"Download manager resumed/started with {workers_to_start} parallel workers.")
                     for _ in range(workers_to_start):
                         threading.Thread(target=download_worker, daemon=True).start()
+            # Always ensure background auto-WARP watchdog is running
+            ensure_speed_watchdog()
             save_session_state()
             
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode())
+
+        elif path == "/api/retry_warp" or path == "/api/warp/install":
+            try:
+                if os.path.exists("warp_skipped.txt"):
+                    os.remove("warp_skipped.txt")
+            except Exception:
+                pass
+            with state_lock:
+                state["warp_status"] = "checking"
+                state["warp_error_message"] = ""
+            add_log("Installing / connecting Cloudflare WARP (force)...")
+            threading.Thread(
+                target=lambda: check_and_install_warp(force=True), daemon=True
+            ).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode())
+            return
+
+        elif path == "/api/warp/rotate":
+            def _do_rotate():
+                add_log("[SPEED] Manual/UI WARP rotate requested (force)...")
+                ok = try_auto_warp_rotate("manual/UI button", min_interval_sec=0, force=True)
+                if not ok:
+                    ok = wait_for_warp_rotate_or_do("manual/UI wait", min_interval_sec=0, wait_sec=40)
+                if ok:
+                    add_log("[SPEED] Manual WARP IP rotate finished OK — nudging download reconnect.")
+                    with state_lock:
+                        was = bool(state.get("is_running"))
+                        state["should_stop"] = True
+                        state["is_running"] = False
+                    time.sleep(2)
+                    with state_lock:
+                        state["should_stop"] = False
+                        if was or state.get("files"):
+                            state["is_running"] = True
+                            n = get_effective_max_workers()
+                            for _ in range(n):
+                                threading.Thread(target=download_worker, daemon=True).start()
+                            add_log(f"[SPEED] Resumed {n} worker(s) after WARP rotate.")
+                else:
+                    add_log("[SPEED] Manual WARP IP rotate failed.")
+            threading.Thread(target=_do_rotate, daemon=True).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "started": True}).encode())
+            return
+
+        elif path == "/api/escape_pixeldrain":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length).decode() if content_length else "{}"
+            try:
+                data = json.loads(post_data) if post_data else {}
+            except Exception:
+                data = {}
+            mirror = (data.get("mirror") or "Rootz").strip() or "Rootz"
+
+            def _do_escape():
+                n = bulk_failover_unfinished_to_mirror(mirror)
+                add_log(f"[ESCAPE] API escape done: {n} file(s) → {mirror}")
+
+            threading.Thread(target=_do_escape, daemon=True).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True, "started": True, "mirror": mirror}).encode())
+            return
+
+        elif path == "/api/set_captcha_key":
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length).decode() if content_length else "{}"
+            try:
+                data = json.loads(post_data) if post_data else {}
+                key = (data.get("api_key") or data.get("captcha_api_key") or "").strip()
+                provider = (data.get("provider") or "").strip().lower()
+                with state_lock:
+                    state["captcha_api_key"] = key
+                    if provider in ("capsolver", "2captcha", "twocaptcha", "auto", ""):
+                        state["captcha_provider"] = (
+                            "2captcha" if provider in ("2captcha", "twocaptcha") else provider
+                        )
+                # Persist lightly next to session
+                try:
+                    path_key = os.path.join(os.path.dirname(__file__), "captcha_key.json")
+                    with open(path_key, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {
+                                "captcha_api_key": key,
+                                "captcha_provider": state.get("captcha_provider") or "",
+                            },
+                            f,
+                        )
+                except Exception:
+                    pass
+                add_log(
+                    "Captcha solver key "
+                    + ("saved." if key else "cleared.")
+                    + " (VikingFile Turnstile)"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True}).encode())
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+                return
             
         elif path == "/api/retry":
             content_length = int(self.headers.get('Content-Length', 0))
@@ -3485,12 +5931,39 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                     if 0 <= idx < len(state["files"]):
                         state["files"][idx]["status"] = "waiting"
                         state["files"][idx]["error"] = ""
+                        # Prefer best catalog mirror URL on retry (recover from bad failover)
+                        fn = state["files"][idx].get("filename") or ""
+                        cat = state.get("mirror_catalog") or {}
+                        rank = list(state.get("mirror_rank") or [])
+                        speeds = state.get("mirror_speeds") or {}
+                        for m in rank + list(cat.keys()):
+                            if "gofile" in m.lower() or "fileditch" in m.lower():
+                                continue
+                            url = (cat.get(m) or {}).get(fn)
+                            if url:
+                                # prefer highest measured speed among valid
+                                best_m, best_u, best_b = m, url, float(speeds.get(m) or 0)
+                                for m2 in rank + list(cat.keys()):
+                                    if "gofile" in m2.lower() or "fileditch" in m2.lower():
+                                        continue
+                                    u2 = (cat.get(m2) or {}).get(fn)
+                                    b2 = float(speeds.get(m2) or 0)
+                                    if u2 and b2 >= best_b:
+                                        best_m, best_u, best_b = m2, u2, b2
+                                if best_u and best_u != state["files"][idx].get("url"):
+                                    add_log(f"[SPEED] Retry {fn}: reset URL → {best_m}")
+                                    state["files"][idx]["url"] = best_u
+                                # clear blacklist for this file so PD can be tried again after WARP/IP change
+                                if fn in (state.get("file_mirror_blacklist") or {}):
+                                    state["file_mirror_blacklist"][fn] = []
+                                break
                     if not state["is_running"]:
                         state["is_running"] = True
                         state["should_stop"] = False
                         workers_to_start = get_effective_max_workers()
                         for _ in range(workers_to_start):
                             threading.Thread(target=download_worker, daemon=True).start()
+                save_session_state()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -4104,6 +6577,44 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"success": True}).encode())
+
+        elif path == "/api/post_download_check":
+            # Manual re-run or dry status of smart post-download analysis
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length).decode() if content_length else "{}"
+            try:
+                data = json.loads(post_data) if post_data else {}
+            except Exception:
+                data = {}
+            run_pipeline = bool(data.get("run") or data.get("auto"))
+            report = analyze_post_download()
+            with state_lock:
+                state["post_download_report"] = report
+                state["post_download_message"] = report.get("message") or ""
+                if report.get("already_extracted"):
+                    state["is_extracted"] = True
+            if run_pipeline and report.get("all_downloads_finished"):
+                with state_lock:
+                    if not state.get("post_download_running") and not state.get("is_extracting"):
+                        state["post_download_running"] = True
+                        threading.Thread(
+                            target=post_download_smart_pipeline, daemon=True
+                        ).start()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "success": True,
+                        "report": report,
+                        "pipeline_started": run_pipeline
+                        and report.get("all_downloads_finished"),
+                        "post_download_status": state.get("post_download_status"),
+                    }
+                ).encode()
+            )
+            return
             
         elif path == "/api/search":
             content_length = int(self.headers.get('Content-Length', 0))
@@ -4266,10 +6777,17 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         raw_title = title_el.get_text(strip=True) if title_el else "Unknown Game"
                         title, version = clean_and_parse_title(raw_title)
                         
-                        # Scrape sizes
-                        text_all = soup.get_text()
-                        orig_match = re.search(r'Original Size:\s*([^\n]+)', text_all, re.IGNORECASE)
-                        repack_match = re.search(r'Repack Size:\s*([^\n]+)', text_all, re.IGNORECASE)
+                        # Scrape sizes (tight capture so next labels don't stick to the value)
+                        text_all = soup.get_text("\n")
+                        size_val_re = (
+                            r'([0-9][\d.,/\s–—-]*?(?:GB|MB|TB|GiB|MiB|gb|mb|tb)\b)'
+                        )
+                        orig_match = re.search(
+                            r'Original\s+Size:\s*' + size_val_re, text_all, re.IGNORECASE
+                        )
+                        repack_match = re.search(
+                            r'Repack\s+Size:\s*' + size_val_re, text_all, re.IGNORECASE
+                        )
                         original_size = clean_size(orig_match.group(1)) if orig_match else "Unknown"
                         repack_size = clean_size(repack_match.group(1)) if repack_match else "Unknown"
                         
@@ -4500,11 +7018,22 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     return item
 
                                 structured = []
+                                skip_bonus = False
 
                                 def _emit(t, bullet=False):
+                                    nonlocal skip_bonus
                                     t = _norm(t)
                                     if not t or _is_junk_desc(t):
                                         return
+                                    # Bonus Content / Soundtracks lists ≠ game description
+                                    if _is_bonus_content_header(t):
+                                        skip_bonus = True
+                                        return
+                                    if skip_bonus:
+                                        if _is_game_desc_resume_header(t):
+                                            skip_bonus = False
+                                        else:
+                                            return
                                     if bullet and not t.startswith("•"):
                                         t = "• " + t
                                     structured.append(t)
@@ -4520,6 +7049,8 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                     if name in (None, "script", "style", "br"):
                                         continue
                                     if name in ("ul", "ol"):
+                                        if skip_bonus:
+                                            continue
                                         for li in child.find_all("li"):
                                             item = _li_text(li)
                                             if item and len(item) >= 3:
@@ -4542,11 +7073,12 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         lead_t = _norm(" ".join(lead))
                                         if lead_t:
                                             _emit(lead_t)
-                                        for ul in child.find_all(["ul", "ol"], recursive=False):
-                                            for li in ul.find_all("li"):
-                                                item = _li_text(li)
-                                                if item and len(item) >= 3:
-                                                    _emit(item, bullet=True)
+                                        if not skip_bonus:
+                                            for ul in child.find_all(["ul", "ol"], recursive=False):
+                                                for li in ul.find_all("li"):
+                                                    item = _li_text(li)
+                                                    if item and len(item) >= 3:
+                                                        _emit(item, bullet=True)
                                         # nested lists deeper
                                         if not child.find(["ul", "ol"], recursive=False) and not lead_t:
                                             t = _norm(child.get_text(" ", strip=True))
@@ -4594,9 +7126,11 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         if _is_junk_desc(ln):
                                             continue
                                         low = ln.rstrip(":").lower()
+                                        if _is_bonus_content_header(ln):
+                                            # Drop this header and everything after in rebuild path
+                                            break
                                         if low in (
                                             "game features",
-                                            "included bonus soundtracks",
                                             "features",
                                             "pc features",
                                             "about this game",
@@ -4670,57 +7204,90 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                             if description:
                                 description = _strip_bonus_soundtrack_section(description)
 
-                            # 4. Screenshots — ONLY under h3 "Screenshots...", never torrent-stats / mirror images
+                            # 4. Screenshots — under h3 "Screenshots..." (also find_all_next for nested HTML)
                             def _add_shot(candidate):
                                 cleaned = _normalize_shot_url(candidate)
                                 if _is_junk_shot(cleaned):
                                     return
-                                if cleaned == cover_image or cleaned in screenshots:
+                                if cover_image and cleaned == cover_image:
                                     return
+                                # Dedup by normalized stem (thumb vs full)
+                                stem = re.sub(r'\.(jpg|jpeg|png|webp)$', '', cleaned.lower())
+                                stem = re.sub(r'[-_.]?(240p|400p|720p|150x200|300x\d+)$', '', stem)
+                                for existing in screenshots:
+                                    est = re.sub(r'\.(jpg|jpeg|png|webp)$', '', existing.lower())
+                                    if stem == est or stem in est or est in stem:
+                                        # Prefer longer / non-thumb URL
+                                        if len(cleaned) > len(existing) and existing in screenshots:
+                                            screenshots[screenshots.index(existing)] = cleaned
+                                        return
                                 screenshots.append(cleaned)
 
                             shot_header = None
-                            for el in parse_root.find_all(["h3", "h4"]):
-                                if "screenshot" in el.get_text(strip=True).lower():
+                            for el in parse_root.find_all(["h3", "h4", "strong", "b"]):
+                                txt = el.get_text(strip=True).lower()
+                                if "screenshot" in txt or "скриншот" in txt:
                                     shot_header = el
                                     break
+
+                            def _harvest_shot_node(node):
+                                if not node or not getattr(node, "find_all", None):
+                                    return
+                                for video in node.find_all("video"):
+                                    source = video.find("source")
+                                    video_src = source.get("src", "") if source else video.get("src", "")
+                                    video_src = _prefer_video_url(video_src)
+                                    if video_src and video_src not in videos:
+                                        videos.append(video_src)
+                                for a in node.find_all("a"):
+                                    href = a.get("href", "") or ""
+                                    # Skip pure gallery index pages without image ext
+                                    if href and not re.search(r"/screenshots/?(\?|$)", href, re.I):
+                                        if re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', href, re.I) or "riotpixels" in href.lower():
+                                            _add_shot(href)
+                                    img = a.find("img")
+                                    if img:
+                                        _add_shot(
+                                            img.get("data-full-url")
+                                            or img.get("data-large_image")
+                                            or img.get("data-src")
+                                            or img.get("src")
+                                            or ""
+                                        )
+                                for img in node.find_all("img"):
+                                    _add_shot(
+                                        img.get("data-full-url")
+                                        or img.get("data-large_image")
+                                        or img.get("data-src")
+                                        or img.get("data-lazy-src")
+                                        or img.get("src")
+                                        or ""
+                                    )
+
                             if shot_header:
+                                # A) next siblings
                                 curr = shot_header
-                                for _ in range(40):
+                                for _ in range(50):
                                     curr = curr.next_sibling
                                     if not curr:
                                         break
                                     if isinstance(curr, str):
                                         continue
                                     name = getattr(curr, "name", None)
-                                    if name in ("h3", "h4"):
+                                    if name in ("h3", "h4") and "screenshot" not in (curr.get_text(strip=True) or "").lower():
                                         break
-                                    if not name:
-                                        continue
-                                    # Trailers often sit inside the screenshots <p> as <video>
-                                    for video in curr.find_all("video") if hasattr(curr, "find_all") else []:
-                                        source = video.find("source")
-                                        video_src = source.get("src", "") if source else video.get("src", "")
-                                        video_src = _prefer_video_url(video_src)
-                                        if video_src and video_src not in videos:
-                                            videos.append(video_src)
-                                    for a in curr.find_all("a") if hasattr(curr, "find_all") else []:
-                                        href = a.get("href", "")
-                                        # Don't treat riotpixels gallery page links as shots
+                                    if name in ("h2",) and "feature" in (curr.get_text(strip=True) or "").lower():
+                                        break
+                                    if name in ("h3", "h4") and any(
+                                        x in (curr.get_text(strip=True) or "").lower()
+                                        for x in ("repack feature", "game description", "description")
+                                    ):
+                                        break
+                                    _harvest_shot_node(curr)
+                                    if name == "a":
+                                        href = curr.get("href", "")
                                         if href and not re.search(r"/screenshots/?(\?|$)", href, re.I):
                                             _add_shot(href)
-                                        img = a.find("img")
-                                        if img:
-                                            _add_shot(img.get("data-src") or img.get("src") or "")
-                                    for img in curr.find_all("img") if hasattr(curr, "find_all") else []:
-                                        _add_shot(
-                                            img.get("data-src")
-                                            or img.get("data-lazy-src")
-                                            or img.get("src")
-                                            or ""
-                                        )
-                                    if name == "a":
-                                        _add_shot(curr.get("href", ""))
                                     if name == "img":
                                         _add_shot(curr.get("src") or curr.get("data-src") or "")
                                     if name == "video":
@@ -4729,14 +7296,44 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         video_src = _prefer_video_url(video_src)
                                         if video_src and video_src not in videos:
                                             videos.append(video_src)
+                                # B) find_all_next until next section (catches nested broken HTML)
+                                if len(screenshots) < 4:
+                                    for nxt in shot_header.find_all_next(["img", "a", "video", "h3", "h4"], limit=80):
+                                        nm = getattr(nxt, "name", None)
+                                        if nm in ("h3", "h4"):
+                                            t = (nxt.get_text(strip=True) or "").lower()
+                                            if "screenshot" in t:
+                                                continue
+                                            if any(x in t for x in ("repack feature", "game description", "feature", "description", "download mirror")):
+                                                break
+                                            if nxt is not shot_header:
+                                                break
+                                        if nm == "img":
+                                            _add_shot(
+                                                nxt.get("data-full-url")
+                                                or nxt.get("data-src")
+                                                or nxt.get("src")
+                                                or ""
+                                            )
+                                        elif nm == "a":
+                                            href = nxt.get("href", "") or ""
+                                            if re.search(r'\.(jpg|jpeg|png|webp)(\?|$)', href, re.I) or "riotpixels" in href.lower():
+                                                if not re.search(r"/screenshots/?(\?|$)", href, re.I):
+                                                    _add_shot(href)
+                                        elif nm == "video":
+                                            source = nxt.find("source")
+                                            video_src = source.get("src", "") if source else nxt.get("src", "")
+                                            video_src = _prefer_video_url(video_src)
+                                            if video_src and video_src not in videos:
+                                                videos.append(video_src)
                             else:
-                                # fallback: only riotpixels embeds
+                                # fallback: riotpixels + steam CDN embeds anywhere in article
                                 for img in parse_root.find_all("img"):
                                     src = img.get("data-src") or img.get("src") or ""
-                                    if "riotpixels" in src.lower():
+                                    if "riotpixels" in src.lower() or "steamstatic" in src.lower():
                                         _add_shot(src)
 
-                            screenshots = screenshots[:12]
+                            screenshots = screenshots[:24]
 
                             # 5. Videos / trailers (direct <video> + YouTube only near content, not sidebar widgets)
                             for video in parse_root.find_all("video"):
@@ -4760,18 +7357,19 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                                         videos.append(src)
 
                             # Trailer-first order: direct steam/mp4 first, then youtube
+                            # microtrailer preferred for autoplay cycle (short, ends → slideshow)
                             def _video_rank(v):
                                 vl = (v or "").lower()
                                 if "microtrailer" in vl:
-                                    return 2
-                                if any(x in vl for x in (".mp4", ".webm", "steamstatic", "store_trailers")):
                                     return 0
-                                if "youtube" in vl or "youtu.be" in vl:
+                                if any(x in vl for x in (".mp4", ".webm", "steamstatic", "store_trailers")):
                                     return 1
+                                if "youtube" in vl or "youtu.be" in vl:
+                                    return 2
                                 return 3
                             videos = sorted(list(dict.fromkeys(videos)), key=_video_rank)
 
-                        
+                        # Steam enrichment: trailers + meta when FitGirl page has none
                         developer_val = ""
                         publisher_val = ""
                         release_date_val = ""
@@ -4779,6 +7377,40 @@ class APIRequestHandler(BaseHTTPRequestHandler):
                         metacritic_val = None
                         steam_rating_val = ""
                         header_image_val = ""
+                        try:
+                            steam_meta = fetch_steam_metadata(title or "")
+                        except Exception as _steam_ex:
+                            steam_meta = None
+                            add_log(f"Steam metadata skipped: {_steam_ex}")
+                        if steam_meta:
+                            if not developer_val and steam_meta.get("developers"):
+                                developer_val = ", ".join(steam_meta["developers"][:3])
+                            if not publisher_val and steam_meta.get("publishers"):
+                                publisher_val = ", ".join(steam_meta["publishers"][:3])
+                            if not release_date_val:
+                                release_date_val = steam_meta.get("release_date") or ""
+                            if not genres_val:
+                                genres_val = steam_meta.get("genres") or []
+                            if metacritic_val is None:
+                                metacritic_val = steam_meta.get("metacritic")
+                            if not steam_rating_val:
+                                steam_rating_val = steam_meta.get("steam_rating") or ""
+                            if not header_image_val:
+                                header_image_val = steam_meta.get("header_image") or ""
+                            # Trailers: ONLY FitGirl page count/order.
+                            # Steam movies ONLY as fallback when page has zero videos
+                            # (never invent Trailer 2/3/4 that aren't on the repack page).
+                            steam_videos = steam_meta.get("videos") or []
+                            if steam_videos and not videos:
+                                videos = list(dict.fromkeys([v for v in steam_videos if v]))
+                            # Backfill screenshots only if page had almost none
+                            if len(screenshots) < 3:
+                                for s in (steam_meta.get("screenshots") or []):
+                                    if s and s not in screenshots:
+                                        screenshots.append(s)
+                                screenshots = screenshots[:24]
+                            if not description and steam_meta.get("description"):
+                                description = steam_meta.get("description") or description
 
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
@@ -5335,6 +7967,68 @@ class APIRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"success": True}).encode())
             return
 
+        elif path == "/api/register_mirrors":
+            # Body: { catalog: {Mirror: [{filename,url}]| {fn:url}}, speeds?: {Mirror:bps}, rank?: [..] }
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data) if post_data else {}
+                register_mirror_catalog(
+                    data.get("catalog") or {},
+                    speeds=data.get("speeds"),
+                    rank=data.get("rank"),
+                )
+                if "high_speed_mode" in data:
+                    with state_lock:
+                        state["high_speed_mode"] = bool(data["high_speed_mode"])
+                if "min_acceptable_speed" in data:
+                    with state_lock:
+                        state["min_acceptable_speed"] = int(data["min_acceptable_speed"])
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "mirrors": list((state.get("mirror_catalog") or {}).keys()),
+                    "rank": state.get("mirror_rank") or [],
+                    "speeds": state.get("mirror_speeds") or {},
+                }).encode())
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+                return
+
+        elif path == "/api/speed_probe":
+            # Body: { url, seconds?, max_bytes? } — resolves real CDN then samples throughput
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(post_data) if post_data else {}
+                url = (data.get("url") or "").strip()
+                if not url:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": "url required"}).encode())
+                    return
+                seconds = float(data.get("seconds") or 12)
+                max_bytes = int(data.get("max_bytes") or (20 * 1024 * 1024))
+                result = probe_url_speed(url, seconds=seconds, max_bytes=max_bytes)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result).encode())
+                return
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
+                return
+
         elif path == "/api/switch_provider":
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length).decode()
@@ -5469,8 +8163,29 @@ if __name__ == "__main__":
     except Exception:
         pass
     load_session_state()
-    if os.path.exists("warp_skipped.txt"):
+    # Optional captcha solver key for VikingFile Turnstile
+    try:
+        _ck = os.path.join(os.path.dirname(__file__), "captcha_key.json")
+        if os.path.exists(_ck):
+            with open(_ck, "r", encoding="utf-8") as f:
+                _cd = json.load(f)
+            state["captcha_api_key"] = (_cd.get("captcha_api_key") or "").strip()
+            state["captcha_provider"] = (_cd.get("captcha_provider") or "").strip()
+            if state["captcha_api_key"]:
+                add_log("Captcha solver key loaded (VikingFile Turnstile).")
+    except Exception:
+        pass
+    # Always detect WARP if already installed (even after Skip); auto-install unless skipped
+    if is_warp_available():
+        state["warp_status"] = "installed"
+        threading.Thread(
+            target=lambda: ensure_warp_connected(get_warp_cli()), daemon=True
+        ).start()
+    elif os.path.exists("warp_skipped.txt"):
         state["warp_status"] = "skipped"
+        add_log("WARP not installed and auto-install was skipped earlier (Settings → Install).")
     else:
         threading.Thread(target=check_and_install_warp, daemon=True).start()
+    # Always start auto free-cap detector (harmless when idle)
+    ensure_speed_watchdog()
     start_server()
